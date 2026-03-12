@@ -212,13 +212,75 @@ def ensure_git_worktree(source_project_root: Path, run_dir: Path) -> WorkspaceCo
     )
 
 
-def resolve_workspace(agent: str, source_project_root: Path, run_dir: Path, registry: dict) -> WorkspaceContext:
+def ensure_isolated_checkout(source_project_root: Path, run_dir: Path) -> WorkspaceContext:
+    git_root = find_git_root(source_project_root)
+    base_dir = workspace_base_path(git_root)
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    checkout_name = worktree_name_for_run(source_project_root, run_dir, git_root)
+    checkout_root = base_dir / f"checkout-{checkout_name}"
+
+    if not checkout_root.exists():
+        completed = subprocess.run(
+            ["git", "clone", "--shared", "--no-checkout", str(git_root), str(checkout_root)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            stderr = (completed.stderr or completed.stdout or "").strip()
+            raise ValueError(f"Failed to create isolated checkout at {checkout_root}: {stderr}")
+
+        completed = subprocess.run(
+            ["git", "-C", str(checkout_root), "checkout", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            stderr = (completed.stderr or completed.stdout or "").strip()
+            raise ValueError(f"Failed to checkout HEAD in isolated checkout at {checkout_root}: {stderr}")
+
+    try:
+        relative_project = source_project_root.relative_to(git_root)
+    except ValueError as exc:
+        raise ValueError(f"Project root {source_project_root} is not inside git root {git_root}") from exc
+
+    effective_project_root = (checkout_root / relative_project).resolve()
+    if not effective_project_root.exists():
+        raise ValueError(f"Effective project root missing inside isolated checkout: {effective_project_root}")
+
+    return WorkspaceContext(
+        mode="isolated_checkout",
+        source_project_root=source_project_root,
+        project_root=effective_project_root,
+        run_dir=run_dir,
+        workspace_root=checkout_root,
+        git_root=git_root,
+        preserved=True,
+    )
+
+
+def resolve_workspace(
+    agent: str,
+    source_project_root: Path,
+    run_dir: Path,
+    registry: dict,
+    job_execution: dict | None = None,
+) -> WorkspaceContext:
     agent_config = default_agent_config(agent)
     agent_config.update(registry.get(agent, {}))
-    requested_mode = os.environ.get("CLAW_WORKSPACE_MODE") or agent_config.get("workspace_mode") or "project_root"
+
+    execution = job_execution or {}
+    requested_mode = (
+        (str(execution.get("workspace_mode") or "").strip() or None)
+        or os.environ.get("CLAW_WORKSPACE_MODE")
+        or agent_config.get("workspace_mode")
+        or "project_root"
+    )
     mode = str(requested_mode).strip().lower() or "project_root"
 
-    if mode == "project_root":
+    if mode in ("project_root", "shared_project"):
         return WorkspaceContext(
             mode="project_root",
             source_project_root=source_project_root,
@@ -242,6 +304,9 @@ def resolve_workspace(agent: str, source_project_root: Path, run_dir: Path, regi
 
     if mode == "git_worktree":
         return ensure_git_worktree(source_project_root, run_dir)
+
+    if mode == "isolated_checkout":
+        return ensure_isolated_checkout(source_project_root, run_dir)
 
     raise ValueError(f"Unsupported workspace mode: {mode}")
 
@@ -407,11 +472,17 @@ def main() -> int:
         return 1
 
     prompt = prompt_path.read_text(encoding="utf-8")
-    preferred_agent = job.get("preferred_agent") or job.get("task", {}).get("preferred_agent") or "codex"
+    job_execution = job.get("execution") if isinstance(job.get("execution"), dict) else {}
+    preferred_agent = (
+        job_execution.get("agent")
+        or job.get("preferred_agent")
+        or job.get("task", {}).get("preferred_agent")
+        or "codex"
+    )
     registry = parse_agents_registry(agents_registry_path)
 
     try:
-        workspace = resolve_workspace(preferred_agent, source_project_root, run_dir, registry)
+        workspace = resolve_workspace(preferred_agent, source_project_root, run_dir, registry, job_execution)
         command, command_display, default_timeout, command_input, working_directory = build_command(
             preferred_agent,
             prompt,

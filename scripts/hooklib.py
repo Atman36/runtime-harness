@@ -126,13 +126,20 @@ def build_hook_payload(run_dir: Path, project_root: Path, job: dict, meta: dict,
     run_id = job.get("run_id") or meta.get("run_id") or result.get("run_id") or run_dir.name
     run_date = meta.get("run_date") or run_dir.parent.name
     hook_id = hook_id_for_run(run_id, run_date)
+    event_type = "run.completed"
+    idempotency_key = f"{run_id}-{event_type}-{hook_id}"
     run_rel_dir = run_dir.relative_to(project_root).as_posix()
     summary = result.get("summary", "")
 
     return {
         "hook_version": HOOK_VERSION,
         "hook_id": hook_id,
-        "event": "run.completed",
+        "event": event_type,
+        "event_type": event_type,
+        "event_version": "1.0",
+        "idempotency_key": idempotency_key,
+        "delivery_attempts": 0,
+        "max_delivery_attempts": 3,
         "project": job.get("project") or meta.get("project") or project_root.name,
         "run_id": run_id,
         "run_date": run_date,
@@ -163,7 +170,7 @@ def build_hook_payload(run_dir: Path, project_root: Path, job: dict, meta: dict,
             "sent_at": None,
             "last_error": "",
         },
-        "delivery_attempts": [],
+        "delivery_attempt_log": [],
     }
 
 
@@ -200,7 +207,13 @@ def dispatch_hook_file(hook_path: Path) -> dict:
     now = utc_now()
 
     payload["hook_id"] = hook_id
-    payload.setdefault("delivery_attempts", [])
+    payload.setdefault("delivery_attempt_log", [])
+    # Migrate legacy list-style delivery_attempts to delivery_attempt_log
+    if isinstance(payload.get("delivery_attempts"), list):
+        payload["delivery_attempt_log"] = payload.pop("delivery_attempts")
+        payload["delivery_attempts"] = 0
+    payload.setdefault("delivery_attempts", 0)
+    payload.setdefault("max_delivery_attempts", 3)
     delivery = payload.setdefault(
         "delivery",
         {
@@ -262,7 +275,8 @@ def dispatch_hook_file(hook_path: Path) -> dict:
         delivery["sent_at"] = now
         delivery["last_error"] = ""
         attempt["outcome"] = "sent"
-        payload["delivery_attempts"].append(attempt)
+        payload["delivery_attempts"] = int(payload.get("delivery_attempts", 0)) + 1
+        payload["delivery_attempt_log"].append(attempt)
         target_path = write_hook_payload(project_root, payload, "sent")
         return {
             "hook_id": hook_id,
@@ -279,7 +293,11 @@ def dispatch_hook_file(hook_path: Path) -> dict:
         400,
     )
     attempt["outcome"] = "failed"
-    payload["delivery_attempts"].append(attempt)
+    payload["delivery_attempts"] = int(payload.get("delivery_attempts", 0)) + 1
+    payload["delivery_attempt_log"].append(attempt)
+    max_attempts = int(payload.get("max_delivery_attempts", 3))
+    if int(payload["delivery_attempts"]) >= max_attempts:
+        payload["dead_letter"] = True
     target_path = write_hook_payload(project_root, payload, "failed")
     return {
         "hook_id": hook_id,

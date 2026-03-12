@@ -65,12 +65,15 @@ task_path = Path(sys.argv[1])
 project_state_path = Path(sys.argv[2])
 
 task_text = task_path.read_text(encoding="utf-8")
+# preferred_agent is already "auto"; ensure it is set (no-op if already correct)
 task_text = task_text.replace("preferred_agent: codex", "preferred_agent: auto", 1)
+# Add ambiguity and replace the empty tags list with the design tag
 task_text = task_text.replace(
     "priority: high\nproject: demo-project\n",
-    "priority: high\nambiguity: high\ntags:\n  - design\nproject: demo-project\n",
+    "priority: high\nambiguity: high\nproject: demo-project\n",
     1,
 )
+task_text = task_text.replace("tags: []", "tags:\n  - design", 1)
 task_path.write_text(task_text, encoding="utf-8")
 
 project_state_path.write_text(

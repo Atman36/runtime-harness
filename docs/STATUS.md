@@ -5,7 +5,7 @@
 ---
 
 ## Текущая фаза
-**Этап 6 — Runtime hardening before OpenClaw**
+**Этап 7 — OpenClaw integration**
 
 ## Статус этапов
 
@@ -16,8 +16,8 @@
 | 3 | Task→Job adapter | ✅ done |
 | 4 | Hooks / callbacks | ✅ done |
 | 5 | Reviewer system | ✅ done |
-| 6 | Runtime hardening before OpenClaw | 🔄 in progress |
-| 7 | OpenClaw integration | 📋 backlog |
+| 6 | Runtime hardening before OpenClaw | ✅ done |
+| 7 | OpenClaw integration | 🔄 in progress |
 
 ---
 
@@ -40,20 +40,25 @@
 - `claw launch-plan` для dry-run preview execution decision + `command_preview`
 - интеграционный тест `review_runtime_integration_test.sh`
 - `launch_plan_test.sh`
+- **`execute_job.py` читает `job.execution.workspace_mode` первым** (приоритет над registry/env); `shared_project` alias для `project_root`; `isolated_checkout` backend добавлен
+- **demo-project и _template tasks** переведены на `preferred_agent: auto`; тесты обновлены под routing через `default-codex` rule
+- **`_system/contracts/review_decision.schema.json`** — formal schema для review decisions (findings, approvals, waivers, follow-up actions)
+- **`generate_review_batch.py`** создаёт decision stubs в `reviews/decisions/` при генерации batch
+- **`hooklib.py`** — `event_version`, `idempotency_key`, `delivery_attempts`, `max_delivery_attempts`; `reconcile_hooks.py` — dead-letter skip; `_system/contracts/hook_payload.schema.json`
+
+- **`claw openclaw status/enqueue/review-batch/summary`** — OpenClaw JSON commands для chat bridge; `openclaw_test.sh` (4/4 ✅)
+- stdout агрегатора перехвачен в stderr внутри `cmd_openclaw_review_batch` — JSON остаётся чистым
 
 ## In Progress
 
-- Подчинение `execute_job.py` persisted `job.execution` и workspace backends
-- Обновление demo/template artifacts под `preferred_agent: auto` и execution defaults
-- Выравнивание docs/index hygiene после clean-worktree проверки
+_(7.2 + 7.3 — callback + cron/wake)_
 
 ## Next
 
-1. Переключить `scripts/execute_job.py` на execution contract из job artifacts и workspace backends
-2. Обновить demo/template artifacts под `preferred_agent: auto` и execution defaults
-3. Добавить unified `claw review-batch`
-4. Закрыть clean-worktree parity для `docs/` и template docs artifacts
-5. После этого возвращаться к OpenClaw commands / callback summary / wake model
+1. Callback summary обратно в чат при завершении run (7.2)
+2. Event-driven wake или cron reconcile каждые 15 мин (7.3)
+3. Добавить `claw review-batch` как unified CLI (9.3 — параллельно 7.x)
+4. Закрыть clean-worktree parity для `docs/` и template docs (9.5)
 
 ---
 
@@ -101,7 +106,8 @@ python scripts/claw.py worker projects/demo-project
 
 ## Текущие блокеры
 
-- clean-worktree parity для `docs/` и `projects/_template/docs/README.md` ещё не формализована; на dirty tree это легко не заметить.
+- clean-worktree parity для `docs/` и `projects/_template/docs/README.md` ещё не формализована (задача 9.5).
+- `isolation=worktree` в orchestrator не изолирует агентов от основного рабочего дерева, если им передаётся абсолютный путь — агенты пишут напрямую в main directory. Нужно передавать путь к worktree, а не к main repo.
 
 ---
 
@@ -116,3 +122,5 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-12 | parallel Codex + Claude orchestration verification | worktrees + cherry-pick into `master` | `git worktree add`; `git cherry-pick`; `bash tests/run_all.sh` | ✅ узкие slices смёржились без конфликтов; clean-worktree drift surfaced | docs/template parity |
 | 2026-03-12 | runtime validation + review cadence | `execute_job.py`, `claw.py`, `result.schema.json` | `bash tests/run_all.sh` | ✅ all pass | OpenClaw bridge |
 | 2026-03-12 | audit последних 2 коммитов vs отчёт агента | `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `git log -2`; `git show --stat -2`; `bash tests/run_all.sh` | ✅ report gaps mapped into roadmap | planner -> runtime wiring |
+| 2026-03-13 | Epic 6 closure: 6.2+6.4 (Codex) + 6.5+6.6 (Claude) параллельно | `execute_job.py`, task files, `hooklib.py`, `reconcile_hooks.py`, `generate_review_batch.py`, `_system/contracts/` | `bash tests/run_all.sh` | ✅ all pass; `shared_project` bug caught + fixed by orchestrator | OpenClaw bridge (Этап 7) |
+| 2026-03-13 | OpenClaw 7.1: `claw openclaw status/enqueue/review-batch/summary` | `scripts/claw.py`, `tests/openclaw_test.sh`, `tests/run_all.sh` | `bash tests/run_all.sh` | ✅ 10/10; stdout→stderr fix for review-batch | 7.2 callback + 7.3 cron |

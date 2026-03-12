@@ -363,6 +363,295 @@ def cmd_launch_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── openclaw subcommands ──────────────────────────────────────────────────────
+
+
+def _openclaw_error(message: str, code: str = "ERROR") -> None:
+    """Write a JSON error to stderr."""
+    json.dump({"error": message, "code": code}, sys.stderr, ensure_ascii=False)
+    sys.stderr.write("\n")
+
+
+def cmd_openclaw_status(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+
+    queue = FileQueue(queue_root_for_project(project_root))
+
+    queue_counts: dict[str, int] = {}
+    for state in ("pending", "running", "awaiting_approval", "done", "failed"):
+        state_dir = queue_root_for_project(project_root) / state
+        if state_dir.is_dir():
+            queue_counts[state] = len(list(state_dir.glob("*.json")))
+        else:
+            queue_counts[state] = 0
+
+    # Recent runs: collect result.json from runs/ sorted by path (RUN number)
+    runs_root = project_root / "runs"
+    result_files: list[Path] = []
+    if runs_root.is_dir():
+        for date_dir in sorted(runs_root.iterdir()):
+            if not date_dir.is_dir():
+                continue
+            for run_dir in sorted(date_dir.iterdir()):
+                if run_dir.is_dir() and run_dir.name.startswith("RUN-"):
+                    result_path = run_dir / "result.json"
+                    if result_path.is_file():
+                        result_files.append(result_path)
+
+    max_recent = getattr(args, "recent", 5)
+    recent_result_files = result_files[-max_recent:]
+
+    recent_runs = []
+    for result_path in reversed(recent_result_files):
+        try:
+            result = read_json(result_path)
+        except (json.JSONDecodeError, OSError):
+            continue
+        run_id = result.get("run_id") or result_path.parent.name
+        finished_at = result.get("finished_at") or result.get("completed_at") or result.get("created_at")
+        recent_runs.append({
+            "run_id": run_id,
+            "status": result.get("status", "unknown"),
+            "agent": result.get("agent", ""),
+            "finished_at": finished_at,
+        })
+
+    # pending_reviews: count from review_cadence.json or reviews dir
+    pending_reviews = 0
+    cadence_path = project_root / "state" / CADENCE_STATE_FILE
+    reviews_dir = project_root / "reviews"
+    decisions_dir = reviews_dir / "decisions"
+    if decisions_dir.is_dir():
+        for stub_path in decisions_dir.glob("*.json"):
+            try:
+                stub = read_json(stub_path)
+                if stub.get("decision") == "pending":
+                    pending_reviews += 1
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    # Hook counts
+    hooks_root = project_root / "state" / "hooks"
+    pending_hooks = 0
+    failed_hooks = 0
+    if hooks_root.is_dir():
+        pending_dir = hooks_root / "pending"
+        failed_dir = hooks_root / "failed"
+        if pending_dir.is_dir():
+            pending_hooks = len(list(pending_dir.iterdir()))
+        if failed_dir.is_dir():
+            failed_hooks = len(list(failed_dir.iterdir()))
+
+    payload = {
+        "project": project_root.name,
+        "queue": queue_counts,
+        "recent_runs": recent_runs,
+        "pending_reviews": pending_reviews,
+        "pending_hooks": pending_hooks,
+        "failed_hooks": failed_hooks,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+
+    task_path = args.task_path
+    try:
+        run_dir = execute_run_task(REPO_ROOT, task_path, execute=False)
+    except SystemExit as exc:
+        _openclaw_error(f"Failed to build run from task: {task_path}", "BUILD_FAILED")
+        return int(exc.code) if exc.code else 1
+
+    try:
+        payload = enqueue_run(run_dir, state="pending")
+    except RuntimeError as exc:
+        _openclaw_error(str(exc), "ENQUEUE_FAILED")
+        return 1
+
+    run_id = payload["job_id"]
+    run_path = payload["run_path"]
+
+    # Read agent and workspace_mode from job.json
+    agent = ""
+    workspace_mode = ""
+    try:
+        job = read_json(run_dir / "job.json")
+        agent = job.get("preferred_agent") or ""
+        workspace_mode = (job.get("execution") or {}).get("workspace_mode") or ""
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+    # Build launch-plan preview
+    preview: dict = {}
+    try:
+        plan = plan_task_run(REPO_ROOT, task_path)
+        plan_dict = plan_to_dict(plan)
+        plan_dict["command_preview"] = _preview_agent_command(
+            REPO_ROOT,
+            agent=plan.routing.selected_agent,
+            project_root=plan.project_root,
+            workspace_mode=plan.execution.workspace_mode,
+        )
+        preview = plan_dict
+    except Exception:
+        pass
+
+    result = {
+        "status": "queued",
+        "run_id": run_id,
+        "run_path": run_path,
+        "agent": agent,
+        "workspace_mode": workspace_mode,
+        "preview": preview,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_review_batch(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+
+    dry_run: bool = getattr(args, "dry_run", False)
+
+    try:
+        from generate_review_batch import POLICY_PATH as _POLICY_PATH, generate_batches as _generate_batches, load_policy as _load_policy
+        policy = _load_policy(_POLICY_PATH)
+    except (FileNotFoundError, ValueError) as exc:
+        _openclaw_error(f"Failed to load reviewer policy: {exc}", "POLICY_ERROR")
+        return 1
+
+    try:
+        import io
+        _buf = io.StringIO()
+        import contextlib
+        with contextlib.redirect_stdout(_buf):
+            batches = _generate_batches(project_root, policy, dry_run=dry_run)
+        _log = _buf.getvalue()
+        if _log.strip():
+            print(_log.rstrip(), file=sys.stderr)
+    except Exception as exc:
+        _openclaw_error(f"Review batch generation failed: {exc}", "BATCH_FAILED")
+        return 1
+
+    candidates = []
+    for batch in batches:
+        for run in batch.get("runs", []):
+            candidates.append({
+                "run_id": run.get("run_id"),
+                "trigger": run.get("trigger"),
+                "reviewer": batch.get("reviewer"),
+            })
+
+    result = {
+        "batches_created": len(batches) if not dry_run else 0,
+        "candidates": candidates,
+        "dry_run": dry_run,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_summary(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+
+    run_id_or_path = args.run_id_or_path
+
+    # Resolve run_dir: could be a run_id like RUN-0005 or a path
+    run_dir: Path | None = None
+    candidate = Path(run_id_or_path)
+    if candidate.is_absolute() and candidate.is_dir():
+        run_dir = candidate
+    elif (project_root / run_id_or_path).is_dir():
+        run_dir = (project_root / run_id_or_path).resolve()
+    else:
+        run_dir = find_run_dir(project_root, run_id_or_path)
+
+    if run_dir is None:
+        _openclaw_error(f"Run not found: {run_id_or_path}", "NOT_FOUND")
+        return 1
+
+    try:
+        result = read_json(run_dir / "result.json")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        result = {}
+
+    try:
+        meta = read_json(run_dir / "meta.json")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        meta = {}
+
+    run_id = result.get("run_id") or meta.get("run_id") or run_dir.name
+    status = result.get("status") or meta.get("status") or "unknown"
+    agent = result.get("agent") or meta.get("preferred_agent") or ""
+    summary_text = result.get("summary") or meta.get("summary") or ""
+
+    # Duration
+    duration_seconds: float | None = None
+    started_at = result.get("started_at") or meta.get("started_at")
+    finished_at = result.get("finished_at") or result.get("completed_at")
+    if started_at and finished_at:
+        try:
+            from datetime import datetime as _dt
+            start = _dt.fromisoformat(started_at.replace("Z", "+00:00"))
+            end = _dt.fromisoformat(finished_at.replace("Z", "+00:00"))
+            duration_seconds = round((end - start).total_seconds(), 1)
+        except Exception:
+            pass
+
+    # Validation
+    validation = result.get("validation") or {}
+
+    # Hook delivery status
+    hook_status: dict = {}
+    hook_path = run_dir / "hook.json"
+    if hook_path.is_file():
+        try:
+            hook_data = read_json(hook_path)
+            hook_status = {"delivery_status": hook_data.get("delivery_status")}
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Report path
+    report_path_abs = run_dir / "report.md"
+    report_path = ""
+    if report_path_abs.is_file():
+        try:
+            report_path = report_path_abs.relative_to(project_root).as_posix()
+        except ValueError:
+            report_path = str(report_path_abs)
+
+    payload = {
+        "run_id": run_id,
+        "status": status,
+        "agent": agent,
+        "duration_seconds": duration_seconds,
+        "summary": summary_text,
+        "validation": validation,
+        "hook": hook_status,
+        "report_path": report_path,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="claw")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -417,6 +706,30 @@ def build_parser() -> argparse.ArgumentParser:
     launch_plan = subcommands.add_parser("launch-plan", help="Preview execution plan for a task without running it")
     launch_plan.add_argument("task_path")
     launch_plan.set_defaults(func=cmd_launch_plan)
+
+    # ── openclaw ──────────────────────────────────────────────────────────────
+    openclaw = subcommands.add_parser("openclaw", help="OpenClaw agent-facing project management commands")
+    openclaw_sub = openclaw.add_subparsers(dest="openclaw_command", required=True)
+
+    oc_status = openclaw_sub.add_parser("status", help="Show project status as JSON for agent consumption")
+    oc_status.add_argument("project_path")
+    oc_status.add_argument("--recent", type=int, default=5, help="Number of recent runs to include (default: 5)")
+    oc_status.set_defaults(func=cmd_openclaw_status)
+
+    oc_enqueue = openclaw_sub.add_parser("enqueue", help="Build a run and enqueue it, returning JSON")
+    oc_enqueue.add_argument("project_path")
+    oc_enqueue.add_argument("task_path")
+    oc_enqueue.set_defaults(func=cmd_openclaw_enqueue)
+
+    oc_review_batch = openclaw_sub.add_parser("review-batch", help="Generate review batches and return JSON summary")
+    oc_review_batch.add_argument("project_path")
+    oc_review_batch.add_argument("--dry-run", dest="dry_run", action="store_true")
+    oc_review_batch.set_defaults(func=cmd_openclaw_review_batch)
+
+    oc_summary = openclaw_sub.add_parser("summary", help="Return structured summary of a run as JSON")
+    oc_summary.add_argument("project_path")
+    oc_summary.add_argument("run_id_or_path")
+    oc_summary.set_defaults(func=cmd_openclaw_summary)
 
     return parser
 

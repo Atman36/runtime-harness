@@ -29,6 +29,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import yaml
 
@@ -199,6 +200,30 @@ def write_batch(reviews_dir: Path, batch: dict) -> tuple[Path, Path]:
     return json_path, md_path
 
 
+def write_decision_stubs(project_root: Path, batch: dict) -> None:
+    """Create pending decision stub files for each run in a batch."""
+    decisions_dir = project_root / "reviews" / "decisions"
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+    batch_id = batch["batch_id"]
+    reviewer = batch["reviewer"]
+
+    for run in batch["runs"]:
+        run_id = run["run_id"]
+        trigger = run.get("trigger", "")
+        stub = {
+            "review_id": str(uuid4()),
+            "run_id": run_id,
+            "reviewer_agent": reviewer,
+            "decided_at": None,
+            "decision": "pending",
+            "findings": [],
+            "batch_id": batch_id,
+            "trigger": trigger,
+        }
+        stub_path = decisions_dir / f"{batch_id}--{run_id}.json"
+        stub_path.write_text(json.dumps(stub, indent=2) + "\n", encoding="utf-8")
+
+
 def generate_batches(project_root: Path, policy: dict, dry_run: bool = False) -> list[dict]:
     """Generate review batches for one project. Returns list of batch dicts emitted."""
     reviews_dir = project_root / "reviews"
@@ -242,6 +267,7 @@ def generate_batches(project_root: Path, policy: dict, dry_run: bool = False) ->
             json_path, md_path = write_batch(reviews_dir, batch)
             print(f"  Written: {json_path.relative_to(project_root)}")
             print(f"  Written: {md_path.relative_to(project_root)}")
+            write_decision_stubs(project_root, batch)
         else:
             print(f"  [dry-run] Would write immediate batch: {batch_id} ({len(immediate_runs)} run(s))")
 
@@ -269,6 +295,7 @@ def generate_batches(project_root: Path, policy: dict, dry_run: bool = False) ->
             json_path, md_path = write_batch(reviews_dir, batch)
             print(f"  Written: {json_path.relative_to(project_root)}")
             print(f"  Written: {md_path.relative_to(project_root)}")
+            write_decision_stubs(project_root, batch)
         else:
             print(f"  [dry-run] Would write cadence batch: {batch_id} ({len(chunk)} run(s))")
 

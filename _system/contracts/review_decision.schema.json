@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReviewDecision",
+  "type": "object",
+  "required": ["review_id", "run_id", "reviewer_agent", "decided_at", "decision", "findings"],
+  "properties": {
+    "review_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "reviewer_agent": { "type": "string", "enum": ["claude", "codex"] },
+    "decided_at": { "type": ["string", "null"], "format": "date-time" },
+    "decision": { "type": "string", "enum": ["approved", "approved_with_notes", "waived", "rejected", "needs_follow_up", "pending"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "description"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["info", "warning", "error", "critical"] },
+          "description": { "type": "string" },
+          "location": { "type": "string" },
+          "follow_up_required": { "type": "boolean" }
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "properties": {
+        "approved_by": { "type": "string" },
+        "approved_at": { "type": "string", "format": "date-time" },
+        "conditions": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "waiver": {
+      "type": "object",
+      "properties": {
+        "reason": { "type": "string" },
+        "waived_by": { "type": "string" },
+        "waived_at": { "type": "string", "format": "date-time" },
+        "expiry": { "type": "string", "format": "date-time" }
+      }
+    },
+    "follow_up_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action_id", "description", "status"],
+        "properties": {
+          "action_id": { "type": "string" },
+          "description": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "in_progress", "done", "cancelled"] },
+          "assigned_agent": { "type": "string" },
+          "due_by": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "batch_id": { "type": "string" },
+    "trigger": { "type": "string" }
+  }
+}

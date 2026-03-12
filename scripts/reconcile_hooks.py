@@ -3,7 +3,22 @@
 import sys
 from pathlib import Path
 
-from hooklib import dispatch_hook_file, is_stale_pending_hook, iter_hook_files, resolve_project_roots, stale_seconds_from_env
+from hooklib import dispatch_hook_file, is_stale_pending_hook, iter_hook_files, read_json, resolve_project_roots, stale_seconds_from_env, write_json_atomic
+
+
+def is_dead_letter(hook_path: Path) -> bool:
+    """Return True if hook payload is marked dead_letter or has exhausted max_delivery_attempts."""
+    payload = read_json(hook_path)
+    if payload.get("dead_letter") is True:
+        return True
+    delivery_attempts = payload.get("delivery_attempts", 0)
+    max_delivery_attempts = payload.get("max_delivery_attempts", 3)
+    if isinstance(delivery_attempts, int) and int(delivery_attempts) >= int(max_delivery_attempts):
+        # Mark dead_letter in the file so it's visible
+        payload["dead_letter"] = True
+        write_json_atomic(hook_path, payload)
+        return True
+    return False
 
 
 def main() -> int:
@@ -32,6 +47,12 @@ def main() -> int:
         ]
 
         for hook_path in failed_hooks + stale_pending_hooks:
+            if is_dead_letter(hook_path):
+                payload = read_json(hook_path)
+                hook_id = payload.get("hook_id") or hook_path.stem
+                print(f"{project_root.name}: {hook_id} -> dead_letter (skipped)")
+                failures += 1
+                continue
             outcome = dispatch_hook_file(hook_path)
             print(f"{project_root.name}: {outcome['hook_id']} -> {outcome['status']}")
             if outcome["outcome"] == "failed":

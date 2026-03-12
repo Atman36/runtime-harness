@@ -5,17 +5,17 @@
 ---
 
 ## Epic 6 — Runtime Hardening Before OpenClaw
-**Приоритет:** P0 (текущий этап)
-**Статус:** 🔄 in progress
+**Приоритет:** P0
+**Статус:** ✅ done
 
 | # | Задача | Зависит от | Phase | Параллельность |
 |---|--------|------------|-------|----------------|
 | 6.1 | ✅ Встроить `task_planner.py` в `build_run.py` и сохранять `routing` / `execution` в artifacts | Этап 2 done | 6 | done |
-| 6.2 | Переключить `execute_job.py` на `job.execution` и workspace backends (`shared_project`, `git_worktree`, `isolated_checkout`) | 6.1 | 6 | после 6.1 |
+| 6.2 | ✅ Переключить `execute_job.py` на `job.execution` и workspace backends (`shared_project`, `git_worktree`, `isolated_checkout`) | 6.1 | 6 | done |
 | 6.3 | ✅ Добавить `claw launch-plan` с preview агента, routing rule, workspace mode, concurrency group и command preview | 6.1 | 6 | done |
-| 6.4 | Обновить demo/template artifacts под `preferred_agent: auto` и project execution defaults; покрыть тестами | 6.1 | 6 | параллельно 6.2 |
-| 6.5 | Ввести formal review decision artifacts: findings, approvals, waivers, follow-up actions | Этап 5 done | 6 | после 6.1 |
-| 6.6 | Формализовать hook delivery contract: idempotency, event versioning, retry semantics | Этап 4 done | 6 | параллельно 6.5 |
+| 6.4 | ✅ Обновить demo/template artifacts под `preferred_agent: auto` и project execution defaults; покрыть тестами | 6.1 | 6 | done |
+| 6.5 | ✅ Ввести formal review decision artifacts: findings, approvals, waivers, follow-up actions | Этап 5 done | 6 | done |
+| 6.6 | ✅ Формализовать hook delivery contract: idempotency, event versioning, retry semantics | Этап 4 done | 6 | done |
 
 **Предлагаемые GitHub issue titles:**
 - `feat: wire task planner into build_run artifacts`
@@ -29,11 +29,11 @@
 
 ## Epic 7 — OpenClaw Integration
 **Приоритет:** P1
-**Статус:** 📋 backlog
+**Статус:** 🔄 in progress
 
 | # | Задача | Зависит от | Phase | Параллельность |
 |---|--------|------------|-------|----------------|
-| 7.1 | Реализовать команды OpenClaw: create-project, enqueue, status, review-batch | Этап 6 done | 7 | — |
+| 7.1 | ✅ Реализовать команды OpenClaw: `status`, `enqueue`, `summary`, `review-batch` | Этап 6 done | 7 | done |
 | 7.2 | Callback summary обратно в чат (completion signal) | 7.1 | 7 | после 7.1 |
 | 7.3 | Event-driven wake или cron reconcile (каждые 15 мин) | 7.1 | 7 | параллельно 7.2 |
 
@@ -95,7 +95,7 @@
 | 3 | Task→Job adapter | ✅ done |
 | 4 | Hooks / callbacks | ✅ done |
 | 5 | Reviewer system | ✅ done |
-| 6 | Runtime hardening before OpenClaw | 🔄 in progress |
+| 6 | Runtime hardening before OpenClaw | ✅ done |
 
 ---
 

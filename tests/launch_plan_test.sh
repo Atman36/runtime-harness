@@ -70,9 +70,9 @@ assert_contains "$output_path" '"cwd"'
 assert_contains "$output_path" '"prompt_mode"'
 assert_contains "$output_path" '"timeout_seconds"'
 
-# Verify task-specific values for TASK-001 (preferred_agent: codex in front matter)
+# Verify task-specific values for TASK-001 (preferred_agent: auto routes via default-codex fallback rule)
 assert_contains "$output_path" '"selected_agent": "codex"'
-assert_contains "$output_path" '"selection_source": "task_front_matter"'
+assert_contains "$output_path" '"selection_source": "routing_rules"'
 assert_contains "$output_path" '"workspace_materialization_required": false'
 assert_contains "$output_path" '"prompt_mode": "arg"'
 assert_contains "$output_path" '<prompt>'

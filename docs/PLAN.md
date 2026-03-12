@@ -214,25 +214,24 @@ claw/
 ---
 
 ## Этап 6 — Runtime hardening before OpenClaw
-**Цель:** довести planner/routing/workspace contracts до реального execution path
+**Статус:** ✅ завершён
 
-### Уже сделано
+### Всё сделано
 - `task_planner.py` встроен в `build_run.py`, а `routing` / `execution` теперь реально попадают в `job.json` / `meta.json`
 - `routing_rules.yaml` теперь влияет на созданный run через planner, а не висит отдельно от runtime path
 - добавлен `claw launch-plan` для dry-run preview: агент, routing rule, workspace mode, concurrency group, command preview
+- `execute_job.py` читает `job.execution.workspace_mode` первым (приоритет над registry/env); `shared_project` alias; `isolated_checkout` backend
+- demo/template tasks переведены на `preferred_agent: auto`; routing идёт через `default-codex` fallback rule
+- `_system/contracts/review_decision.schema.json` — formal review decision schema (findings, approvals, waivers, follow-up)
+- `generate_review_batch.py` пишет decision stubs в `reviews/decisions/`
+- `hooklib.py` — `event_version`, `idempotency_key`, `delivery_attempts`, `max_delivery_attempts`; dead-letter в `reconcile_hooks.py`
+- `_system/contracts/hook_payload.schema.json` — formal hook payload schema
 
-### Осталось сделать
-- привязать `execute_job.py` к `job.execution`, а не только к registry/env overrides
-- материализовать workspace backends: `shared_project`, `git_worktree`, `isolated_checkout`
-- обновить template/demo artifacts под `preferred_agent: auto` и project-level execution defaults
-- закрыть тестами planner -> launch-plan -> execute path
-- добавить unified `claw review-batch`
-
-### DoD
-- planner используется в основном runtime path, а не только импортируется как helper
-- `routing_rules.yaml` реально влияет на созданный run
-- execution/workspace policy читается из job artifacts и воспроизводима при worker execution
-- demo/template сценарии покрывают routing + execution defaults
+### DoD — выполнен
+- planner используется в основном runtime path ✅
+- `routing_rules.yaml` реально влияет на созданный run ✅
+- execution/workspace policy читается из job artifacts ✅
+- demo/template сценарии покрывают routing + execution defaults ✅
 
 ---
 
@@ -256,22 +255,27 @@ claw/
 
 ---
 
-## Что сделано в последней сессии
+## Что сделано в последней сессии (2026-03-13)
 
-- `scripts/build_run.py` переведён на `task_planner.py`; planner routing/execution теперь сохраняются в `job.json` и `meta.json`
-- `scripts/claw.py` получил `launch-plan`, который показывает dry-run execution decision и `command_preview`
-- обновлены `job.schema.json` и `meta.schema.json` под persisted `routing` / `execution`
-- добавлен `tests/launch_plan_test.sh`, а `task_to_job_test.sh` и `contracts_validation_test.sh` усилены под planner contract
-- подтверждён параллельный workflow orchestration: Codex сделал implementation slice (`6.1`), Claude — CLI/dry-run preview slice (`6.3`) в отдельных worktree
-- после cherry-pick и ручной проверки на основной ветке `tests/run_all.sh` снова зелёный
+Параллельный запуск двух агентов для закрытия Epic 6:
+
+**Codex (6.2 + 6.4):**
+- `execute_job.py` привязан к `job.execution.workspace_mode` как first priority; добавлен `isolated_checkout` backend; `shared_project` alias → `project_root`
+- demo-project и _template tasks переведены на `preferred_agent: auto`; тесты обновлены
+
+**Claude (6.5 + 6.6):**
+- `_system/contracts/review_decision.schema.json` — formal schema для review decisions
+- `generate_review_batch.py` пишет decision stubs в `reviews/decisions/`
+- `hooklib.py` — `event_version`, `idempotency_key`, `delivery_attempts`, `max_delivery_attempts`, dead-letter
+- `_system/contracts/hook_payload.schema.json` создан
+
+**Оркестратор поймал баг:** `task_planner.py` дефолтит `workspace_mode: "shared_project"`, который executor не знал → `run_all.sh` упал на `execute_job_test` → исправлено добавлением alias `shared_project` → `project_root`.
 
 ## Следующие незавершённые задачи
 
-- довести execution contract до фактического workspace selection/materialization в `execute_job.py`
-- обновить template/demo project под `preferred_agent: auto` и execution defaults
-- добавить unified `claw review-batch`
-- формализовать clean-worktree parity для `docs/` и template docs artifacts
-- после этого возвращаться к OpenClaw bridge
+- Этап 7: OpenClaw integration (7.1 команды, 7.2 callback, 7.3 cron/wake)
+- 9.3: unified `claw review-batch` CLI (параллельно)
+- 9.5: clean-worktree parity для `docs/` и template docs
 
 ---
 
@@ -353,11 +357,22 @@ claw/
 - Архитектура уже жизнеспособна как local-first orchestration shell.
 - Следующий потолок сложности теперь не в queue/hook mechanics, а в orchestration policy: routing, execution isolation, review decisions и queue maturity.
 
-### Инсайты после параллельного запуска Codex + Claude
+### Инсайты после параллельного запуска Codex + Claude (сессия 2026-03-12)
 - Лучший рабочий паттерн для orchestration-сессий — давать агентам узкие, почти не пересекающиеся slices и запускать их в отдельных git worktree.
 - `Codex -> implementation`, `Claude -> orchestration/review/preview` снова подтвердился как практичный split: меньше конфликтов по файлам, проще cherry-pick и финальная верификация.
 - `launch-plan` оказался не просто удобной CLI-командой, а важным human/agent checkpoint перед реальным запуском worker'а.
 - Проверка результата в clean worktree обязательна: она ловит скрытые проблемы индексации/шаблонов, которые на грязной ветке выглядят «как будто всё ок».
+
+### Инсайт: stdout pollution при оборачивании модулей (сессия 2026-03-13)
+- **Агент, оборачивающий Python-модуль с `print()` side effects, должен изолировать stdout через `contextlib.redirect_stdout`.** `generate_batches()` печатает прогресс в stdout; `cmd_openclaw_review_batch` вызывал его напрямую — JSON output загрязнялся. Правило: любой `openclaw_*` command должен возвращать чистый JSON, все side-effect logs идут в stderr.
+- Этот баг не виден при code review — проявляется только при запуске теста с реальными данными. `run_all.sh` поймал его за секунды.
+
+### Инсайты после параллельного запуска Codex + Claude (сессия 2026-03-13)
+- **`isolation=worktree` не изолирует агентов, если промпт содержит абсолютный путь к main repo.** Агенты писали напрямую в `/Users/Apple/progect/claw` несмотря на sandbox. Чтобы получить реальную изоляцию — передавать агенту путь к worktree, а не к main directory.
+- **Строгое файловое разделение заменяет изоляцию worktree** при условии, что файлы не пересекаются: два агента параллельно писали в один каталог без конфликтов, потому что каждый трогал свой набор файлов.
+- **Плановый дефолт и runtime дефолт должны быть синхронизированы.** `task_planner.py` дефолтит `shared_project`, но `execute_job.py` его не знал → баг. Всякий раз, когда planner добавляет новое значение в enum — executor должен его обрабатывать. Это нужно проверять в `execute_job_test.sh`.
+- **`run_all.sh` — обязательный финальный шаг оркестратора.** Первый запуск поймал regression раньше, чем мёрж или ревью. Без автотестов баг ушёл бы в main branch незаметно.
+- **Оркестратор должен исправлять баги самостоятельно до передачи результата.** Агент закончил, тест упал, оркестратор нашёл причину и починил — это нормальный цикл, не требующий участия пользователя.
 
 ---
 
@@ -369,13 +384,13 @@ claw/
 - ~~Встроить planner в runtime path: `build_run.py` должен использовать `task_planner.py` и сохранять `routing` / `execution` в artifacts.~~ — **✅ сделано** (`0caec7c`)
 - ~~Применять `routing_rules.yaml` в runtime при создании job, а не держать rules только в registry.~~ — **✅ сделано** через planner wiring (`0caec7c`)
 - ~~Добавить `claw launch-plan` для dry-run preview execution decision.~~ — **✅ сделано** (`b8053ef`)
-- Подчинить workspace execution контракту из job artifacts и довести backends `shared_project` / `git_worktree` / `isolated_checkout`.
-- Обновить demo/template artifacts под `preferred_agent: auto` и execution defaults.
+- ~~Подчинить workspace execution контракту из job artifacts и довести backends `shared_project` / `git_worktree` / `isolated_checkout`.~~ — **✅ сделано** (2026-03-13)
+- ~~Обновить demo/template artifacts под `preferred_agent: auto` и execution defaults.~~ — **✅ сделано** (2026-03-13)
 
 ### Средний приоритет
-- Ввести formal review decision artifacts: `review_decision.json`, `findings.json`, approvals, waivers, follow-up queue.
+- ~~Ввести formal review decision artifacts: `review_decision.json`, `findings.json`, approvals, waivers, follow-up queue.~~ — **✅ сделано** (2026-03-13)
 - Довести queue maturity: retry/backoff policy, poison-job threshold, DLQ handling, lease renewal heartbeat в worker loop.
-- Формализовать hook delivery contract: idempotency, event versioning, retry semantics.
+- ~~Формализовать hook delivery contract: idempotency, event versioning, retry semantics.~~ — **✅ сделано** (2026-03-13)
 - Добавить явный queue/job contract versioning и migration story для будущих изменений схем.
 - Сделать `claw review-batch` как часть unified CLI вместо standalone entrypoint-only usage.
 - Добавить multi-project worker/reconciler loop с безопасным fair scheduling.

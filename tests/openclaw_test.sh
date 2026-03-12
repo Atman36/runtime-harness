@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Tests for claw openclaw subcommands: status, enqueue, summary, review-batch.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/claw-openclaw-test.XXXXXX")"
+workspace="$tmp_root/workspace"
+
+cleanup() {
+  rm -rf "$tmp_root"
+}
+trap cleanup EXIT
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+assert_json_field() {
+  # Assert that a JSON string (passed via stdin or first arg file) contains a field
+  local json_file="$1"
+  local field="$2"
+  python3 - "$json_file" "$field" <<'PY'
+import json, sys
+data = json.loads(open(sys.argv[1]).read())
+field = sys.argv[2]
+assert field in data, f"Missing field {field!r} in JSON. Keys: {list(data.keys())}"
+PY
+}
+
+assert_json_field_value() {
+  local json_file="$1"
+  local field="$2"
+  local expected="$3"
+  python3 - "$json_file" "$field" "$expected" <<'PY'
+import json, sys
+data = json.loads(open(sys.argv[1]).read())
+field, expected = sys.argv[2], sys.argv[3]
+actual = str(data.get(field, ""))
+assert actual == expected, f"{field}: expected {expected!r}, got {actual!r}"
+PY
+}
+
+assert_file() {
+  local path="$1"
+  if [ ! -f "$path" ]; then
+    echo "Expected file to exist: $path" >&2
+    exit 1
+  fi
+}
+
+# ── workspace setup ───────────────────────────────────────────────────────────
+
+mkdir -p "$workspace/scripts"
+cp -R "$repo_root/_system"  "$workspace/_system"
+cp -R "$repo_root/projects" "$workspace/projects"
+cp "$repo_root/scripts/claw.py"                  "$workspace/scripts/claw.py"
+cp "$repo_root/scripts/build_run.py"             "$workspace/scripts/build_run.py"
+cp "$repo_root/scripts/execute_job.py"           "$workspace/scripts/execute_job.py"
+cp "$repo_root/scripts/generate_review_batch.py" "$workspace/scripts/generate_review_batch.py"
+cp "$repo_root/scripts/validate_artifacts.py"    "$workspace/scripts/validate_artifacts.py"
+
+# Clean up project state so tests run on a fresh project
+project_root="$workspace/projects/demo-project"
+rm -rf "$project_root/runs" "$project_root/reviews" "$project_root/state/queue"
+mkdir -p "$project_root/runs" "$project_root/reviews"
+mkdir -p "$project_root/state/queue"/{pending,running,done,failed,awaiting_approval}
+mkdir -p "$project_root/state/hooks"/{pending,failed,sent}
+
+task_path="$project_root/tasks/TASK-001.md"
+today="$(date +"%Y-%m-%d")"
+
+claw() {
+  python3 "$workspace/scripts/claw.py" "$@"
+}
+
+# ── Test 1: openclaw status ────────────────────────────────────────────────────
+
+status_out="$tmp_root/status.json"
+claw openclaw status "$project_root" > "$status_out"
+
+assert_file "$status_out"
+assert_json_field "$status_out" "project"
+assert_json_field "$status_out" "queue"
+assert_json_field "$status_out" "recent_runs"
+assert_json_field "$status_out" "pending_reviews"
+
+# Verify it is valid JSON and project name matches
+python3 - "$status_out" "demo-project" <<'PY'
+import json, sys
+data = json.loads(open(sys.argv[1]).read())
+expected = sys.argv[2]
+assert data["project"] == expected, f"project: expected {expected!r}, got {data['project']!r}"
+assert isinstance(data["queue"], dict), "queue should be a dict"
+assert isinstance(data["recent_runs"], list), "recent_runs should be a list"
+PY
+
+echo "  ok: test1 — openclaw status returns valid JSON with required fields"
+
+# ── Test 2: openclaw enqueue ───────────────────────────────────────────────────
+
+enqueue_out="$tmp_root/enqueue.json"
+claw openclaw enqueue "$project_root" "$task_path" > "$enqueue_out"
+
+assert_file "$enqueue_out"
+assert_json_field "$enqueue_out" "status"
+assert_json_field "$enqueue_out" "run_id"
+assert_json_field "$enqueue_out" "run_path"
+
+python3 - "$enqueue_out" <<'PY'
+import json, sys
+data = json.loads(open(sys.argv[1]).read())
+assert data["status"] == "queued", f"status: expected 'queued', got {data['status']!r}"
+assert data["run_id"].startswith("RUN-"), f"run_id should start with RUN-, got {data['run_id']!r}"
+PY
+
+echo "  ok: test2 — openclaw enqueue returns JSON with status=queued and run_id"
+
+# ── Test 3: openclaw summary ───────────────────────────────────────────────────
+
+# Read run_id from enqueue output
+run_id="$(python3 -c "import json,sys; print(json.loads(open('$enqueue_out').read())['run_id'])")"
+
+summary_out="$tmp_root/summary.json"
+claw openclaw summary "$project_root" "$run_id" > "$summary_out"
+
+assert_file "$summary_out"
+assert_json_field "$summary_out" "run_id"
+assert_json_field "$summary_out" "status"
+assert_json_field "$summary_out" "agent"
+
+python3 - "$summary_out" "$run_id" <<'PY'
+import json, sys
+data = json.loads(open(sys.argv[1]).read())
+expected_run_id = sys.argv[2]
+assert data["run_id"] == expected_run_id, f"run_id: expected {expected_run_id!r}, got {data['run_id']!r}"
+assert "status" in data, "Missing 'status' field"
+assert "agent" in data, "Missing 'agent' field"
+PY
+
+echo "  ok: test3 — openclaw summary returns JSON with run_id, status, agent"
+
+# ── Test 4: openclaw review-batch --dry-run ────────────────────────────────────
+
+# Add a failed run so there is a candidate for review
+failed_run_dir="$project_root/runs/$today/RUN-9999"
+mkdir -p "$failed_run_dir"
+cat > "$failed_run_dir/meta.json" <<EOF
+{
+  "run_id": "RUN-9999",
+  "run_date": "$today",
+  "status": "failed",
+  "project": "demo-project",
+  "task_id": "TASK-001",
+  "task_title": "Test task",
+  "preferred_agent": "codex"
+}
+EOF
+cat > "$failed_run_dir/result.json" <<EOF
+{
+  "run_id": "RUN-9999",
+  "status": "failed",
+  "agent": "codex"
+}
+EOF
+cat > "$failed_run_dir/job.json" <<EOF
+{
+  "job_version": 1,
+  "run_id": "RUN-9999",
+  "run_path": "runs/$today/RUN-9999",
+  "created_at": "2026-01-01T00:00:00Z",
+  "project": "demo-project",
+  "preferred_agent": "codex",
+  "task": {
+    "id": "TASK-001",
+    "title": "Test task",
+    "needs_review": false,
+    "risk_flags": []
+  },
+  "spec": {"source_path": "specs/SPEC-001.md", "copied_path": "spec.md"},
+  "artifacts": {
+    "prompt_path": "prompt.txt",
+    "meta_path": "meta.json",
+    "report_path": "report.md",
+    "result_path": "result.json",
+    "stdout_path": "stdout.log",
+    "stderr_path": "stderr.log"
+  }
+}
+EOF
+
+batch_out="$tmp_root/review_batch.json"
+claw openclaw review-batch "$project_root" --dry-run > "$batch_out"
+
+assert_file "$batch_out"
+assert_json_field "$batch_out" "dry_run"
+assert_json_field "$batch_out" "candidates"
+assert_json_field "$batch_out" "batches_created"
+
+python3 - "$batch_out" "$project_root/reviews" <<'PY'
+import json, sys, pathlib
+data = json.loads(open(sys.argv[1]).read())
+assert data["dry_run"] is True, f"dry_run: expected True, got {data['dry_run']!r}"
+# Dry run should NOT create files
+reviews_dir = pathlib.Path(sys.argv[2])
+batch_files = list(reviews_dir.glob("REVIEW-*.json"))
+assert len(batch_files) == 0, f"dry-run should not create files, found: {batch_files}"
+PY
+
+echo "  ok: test4 — openclaw review-batch --dry-run returns JSON with dry_run=true, no files created"
+
+echo "openclaw test: ok"

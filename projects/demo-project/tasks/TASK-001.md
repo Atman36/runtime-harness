@@ -3,12 +3,13 @@ id: TASK-001
 title: "Create the first task-to-job run"
 status: todo
 spec: ../specs/SPEC-001.md
-preferred_agent: codex
+preferred_agent: auto
 review_policy: standard
 priority: high
 project: demo-project
 needs_review: false
 risk_flags: []
+tags: []
 ---
 
 # Task
