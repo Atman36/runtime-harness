@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from hooklib import build_hook_payload, dispatch_hook_file, write_hook_payload, read_json, utc_now, write_json
+from hooklib import build_hook_payload, dispatch_hook_file, read_json, trim_text, utc_now, write_hook_payload, write_json
 
 
 def resolve_run_dir(argument: str) -> Path:
@@ -35,23 +35,40 @@ def project_root_from_run_dir(run_dir: Path) -> Path:
 
 def parse_agents_registry(path: Path) -> dict:
     agents = {}
+    in_agents_section = False
+    agents_indent = None
+    agent_indent = None
     current_agent = None
 
     if not path.is_file():
         return agents
 
     for raw_line in path.read_text(encoding="utf-8").splitlines():
-        if raw_line.startswith("  ") and not raw_line.startswith("    ") and raw_line.strip().endswith(":"):
-            current_agent = raw_line.strip()[:-1]
-            agents[current_agent] = {}
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
             continue
 
-        if current_agent and raw_line.startswith("    "):
-            stripped = raw_line.strip()
-            if ":" not in stripped:
-                continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+
+        if not in_agents_section:
+            if stripped == "agents:":
+                in_agents_section = True
+                agents_indent = indent
+            continue
+
+        if indent <= agents_indent:
+            break
+
+        if stripped.endswith(":") and ":" not in stripped[:-1]:
+            if agent_indent is None or indent == agent_indent:
+                current_agent = stripped[:-1]
+                agent_indent = indent
+                agents[current_agent] = {}
+            continue
+
+        if current_agent and agent_indent is not None and indent > agent_indent and ":" in stripped:
             key, value = stripped.split(":", 1)
-            agents[current_agent][key.strip()] = value.strip().strip('"')
+            agents[current_agent][key.strip()] = value.strip().strip('"').strip("'")
 
     return agents
 
@@ -132,15 +149,6 @@ def build_command(agent: str, prompt: str, project_root: Path, run_dir: Path, re
         display_parts.append("<stdin>")
 
     return command, " ".join(display_parts), default_timeout, prompt_input, working_directory
-
-
-def trim_summary(text: str, limit: int = 1200) -> str:
-    compact = text.strip()
-    if not compact:
-        return ""
-    if len(compact) <= limit:
-        return compact
-    return compact[: limit - 3].rstrip() + "..."
 
 
 def render_report(job: dict, status: str, started_at: str, finished_at: str, exit_code: int, command_display: str, summary: str, artifacts: dict, working_directory: Path) -> str:
@@ -307,7 +315,7 @@ def main() -> int:
     stderr_path.write_text(stderr_text, encoding="utf-8")
 
     summary_source = stdout_text if stdout_text.strip() else stderr_text
-    summary = trim_summary(summary_source)
+    summary = trim_text(summary_source)
 
     final_result = {
         "run_id": job.get("run_id"),

@@ -100,6 +100,7 @@ bash tests/run_all.sh
 - `execute_job.sh` updates `meta.json` from `created -> running -> completed/failed`, captures agent stdout/stderr, writes final `result.json`, rewrites `report.md`, creates a deterministic hook JSON under `projects/<slug>/state/hooks/`, and attempts immediate dispatch.
 - Local overrides are supported for smoke tests via `CLAW_AGENT_COMMAND_<AGENT>` (for example `CLAW_AGENT_COMMAND_CODEX`).
 - Default agent invocation now comes from `_system/registry/agents.yaml` (`command`, `args`, `prompt_mode`, `cwd`, `default_timeout_seconds`), so Codex/Claude CLI flags can be adjusted in one filesystem-backed place without editing `execute_job.py`.
+- `_system/registry/routing_rules.yaml` and `_system/registry/reviewer_policy.yaml` are scaffolded contracts for the next orchestration slices; current runtime still takes `preferred_agent` and review intent from task/front matter and execution results rather than auto-applying those policies.
 - Hook delivery is file-backed and optional. If `CLAW_HOOK_COMMAND` is unset, completed-run hooks remain in `state/hooks/pending/`; `dispatch_hooks.py` and `reconcile_hooks.py` leave them pending and exit successfully instead of treating that as a delivery failure.
 - `CLAW_HOOK_TIMEOUT_SECONDS` controls hook delivery timeout and marks timed-out attempts as failed deliveries with `exit_code: 124`.
 - `run_demo_task.sh` remains as a legacy smoke runner and still prefers `_system/templates/report.template.md` with fallback to `templates/report.template.md`.

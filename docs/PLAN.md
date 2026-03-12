@@ -71,6 +71,10 @@ claw/
   - `scripts/run_demo_task.sh`
   - `CODEx_TEST_REPORT.md`
 - Есть первый успешный commit с demo runner
+- **Этап 1 завершён:** `_system/registry/`, `_system/templates/`, `projects/_template/`, `projects/demo-project/`
+- **Этап 3 завершён:** `run_task.sh`, task→job адаптер, генерация `prompt.txt`, `meta.json`, `job.json`, `result.json`
+- **Этап 4 завершён:** file-backed hook slice (`state/hooks/{pending,sent,failed}`), `execute_job.py`, `dispatch_hooks.py`, `reconcile_hooks.py`, `hooklib.py`
+- **Тесты:** 4 smoke-test сьюта (`foundation_scaffold_test.sh`, `task_to_job_test.sh`, `execute_job_test.sh`, `hook_lifecycle_test.sh`)
 
 ---
 
@@ -332,3 +336,81 @@ claw/
 5. получить report/result/hook
 6. сделать reconcile
 7. собрать review batch без ручного шаманства
+
+---
+
+## Наблюдения из ревью кода (2026-03-12)
+
+### Критические баги
+
+**B1. `run_task.sh` — `json_escape` не экранирует newlines**
+- Файл: `scripts/run_task.sh`, функция `json_escape`
+- Проблема: `sed` экранирует `\` и `"`, но символ новой строки в значении ломает heredoc → невалидный `job.json`
+- Сценарий: `task_title` с переносом строки или мультистрочное `spec_reference`
+- Фикс: заменить на `python3 -c "import json,sys; print(json.dumps(sys.stdin.read()), end='')"`
+
+**B2. `execute_job.py` — кастомный YAML-парсер `parse_agents_registry` хрупкий**
+- Файл: `scripts/execute_job.py`, строки 36–56
+- Проблема: парсер основан на точном отступе (2 vs 4 пробела). Комментарий, list-значение, или нестандартный отступ — агент не распознаётся, запуск молча падает с "Unsupported preferred_agent"
+- Фикс: использовать `PyYAML` (`import yaml`) или конвертировать `agents.yaml` → `agents.json`
+
+**B3. `run_task.sh` — `needs_review` и `risk_flags` вставляются в JSON без валидации**
+- Файл: `scripts/run_task.sh`, heredoc `job.json`
+- Проблема: значения инъектируются unquoted. Если `needs_review` содержит что угодно кроме `true`/`false`, или `risk_flags` — не валидный JSON-массив, `job.json` сломается
+- Фикс: явно валидировать оба значения перед вставкой
+
+### Средние проблемы
+
+**M1. `run_task.sh` — TOCTOU race в нумерации runs**
+- Файл: `scripts/run_task.sh`, строки 144–157
+- Проблема: при параллельных вызовах оба прочитают одинаковый `last_run_number` → коллизия `RUN-XXXX`
+- Фикс: lock-файл или атомарный `mkdir` с retry-loop
+
+**M2. `execute_job.py` — `trim_summary` дублирует `hooklib.trim_text`**
+- Файл: `scripts/execute_job.py`, строки 137–143
+- Проблема: идентичная функция уже есть в `hooklib.py` как `trim_text`
+- Фикс: `from hooklib import trim_text as trim_summary`
+
+**M3. `run_task.sh` — project slug из имени папки, не из `state/project.yaml`**
+- Файл: `scripts/run_task.sh`, строка 29
+- Проблема: при переименовании папки slug рассинхронизируется с `state/project.yaml`
+- Фикс: читать slug из yaml и сравнивать с именем папки
+
+**M4. `routing_rules.yaml` и `reviewer_policy.yaml` не используются в коде**
+- Ни один скрипт не читает эти файлы. Роутинг берётся из `preferred_agent` в frontmatter задачи
+- Это ОК для v0.1, но вводит в заблуждение. Пометить в README как "defined, not yet active"
+
+**M5. `iter_hook_files` использует пустой `hook_id` как трюк для получения директории**
+- Файл: `scripts/hooklib.py`, строка 312–313
+- Фикс: заменить на `sorted((hook_root(project_root) / status).glob("*.json"))`
+
+### Minor
+
+**N1. Нет `.gitignore`**
+- Runtime-артефакты попадают в git: `.demo-runs/`, `projects/*/runs/`, `projects/*/state/hooks/`
+
+**N2. Hook-команда запускается как login shell (`-l`)**
+- Файл: `scripts/hooklib.py`, строка 229
+- `["/bin/bash", "-lc", command]` загружает `.bash_profile`/`.bashrc` — медленно, непредсказуемо
+- Задокументировать поведение или дать env-переменную для отключения `-l`
+
+**N3. `execute_job.py` возвращает exit code агента напрямую**
+- Строка 375: `return 0 if status == "success" else exit_code`
+- Если агент завершился с кодом 143 (SIGTERM), `execute_job.py` тоже вернёт 143 — может запутать вызывающий скрипт
+- Рассмотреть нормализацию: возвращать `1` при любом failure
+
+**N4. `run_demo_task.sh` — deprecated runner без маркировки**
+- Пишет в `.demo-runs/` в корне репо, тогда как новый runner пишет в `projects/<slug>/runs/`
+- Добавить комментарий в файл и README о статусе deprecated
+
+**N5. Тесты хардкодят путь `demo-project`**
+- Файлы: `tests/hook_lifecycle_test.sh`, `tests/execute_job_test.sh`
+- Тесты лучше создавать временный проект через `create_project.sh` и не зависеть от `demo-project`
+
+### Архитектурные наблюдения
+
+- **CLI entry point отсутствует**: сейчас нужно вручную вызывать `bash scripts/run_task.sh` и `python3 scripts/dispatch_hooks.py`. Нужен единый `claw` CLI (`claw run <task>`, `claw dispatch`, `claw reconcile`, `claw status`)
+- **`routing_rules.yaml` должен применяться в `run_task.sh`**: читать файл и переопределять `preferred_agent` если task не задал явно, иначе файл — мёртвый код
+- **Нет `claw status`**: нет агрегированного вида всех runs, их статусов и hook-статусов
+- **Нет `--dry-run`**: для `run_task.sh` полезен флаг, который показывает что было бы запущено без запуска
+- **Отсутствует JSON Schema** для `job.json` и `result.json` — контракт между скриптами нигде не зафиксирован формально

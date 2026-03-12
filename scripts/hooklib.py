@@ -310,7 +310,9 @@ def is_stale_pending_hook(hook_path: Path, stale_after_seconds: int) -> bool:
 
 
 def iter_hook_files(project_root: Path, status: str) -> list[Path]:
-    return sorted(hook_path_for(project_root, status, "").parent.glob("*.json"))
+    if status not in HOOK_STATUSES:
+        raise ValueError(f"Unsupported hook status: {status}")
+    return sorted((hook_root(project_root) / status).glob("*.json"))
 
 
 def resolve_project_roots(repo_root: Path, target: str | None) -> list[Path]:

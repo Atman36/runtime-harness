@@ -96,7 +96,45 @@ render_template() {
 }
 
 json_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  printf '%s' "$1" | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read())[1:-1], end="")'
+}
+
+validate_json_boolean() {
+  local raw_value="$1"
+  local field_name="$2"
+  local file_path="$3"
+
+  case "$raw_value" in
+    true|false)
+      ;;
+    *)
+      echo "Task front matter $field_name must be true or false: $file_path" >&2
+      exit 1
+      ;;
+  esac
+}
+
+validate_json_array() {
+  local raw_value="$1"
+  local field_name="$2"
+  local file_path="$3"
+
+  if ! python3 - "$raw_value" <<'PY'
+import json
+import sys
+
+try:
+    parsed = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    raise SystemExit(1)
+
+if not isinstance(parsed, list):
+    raise SystemExit(1)
+PY
+  then
+    echo "Task front matter $field_name must be a JSON array: $file_path" >&2
+    exit 1
+  fi
 }
 
 task_id="$(read_front_matter_value "$task_path" "id")"
@@ -117,6 +155,9 @@ fi
 if [ -z "$risk_flags" ]; then
   risk_flags="[]"
 fi
+
+validate_json_boolean "$needs_review" "needs_review" "$task_path"
+validate_json_array "$risk_flags" "risk_flags" "$task_path"
 
 if [ -z "$task_id" ] || [ -z "$spec_reference" ]; then
   echo "Task front matter must include id and spec: $task_path" >&2

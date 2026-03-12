@@ -50,6 +50,8 @@ today="$(date +"%Y-%m-%d")"
 run_day_root="$project_root/runs/$today"
 run_one="$run_day_root/RUN-0001"
 run_two="$run_day_root/RUN-0002"
+invalid_boolean_task="$workspace/projects/demo-project/tasks/TASK-INVALID-BOOLEAN.md"
+invalid_risk_flags_task="$workspace/projects/demo-project/tasks/TASK-INVALID-RISK.md"
 
 bash "$workspace/scripts/run_task.sh" "$task_path"
 bash "$workspace/scripts/run_task.sh" "$task_path"
@@ -86,5 +88,43 @@ assert_contains "$run_one/result.json" "\"status\": \"pending\""
 assert_contains "$run_one/report.md" "- Project: demo-project"
 assert_contains "$run_one/report.md" "- Task: TASK-001"
 assert_contains "$run_one/report.md" "- Status: pending"
+
+cp "$task_path" "$invalid_boolean_task"
+python3 - "$invalid_boolean_task" <<'EOF'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("id: TASK-001", "id: TASK-INVALID-BOOLEAN", 1)
+text = text.replace("needs_review: false", "needs_review: maybe", 1)
+path.write_text(text, encoding="utf-8")
+EOF
+
+if bash "$workspace/scripts/run_task.sh" "$invalid_boolean_task" >"$workspace/invalid-boolean.out" 2>"$workspace/invalid-boolean.err"; then
+  echo "Expected run_task.sh to reject invalid needs_review boolean" >&2
+  exit 1
+fi
+
+assert_contains "$workspace/invalid-boolean.err" "Task front matter needs_review must be true or false"
+
+cp "$task_path" "$invalid_risk_flags_task"
+python3 - "$invalid_risk_flags_task" <<'EOF'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("id: TASK-001", "id: TASK-INVALID-RISK", 1)
+text = text.replace("risk_flags: []", "risk_flags: nope", 1)
+path.write_text(text, encoding="utf-8")
+EOF
+
+if bash "$workspace/scripts/run_task.sh" "$invalid_risk_flags_task" >"$workspace/invalid-risk.out" 2>"$workspace/invalid-risk.err"; then
+  echo "Expected run_task.sh to reject invalid risk_flags JSON" >&2
+  exit 1
+fi
+
+assert_contains "$workspace/invalid-risk.err" "Task front matter risk_flags must be a JSON array"
 
 echo "task to job test: ok"

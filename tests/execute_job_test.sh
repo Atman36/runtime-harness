@@ -131,20 +131,21 @@ assert_contains "$run_two/report.md" 'inspect stderr.log'
 
 cat > "$workspace/_system/registry/agents.yaml" <<'EOF'
 agents:
-  codex:
-    label: Codex
-    command: agent-stub
-    args: exec --mode stdin --flag registry
-    prompt_mode: stdin
-    cwd: project_root
-    default_timeout_seconds: 12
-  claude:
-    label: Claude
-    command: agent-stub
-    args: -p --output-format text
-    prompt_mode: arg
-    cwd: project_root
-    default_timeout_seconds: 34
+    # valid YAML with deeper agent indentation than the original parser expected
+    codex:
+      label: Codex
+      command: agent-stub
+      args: exec --mode stdin --flag registry
+      prompt_mode: stdin
+      cwd: project_root
+      default_timeout_seconds: 12
+    claude:
+      label: Claude
+      command: agent-stub
+      args: -p --output-format text
+      prompt_mode: arg
+      cwd: project_root
+      default_timeout_seconds: 34
 EOF
 
 bash "$workspace/scripts/run_task.sh" "$task_path"
