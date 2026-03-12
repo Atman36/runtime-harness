@@ -1,6 +1,6 @@
 ---
 id: TASK-001
-title: "Validate the foundation scaffold"
+title: "Create the first task-to-job run"
 status: todo
 spec: ../specs/SPEC-001.md
 preferred_agent: codex
@@ -14,8 +14,8 @@ risk_flags: []
 # Task
 
 ## Goal
-Use the demo project as the first concrete workspace for orchestration development.
+Use the demo project as the first concrete workspace for deterministic task launches.
 
 ## Notes
-- The next implementation step is `task/spec -> job`
-- Keep demo artifacts deterministic
+- Resolve `spec` from front matter and copy both inputs into the run directory
+- Keep run artifacts deterministic and ready for future engine execution

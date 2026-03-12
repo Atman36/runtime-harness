@@ -1,11 +1,12 @@
 # SPEC-001 — Bootstrap `demo-project`
 
 ## Goal
-Verify that `claw` can hold a real project with stable docs, task, spec and state paths.
+Verify that `claw` can turn a project task plus spec into deterministic run artifacts.
 
 ## Scope
 - Keep one starter spec and task
-- Use this project as a target for future `task -> job` work
+- Generate a stable run directory for the demo task
+- Produce machine-readable job metadata plus human-readable prompt/report files
 
 ## Constraints
 - Runtime run artifacts belong in `runs/`
@@ -13,7 +14,8 @@ Verify that `claw` can hold a real project with stable docs, task, spec and stat
 
 ## Acceptance Criteria
 - A launcher can resolve task and spec files under `projects/demo-project/`
-- The project remains suitable as a smoke target for future engine integration
+- The launcher creates `runs/YYYY-MM-DD/RUN-XXXX/`
+- Each run contains `task.md`, `spec.md`, `prompt.txt`, `meta.json`, `job.json`, `result.json`, and `report.md`
 
 ## Notes
-- Expand this spec once task-to-job orchestration is in place
+- Expand this spec once engine execution is wired on top of the adapter

@@ -4,13 +4,14 @@ Local project shell and orchestration workspace for spec-driven work with Codex 
 
 ## Current slice
 
-This repository now implements the `foundation` stage from [docs/PLAN.md](docs/PLAN.md):
+This repository now implements the `foundation` stage and the first `task/spec -> job` adapter slice from [docs/PLAN.md](docs/PLAN.md):
 
 - `_system/registry/` stores agent routing and review policy
 - `_system/templates/` stores shared task, spec, prompt and report templates
 - `projects/_template/` is the reusable project scaffold
 - `projects/demo-project/` is the first concrete workspace inside `claw`
 - `scripts/create_project.sh` creates a new project from the scaffold
+- `scripts/run_task.sh` converts a task plus referenced spec into a deterministic run directory
 - `scripts/run_demo_task.sh` keeps the original demo run flow for smoke checks
 
 ## Repository layout
@@ -49,6 +50,12 @@ Run the legacy demo flow:
 bash scripts/run_demo_task.sh specs/SPEC-TEST-001.md
 ```
 
+Create a run directory from a project task:
+
+```bash
+bash scripts/run_task.sh projects/demo-project/tasks/TASK-001.md
+```
+
 Run the shell smoke tests:
 
 ```bash
@@ -57,5 +64,5 @@ bash tests/run_all.sh
 
 ## Notes
 
-- `run_demo_task.sh` now prefers `_system/templates/report.template.md` and falls back to `templates/report.template.md`.
-- Report placeholder interpolation is still not implemented; this matches the known gap documented in [docs/PRD.md](docs/PRD.md).
+- `run_task.sh` creates `projects/<slug>/runs/YYYY-MM-DD/RUN-XXXX/` with `task.md`, `spec.md`, `prompt.txt`, `meta.json`, `job.json`, `result.json`, `report.md`, `stdout.log`, and `stderr.log`.
+- `run_demo_task.sh` remains as a legacy smoke runner and still prefers `_system/templates/report.template.md` with fallback to `templates/report.template.md`.
