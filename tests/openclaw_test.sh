@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests for claw openclaw subcommands: status, enqueue, summary, review-batch.
+# Tests for claw openclaw subcommands: status, enqueue, summary, review-batch,
+# callback, and wake.
 
 set -euo pipefail
 
@@ -55,7 +56,10 @@ cp -R "$repo_root/projects" "$workspace/projects"
 cp "$repo_root/scripts/claw.py"                  "$workspace/scripts/claw.py"
 cp "$repo_root/scripts/build_run.py"             "$workspace/scripts/build_run.py"
 cp "$repo_root/scripts/execute_job.py"           "$workspace/scripts/execute_job.py"
+cp "$repo_root/scripts/dispatch_hooks.py"        "$workspace/scripts/dispatch_hooks.py"
 cp "$repo_root/scripts/generate_review_batch.py" "$workspace/scripts/generate_review_batch.py"
+cp "$repo_root/scripts/hooklib.py"               "$workspace/scripts/hooklib.py"
+cp "$repo_root/scripts/reconcile_hooks.py"       "$workspace/scripts/reconcile_hooks.py"
 cp "$repo_root/scripts/validate_artifacts.py"    "$workspace/scripts/validate_artifacts.py"
 
 # Clean up project state so tests run on a fresh project
@@ -71,6 +75,24 @@ today="$(date +"%Y-%m-%d")"
 claw() {
   python3 "$workspace/scripts/claw.py" "$@"
 }
+
+cat > "$workspace/scripts/fake_success_agent.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat >/dev/null
+echo "OpenClaw callback summary from fake agent"
+EOF
+chmod +x "$workspace/scripts/fake_success_agent.sh"
+
+cat > "$workspace/scripts/capture_hook.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+destination="${HOOK_CAPTURE_PATH:?HOOK_CAPTURE_PATH is required}"
+cat > "$destination"
+EOF
+chmod +x "$workspace/scripts/capture_hook.sh"
 
 # ── Test 1: openclaw status ────────────────────────────────────────────────────
 
@@ -206,5 +228,60 @@ assert len(batch_files) == 0, f"dry-run should not create files, found: {batch_f
 PY
 
 echo "  ok: test4 — openclaw review-batch --dry-run returns JSON with dry_run=true, no files created"
+
+# ── Test 5: openclaw callback ────────────────────────────────────────────────
+
+CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
+  python3 "$workspace/scripts/execute_job.py" "$project_root/runs/$today/$run_id" >/dev/null
+
+hook_path="$project_root/state/hooks/pending/${today}--${run_id}.json"
+callback_out="$tmp_root/callback.json"
+cat "$hook_path" | claw openclaw callback > "$callback_out"
+
+assert_file "$callback_out"
+assert_json_field "$callback_out" "event"
+assert_json_field "$callback_out" "run_id"
+assert_json_field "$callback_out" "summary"
+assert_json_field "$callback_out" "chat_text"
+
+python3 - "$callback_out" "$run_id" <<'PY'
+import json, sys
+data = json.loads(open(sys.argv[1]).read())
+run_id = sys.argv[2]
+assert data["event"] == "run.completed", data
+assert data["run_id"] == run_id, data
+assert data["status"] == "success", data
+assert "OpenClaw callback summary" in data["summary"], data
+assert run_id in data["chat_text"], data
+PY
+
+echo "  ok: test5 — openclaw callback returns chat-friendly completion payload"
+
+# ── Test 6: openclaw wake ────────────────────────────────────────────────────
+
+wake_out="$tmp_root/wake.json"
+HOOK_CAPTURE_PATH="$tmp_root/wake-hook.json" \
+CLAW_HOOK_COMMAND="bash $workspace/scripts/capture_hook.sh" \
+  claw openclaw wake "$project_root" --mode cron > "$wake_out"
+
+assert_file "$wake_out"
+assert_file "$tmp_root/wake-hook.json"
+assert_json_field "$wake_out" "mode"
+assert_json_field "$wake_out" "schedule"
+assert_json_field "$wake_out" "dispatch"
+assert_json_field "$wake_out" "reconcile"
+
+python3 - "$wake_out" "$project_root/state/hooks/sent/${today}--${run_id}.json" <<'PY'
+import json, pathlib, sys
+data = json.loads(open(sys.argv[1]).read())
+sent_hook = pathlib.Path(sys.argv[2])
+assert data["mode"] == "cron", data
+assert data["schedule"]["interval_seconds"] == 900, data
+assert data["dispatch"]["attempted"] >= 1, data
+assert data["dispatch"]["sent"] >= 1, data
+assert sent_hook.is_file(), sent_hook
+PY
+
+echo "  ok: test6 — openclaw wake dispatches pending hooks and reports cron metadata"
 
 echo "openclaw test: ok"

@@ -5,7 +5,7 @@
 ---
 
 ## Текущая фаза
-**Этап 7 — OpenClaw integration**
+**Этап 9 — Reliability & Observability**
 
 ## Статус этапов
 
@@ -17,7 +17,7 @@
 | 4 | Hooks / callbacks | ✅ done |
 | 5 | Reviewer system | ✅ done |
 | 6 | Runtime hardening before OpenClaw | ✅ done |
-| 7 | OpenClaw integration | 🔄 in progress |
+| 7 | OpenClaw integration | ✅ done |
 
 ---
 
@@ -46,19 +46,20 @@
 - **`generate_review_batch.py`** создаёт decision stubs в `reviews/decisions/` при генерации batch
 - **`hooklib.py`** — `event_version`, `idempotency_key`, `delivery_attempts`, `max_delivery_attempts`; `reconcile_hooks.py` — dead-letter skip; `_system/contracts/hook_payload.schema.json`
 
-- **`claw openclaw status/enqueue/review-batch/summary`** — OpenClaw JSON commands для chat bridge; `openclaw_test.sh` (4/4 ✅)
+- **`claw openclaw status/enqueue/review-batch/summary/callback/wake`** — OpenClaw JSON bridge для chat callbacks и cron/event wake; `openclaw_test.sh` (6/6 ✅)
 - stdout агрегатора перехвачен в stderr внутри `cmd_openclaw_review_batch` — JSON остаётся чистым
+- **`claw openclaw callback`** читает hook payload из stdin и возвращает completion summary для чата
+- **`claw openclaw wake`** прогоняет pending hooks и retry для failed hooks, возвращая JSON-сводку для cron/event bridge
 
 ## In Progress
 
-_(7.2 + 7.3 — callback + cron/wake)_
+_(9.3 — unified `claw review-batch` CLI)_
 
 ## Next
 
-1. Callback summary обратно в чат при завершении run (7.2)
-2. Event-driven wake или cron reconcile каждые 15 мин (7.3)
-3. Добавить `claw review-batch` как unified CLI (9.3 — параллельно 7.x)
-4. Закрыть clean-worktree parity для `docs/` и template docs (9.5)
+1. Добавить `claw review-batch` как unified CLI (9.3)
+2. Закрыть clean-worktree parity для `docs/` и template docs (9.5)
+3. Добавить run/review metrics snapshot в state для status/dashboard (9.4)
 
 ---
 
@@ -124,3 +125,4 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-12 | audit последних 2 коммитов vs отчёт агента | `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `git log -2`; `git show --stat -2`; `bash tests/run_all.sh` | ✅ report gaps mapped into roadmap | planner -> runtime wiring |
 | 2026-03-13 | Epic 6 closure: 6.2+6.4 (Codex) + 6.5+6.6 (Claude) параллельно | `execute_job.py`, task files, `hooklib.py`, `reconcile_hooks.py`, `generate_review_batch.py`, `_system/contracts/` | `bash tests/run_all.sh` | ✅ all pass; `shared_project` bug caught + fixed by orchestrator | OpenClaw bridge (Этап 7) |
 | 2026-03-13 | OpenClaw 7.1: `claw openclaw status/enqueue/review-batch/summary` | `scripts/claw.py`, `tests/openclaw_test.sh`, `tests/run_all.sh` | `bash tests/run_all.sh` | ✅ 10/10; stdout→stderr fix for review-batch | 7.2 callback + 7.3 cron |
+| 2026-03-13 | OpenClaw 7.2+7.3: callback summary + wake bridge | `scripts/claw.py`, `tests/openclaw_test.sh`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/openclaw_test.sh`; `bash tests/run_all.sh` | ✅ callback JSON из hook payload и `wake` bridge для cron/event reconcile добавлены | 9.3 unified review-batch CLI |

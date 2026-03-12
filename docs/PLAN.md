@@ -236,6 +236,7 @@ claw/
 ---
 
 ## Этап 7 — OpenClaw integration
+**Статус:** ✅ завершён
 **Цель:** управлять runtime из чата после стабилизации execution layer
 
 ### Сделать
@@ -245,8 +246,8 @@ claw/
   - поставить run в queue
   - узнать status
   - сделать review batch
-- cron/reconcile каждые 15 минут или event-driven wake
-- callback summary обратно в чат
+- cron/reconcile каждые 15 минут или event-driven wake ✅
+- callback summary обратно в чат ✅
 
 ### DoD
 - задачу можно ставить из OpenClaw
@@ -273,7 +274,6 @@ claw/
 
 ## Следующие незавершённые задачи
 
-- Этап 7: OpenClaw integration (7.1 команды, 7.2 callback, 7.3 cron/wake)
 - 9.3: unified `claw review-batch` CLI (параллельно)
 - 9.5: clean-worktree parity для `docs/` и template docs
 

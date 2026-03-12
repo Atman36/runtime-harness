@@ -29,13 +29,13 @@
 
 ## Epic 7 — OpenClaw Integration
 **Приоритет:** P1
-**Статус:** 🔄 in progress
+**Статус:** ✅ done
 
 | # | Задача | Зависит от | Phase | Параллельность |
 |---|--------|------------|-------|----------------|
 | 7.1 | ✅ Реализовать команды OpenClaw: `status`, `enqueue`, `summary`, `review-batch` | Этап 6 done | 7 | done |
-| 7.2 | Callback summary обратно в чат (completion signal) | 7.1 | 7 | после 7.1 |
-| 7.3 | Event-driven wake или cron reconcile (каждые 15 мин) | 7.1 | 7 | параллельно 7.2 |
+| 7.2 | ✅ Callback summary обратно в чат (completion signal) | 7.1 | 7 | done |
+| 7.3 | ✅ Event-driven wake или cron reconcile (каждые 15 мин) | 7.1 | 7 | done |
 
 **Предлагаемые GitHub issue titles:**
 - `feat: OpenClaw commands for queue submit / status / review-batch`

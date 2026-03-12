@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from _system.engine import FileQueue, QueueEmpty, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
 from generate_review_batch import POLICY_PATH, classify_run, generate_batches, load_policy, load_run  # noqa: E402
+from hooklib import dispatch_hook_file, iter_hook_files, trim_text  # noqa: E402
 
 
 CADENCE_STATE_FILE = "review_cadence.json"
@@ -28,6 +29,23 @@ CADENCE_STATE_FILE = "review_cadence.json"
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def duration_between(started_at: str | None, finished_at: str | None) -> float | None:
+    start = parse_iso_timestamp(started_at)
+    finish = parse_iso_timestamp(finished_at)
+    if start is None or finish is None:
+        return None
+    return round((finish - start).total_seconds(), 1)
 
 
 def load_cadence_state(project_root: Path) -> dict:
@@ -76,6 +94,86 @@ def save_cadence_state(project_root: Path, state: dict) -> None:
     finally:
         if temp_path.exists():
             temp_path.unlink()
+
+
+def hook_counts(project_root: Path) -> dict[str, int]:
+    hooks_root = project_root / "state" / "hooks"
+    counts: dict[str, int] = {}
+    for status in ("pending", "sent", "failed"):
+        status_dir = hooks_root / status
+        counts[status] = len(list(status_dir.glob("*.json"))) if status_dir.is_dir() else 0
+    return counts
+
+
+def queue_counts(project_root: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    queue_root = queue_root_for_project(project_root)
+    for state in ("pending", "running", "awaiting_approval", "done", "failed"):
+        state_dir = queue_root / state
+        counts[state] = len(list(state_dir.glob("*.json"))) if state_dir.is_dir() else 0
+    return counts
+
+
+def summarize_hook_outcomes(outcomes: list[dict]) -> dict[str, int]:
+    summary = {
+        "attempted": len(outcomes),
+        "sent": 0,
+        "failed": 0,
+        "skipped": 0,
+    }
+    for outcome in outcomes:
+        label = outcome.get("outcome")
+        if label in ("sent", "failed", "skipped"):
+            summary[label] += 1
+    return summary
+
+
+def build_callback_payload(payload: dict) -> dict:
+    artifacts = payload.get("artifacts") or {}
+    timestamps = payload.get("timestamps") or {}
+    run_status = payload.get("run_status") or "unknown"
+    summary_text = trim_text(payload.get("summary", ""), 800)
+    report_path = artifacts.get("report_path", "")
+    run_id = payload.get("run_id", "")
+    task_id = payload.get("task_id", "")
+    project = payload.get("project", "")
+    agent = payload.get("preferred_agent", "")
+    task_title = payload.get("task_title", "")
+    duration_seconds = duration_between(timestamps.get("started_at"), timestamps.get("finished_at"))
+
+    segments = [
+        project or "unknown-project",
+        task_id or run_id or "unknown-run",
+        run_status,
+    ]
+    chat_text = " | ".join(segments)
+    if agent:
+        chat_text += f" | agent={agent}"
+    if task_title:
+        chat_text += f" | {task_title}"
+    if summary_text:
+        chat_text += f" | {summary_text}"
+    if report_path:
+        chat_text += f" | report={report_path}"
+
+    return {
+        "event": payload.get("event") or payload.get("event_type") or "run.completed",
+        "signal": "completion",
+        "hook_id": payload.get("hook_id", ""),
+        "idempotency_key": payload.get("idempotency_key", ""),
+        "project": project,
+        "run_id": run_id,
+        "task_id": task_id,
+        "task_title": task_title,
+        "status": run_status,
+        "agent": agent,
+        "summary": summary_text,
+        "report_path": report_path,
+        "duration_seconds": duration_seconds,
+        "created_at": payload.get("created_at"),
+        "finished_at": timestamps.get("finished_at"),
+        "chat_text": chat_text,
+    }
 
 
 def maybe_trigger_review(project_root: Path, run_dir: Path, result_status: str, policy: dict) -> list[dict]:
@@ -379,15 +477,7 @@ def cmd_openclaw_status(args: argparse.Namespace) -> int:
         _openclaw_error(str(exc), "NOT_FOUND")
         return 1
 
-    queue = FileQueue(queue_root_for_project(project_root))
-
-    queue_counts: dict[str, int] = {}
-    for state in ("pending", "running", "awaiting_approval", "done", "failed"):
-        state_dir = queue_root_for_project(project_root) / state
-        if state_dir.is_dir():
-            queue_counts[state] = len(list(state_dir.glob("*.json")))
-        else:
-            queue_counts[state] = 0
+    queue_snapshot = queue_counts(project_root)
 
     # Recent runs: collect result.json from runs/ sorted by path (RUN number)
     runs_root = project_root / "runs"
@@ -436,23 +526,15 @@ def cmd_openclaw_status(args: argparse.Namespace) -> int:
 
     # Hook counts
     hooks_root = project_root / "state" / "hooks"
-    pending_hooks = 0
-    failed_hooks = 0
-    if hooks_root.is_dir():
-        pending_dir = hooks_root / "pending"
-        failed_dir = hooks_root / "failed"
-        if pending_dir.is_dir():
-            pending_hooks = len(list(pending_dir.iterdir()))
-        if failed_dir.is_dir():
-            failed_hooks = len(list(failed_dir.iterdir()))
+    hook_snapshot = hook_counts(project_root)
 
     payload = {
         "project": project_root.name,
-        "queue": queue_counts,
+        "queue": queue_snapshot,
         "recent_runs": recent_runs,
         "pending_reviews": pending_reviews,
-        "pending_hooks": pending_hooks,
-        "failed_hooks": failed_hooks,
+        "pending_hooks": hook_snapshot["pending"],
+        "failed_hooks": hook_snapshot["failed"],
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
@@ -607,16 +689,7 @@ def cmd_openclaw_summary(args: argparse.Namespace) -> int:
     duration_seconds: float | None = None
     started_at = result.get("started_at") or meta.get("started_at")
     finished_at = result.get("finished_at") or result.get("completed_at")
-    if started_at and finished_at:
-        try:
-            from datetime import datetime as _dt
-            start = _dt.fromisoformat(started_at.replace("Z", "+00:00"))
-            end = _dt.fromisoformat(finished_at.replace("Z", "+00:00"))
-            duration_seconds = round((end - start).total_seconds(), 1)
-        except Exception:
-            pass
-
-    # Validation
+    duration_seconds = duration_between(started_at, finished_at)
     validation = result.get("validation") or {}
 
     # Hook delivery status
@@ -647,6 +720,59 @@ def cmd_openclaw_summary(args: argparse.Namespace) -> int:
         "validation": validation,
         "hook": hook_status,
         "report_path": report_path,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_callback(args: argparse.Namespace) -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        _openclaw_error(f"Invalid hook payload JSON: {exc}", "INVALID_JSON")
+        return 1
+
+    if not isinstance(payload, dict):
+        _openclaw_error("Hook payload must be a JSON object", "INVALID_PAYLOAD")
+        return 1
+
+    callback_payload = build_callback_payload(payload)
+    print(json.dumps(callback_payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_wake(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+
+    pending_hook_paths = iter_hook_files(project_root, "pending")
+    failed_hook_paths = iter_hook_files(project_root, "failed")
+    before_hooks = hook_counts(project_root)
+
+    dispatch_outcomes = [dispatch_hook_file(hook_path) for hook_path in pending_hook_paths]
+    reconcile_outcomes = []
+    for hook_path in failed_hook_paths:
+        if hook_path.exists():
+            reconcile_outcomes.append(dispatch_hook_file(hook_path))
+
+    after_hooks = hook_counts(project_root)
+    payload = {
+        "project": project_root.name,
+        "mode": args.mode,
+        "schedule": {
+            "interval_seconds": 900,
+            "kind": "cron" if args.mode == "cron" else "event",
+        },
+        "queue": queue_counts(project_root),
+        "hooks": {
+            "before": before_hooks,
+            "after": after_hooks,
+        },
+        "dispatch": summarize_hook_outcomes(dispatch_outcomes),
+        "reconcile": summarize_hook_outcomes(reconcile_outcomes),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
@@ -730,6 +856,14 @@ def build_parser() -> argparse.ArgumentParser:
     oc_summary.add_argument("project_path")
     oc_summary.add_argument("run_id_or_path")
     oc_summary.set_defaults(func=cmd_openclaw_summary)
+
+    oc_callback = openclaw_sub.add_parser("callback", help="Convert hook payload from stdin into chat callback JSON")
+    oc_callback.set_defaults(func=cmd_openclaw_callback)
+
+    oc_wake = openclaw_sub.add_parser("wake", help="Dispatch pending hooks and reconcile failed ones for chat bridge wake-ups")
+    oc_wake.add_argument("project_path")
+    oc_wake.add_argument("--mode", choices=("event", "cron"), default="event")
+    oc_wake.set_defaults(func=cmd_openclaw_wake)
 
     return parser
 
