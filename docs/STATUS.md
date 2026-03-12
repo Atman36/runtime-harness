@@ -52,18 +52,20 @@
 - **`claw openclaw wake`** прогоняет pending hooks и retry для failed hooks, возвращая JSON-сводку для cron/event bridge
 - **`.gitignore` policy для docs исправлена**: `docs/` и `projects/*/docs/` больше не теряются из clean worktree; добавлен guard test `docs_tracking_test.sh`
 - **Добавлен `state/metrics_snapshot.json`**: queue/hooks/runs/reviews summary теперь сохраняется в state и переиспользуется в `claw openclaw status`
+- **`claw.py worker` теперь продлевает lease, делает retry с exponential backoff и переводит job в `dead_letter` при исчерпании попыток**; покрыто `tests/worker_reliability_test.sh`
+- **Добавлены `docs/ARCHITECTURE.md`, `docs/CONTRACT_VERSIONING.md` и актуальный `README.md`**: архитектура, versioning/migration story и реальная модель системы теперь описаны явно
 
 ## In Progress
 
-_(9.1 — queue/job contract versioning + migration story)_
+_(9.6 — concurrency / stress / failure-injection тесты; 10.2 — parallel execution guide)_
 
 ## Next
 
-1. **9.1** — Queue/job contract versioning + migration story
-2. **9.2** — Wire retry/backoff + dead_letter + lease heartbeat в `cmd_worker` (file_queue.py APIs готовы, worker loop нет)
-3. **9.6** — Concurrency / stress / failure-injection тесты
-4. **8.2** — Richer status view: последние ошибки, approvals, pending reviews
-5. **10.1/10.2** — Architecture doc + parallel execution guide
+1. **9.6** — Concurrency / stress / failure-injection тесты
+2. **9.7** — Harden shell-command trust boundary для hooks и executor overrides
+3. **9.8** — Execution robustness fixes (`claw status`, `git_worktree`, timeout clamp)
+4. **9.9** — Cleanup latent runtime edge cases (`stdin` mode, reviewer validation, dead-letter checks)
+5. **8.2 / 10.2** — Richer status view + parallel execution guide
 
 ---
 
@@ -76,6 +78,7 @@ _(9.1 — queue/job contract versioning + migration story)_
 - OpenClaw — front door, не место хранения истины
 - runtime hardening идёт перед chat bridge, если execution contract ещё не доведён до end-to-end
 - docs/ и `projects/*/docs/` должны быть trackable; это проверяется `tests/docs_tracking_test.sh`
+- planning/docs changes из параллельных worktree нужно мерджить выборочно против live roadmap, а не слепым cherry-pick
 
 ## Assumptions in force
 
@@ -133,3 +136,5 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | 9.5 docs/template clean-worktree parity | `.gitignore`, `tests/docs_tracking_test.sh`, `projects/_template/docs/README.md`, `projects/demo-project/docs/README.md`, `docs/PRO_FRAMEWORK_ANALYSIS_PROMPT.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/docs_tracking_test.sh`; `bash tests/run_all.sh` | ✅ docs/ и project docs больше не скрываются `.gitignore`; parity проверяется тестом | 9.4 metrics snapshot |
 | 2026-03-13 | 9.4 metrics snapshot in state | `scripts/claw.py`, `tests/metrics_snapshot_test.sh`, `tests/openclaw_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/STATUS.md` | `bash tests/metrics_snapshot_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/run_all.sh` | ✅ `state/metrics_snapshot.json` сохраняет queue/hooks/runs/reviews summary; `openclaw status` переиспользует snapshot и отдаёт metrics | 9.1 contract versioning |
 | 2026-03-13 | triage внешнего code review и актуализация roadmap | `docs/PLAN.md`, `docs/STATUS.md` | `rg`; `sed`; `nl`; `bash tests/run_all.sh` | ✅ подтверждены hardening gaps по hook/override shell boundary, worktree concurrency и runtime edge cases; в план добавлены 9.7-9.9 | 9.1 contract versioning |
+| 2026-03-13 | 9.2 worker reliability maturity | `_system/engine/file_queue.py`, `_system/contracts/queue_item.schema.json`, `scripts/claw.py`, `tests/worker_reliability_test.sh`, `tests/run_all.sh` | `bash tests/worker_reliability_test.sh`; `bash tests/run_all.sh` | ✅ worker renews lease, retries with backoff, dead-letters exhausted jobs; JSON output now exposes retry/heartbeat metadata | 9.6 stress/failure injection |
+| 2026-03-13 | 9.1 + 10.1 + 10.3 docs realignment after dual-agent run | `README.md`, `docs/ARCHITECTURE.md`, `docs/CONTRACT_VERSIONING.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `git show`; selective merge from parallel worktrees; `bash tests/run_all.sh` | ✅ architecture/versioning story documented; roadmap kept in sync without losing newer 9.7-9.9 items; dual-agent merge insights captured in docs | 10.2 parallel execution guide |

@@ -63,26 +63,49 @@
 
 ## Epic 9 — Reliability & Observability
 **Приоритет:** P1
-**Статус:** 📋 backlog
+**Статус:** 📋 in progress
 
 | # | Задача | Зависит от | Phase | Параллельность |
 |---|--------|------------|-------|----------------|
-| 9.1 | Queue/job contract versioning + migration story | Этап 2 done | 9 | независимо |
-| 9.2 | Retry/backoff policy + poison-job threshold + DLQ handling + lease heartbeat в worker loop | Этап 2 done | 9 | независимо |
+| 9.1 | ✅ Queue/job contract versioning + migration story | Этап 2 done | 9 | done |
+| 9.2 | ✅ Wire retry/backoff + dead_letter + lease heartbeat в worker loop | Этап 2 done | 9 | done |
 | 9.3 | ✅ `claw review-batch` как unified CLI (не standalone только) | Этап 5 done | 9 | done |
 | 9.4 | ✅ Run/review metrics snapshot в state (для status/dashboard) | Этап 5 done | 9 | done |
 | 9.5 | ✅ Исправить `.gitignore`/индексацию для `docs/` и template docs parity | — | 9 | done |
+| 9.6 | Concurrency / stress / failure-injection тесты для queue + worker + hooks | 9.2 | 9 | после 9.2 |
+| 9.7 | Harden shell-command trust boundary для hooks и executor overrides (`CLAW_HOOK_COMMAND`, `CLAW_AGENT_COMMAND*`) | 9.2 | 9 | независимо |
+| 9.8 | Execution robustness fixes: safe JSON reads, idempotent `git_worktree`, clamp timeout override | 9.2 | 9 | независимо |
+| 9.9 | Cleanup latent runtime edge cases: `stdin` mode, reviewer registry validation, side-effect free dead-letter checks | 9.2 | 9 | независимо |
 
 **Предлагаемые GitHub issue titles:**
 - `feat: job contract versioning and schema migration`
-- `feat: queue retry, dlq, and lease heartbeat maturity`
+- `fix: wire dead_letter, retry backoff, and lease heartbeat into worker loop`
 - `feat: claw review-batch as first-class CLI command`
 - `feat: run/review metrics state snapshot`
 - `fix: docs/ and template docs are tracked in clean worktrees`
+- `test: concurrency and failure-injection tests for queue/worker/hooks`
+- `hardening: replace raw shell overrides with trusted argv contract`
+- `fix: make runtime edge cases deterministic under retries/worktrees`
 
-**Что можно параллелить:** 9.1, 9.2, 9.3, 9.4, 9.5 независимы друг от друга.
+**Что можно параллелить:** 9.6, 9.7, 9.8 и 9.9 можно вести независимо после уже закрытых 9.1/9.2.
 
-**Инсайт после параллельного запуска Codex + Claude:** 6.1 и 6.3 хорошо режутся на независимые slices при запуске в отдельных git worktree; без изоляции такой параллелизм быстро превращается в merge-шум.
+**Уточнение по 9.2:** worker теперь реально использует `renew_lease`, `retry`, `dead_letter` и backoff metadata; поведение зафиксировано в `tests/worker_reliability_test.sh`.
+
+**Инсайт после параллельного запуска Codex + Claude:** implementation slice и docs/architecture slice тоже хорошо параллелятся в отдельных worktree, но planning docs надо мерджить выборочно — blind cherry-pick легко затирает более свежий roadmap.
+
+---
+
+## Epic 10 — Docs & Architecture
+**Приоритет:** P2
+**Статус:** 📋 in progress
+
+| # | Задача | Зависит от | Phase | Параллельность |
+|---|--------|------------|-------|----------------|
+| 10.1 | ✅ Architecture doc: Run lifecycle, entity map, agent execution backends | — | 10 | done |
+| 10.2 | Parallel execution guide: git_worktree isolation, edit scope, concurrency groups | 9.2 | 10 | после 9.2 |
+| 10.3 | ✅ README realignment под актуальную архитектуру (убрать shell-first описание) | — | 10 | done |
+
+**Примечание:** `agent_exec.py`, `scripts/run_task.py` и `_system/contracts/queue_item.schema.json` реализованы в коде, но не отслеживались в backlog — считаются delivered в рамках Epic 6.
 
 ---
 

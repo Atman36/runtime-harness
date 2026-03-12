@@ -272,17 +272,37 @@ claw/
 
 **Оркестратор поймал баг:** `task_planner.py` дефолтит `workspace_mode: "shared_project"`, который executor не знал → `run_all.sh` упал на `execute_job_test` → исправлено добавлением alias `shared_project` → `project_root`.
 
+## Что сделано в текущей сессии (2026-03-13, reliability + docs)
+
+Параллельный запуск двух агентов для закрытия runtime reliability и docs layer:
+
+**Codex (9.2):**
+- `claw.py worker` теперь продлевает lease во время выполнения `execute_job.py`
+- при fail ниже `max_attempts` job получает exponential backoff и возвращается в `pending`
+- при исчерпании попыток job уходит в `dead_letter`, а worker JSON отражает `queue_state`, retry metadata и heartbeat warnings
+- добавлен `tests/worker_reliability_test.sh`
+
+**Claude (9.1 + 10.1 + 10.3):**
+- добавлены `docs/ARCHITECTURE.md` и `docs/CONTRACT_VERSIONING.md`
+- `README.md` переписан под актуальную архитектуру
+- planning docs приведены в соответствие с текущим состоянием системы
+
+**Оркестраторский вывод:** docs-ветка из параллельного worktree быстро устаревает относительно живого roadmap, поэтому merge для `PLAN/BACKLOG/STATUS` должен быть selective, а не blind cherry-pick.
+
 ## Следующие незавершённые задачи
 
-- **9.1:** queue/job contract versioning + migration story
-- **9.2:** wire retry/backoff + dead_letter + lease heartbeat в `cmd_worker` (`file_queue.py` APIs готовы: attempt_count, max_attempts, dead_letter, renew_lease, retry, transitions — worker loop их не вызывает)
 - **9.6:** concurrency / stress / failure-injection тесты (queue + worker + hooks)
 - **9.7:** harden shell-command trust boundary для hooks и executor overrides (`CLAW_HOOK_COMMAND`, `CLAW_AGENT_COMMAND*`): уйти от raw `bash -lc` где возможно, валидировать формат команды, явно задокументировать trusted-only env overrides
 - **9.8:** execution robustness fixes: safe JSON reads в `claw status`, idempotent/concurrency-safe `git_worktree` materialization, валидация `CLAW_AGENT_TIMEOUT_SECONDS` через `max(1, ...)`
 - **9.9:** cleanup latent runtime edge cases: починить `stdin` mode в `_system/engine/agent_exec.py`, валидировать reviewer против agents registry, сделать `is_dead_letter()` side-effect free
-- **10.1:** architecture doc (Run lifecycle, entity map, agent execution backends)
 - **10.2:** parallel execution guide (git_worktree isolation, edit scope, concurrency groups)
-- **10.3:** README realignment
+- **8.2:** richer cross-project status view (ошибки, approvals, pending reviews)
+
+**Закрыто в текущей сессии:**
+- **9.1:** queue/job contract versioning + migration story → `docs/CONTRACT_VERSIONING.md`
+- **9.2:** worker reliability maturity → retry/backoff + lease heartbeat + `dead_letter` wired into `cmd_worker`
+- **10.1:** architecture doc → `docs/ARCHITECTURE.md`
+- **10.3:** README realignment → `README.md`
 
 **Реализовано, но не отслеживалось в плане:**
 - `_system/engine/agent_exec.py` — agent execution abstraction (registry parse, cwd policy, workspace root, command rendering)
@@ -386,6 +406,12 @@ claw/
 - **`run_all.sh` — обязательный финальный шаг оркестратора.** Первый запуск поймал regression раньше, чем мёрж или ревью. Без автотестов баг ушёл бы в main branch незаметно.
 - **Оркестратор должен исправлять баги самостоятельно до передачи результата.** Агент закончил, тест упал, оркестратор нашёл причину и починил — это нормальный цикл, не требующий участия пользователя.
 
+### Инсайты после параллельного запуска Codex + Claude (сессия 2026-03-13, reliability + docs)
+- **Разделение `implementation/runtime` и `docs/architecture` хорошо параллелится**, если агентам дать непересекающиеся зоны ответственности и отдельные worktree.
+- **Planning docs — merge-sensitive слой.** `PLAN/BACKLOG/STATUS` живут быстрее, чем feature-ветка агента, поэтому их нельзя мёржить blind cherry-pick без сверки с live roadmap.
+- **Completion summary агента — это не merge criterion.** Перед интеграцией оркестратор должен смотреть реальный `git show`/diff, иначе легко принять устаревшую или слишком широкую документационную правку.
+- **Тесты + selective merge — лучшая связка для двухагентного режима.** Codex может закрывать runtime slice, Claude — narrative/docs slice, а оркестратор сводит их только после `run_all.sh` и ручной проверки конфликтных документов.
+
 ---
 
 ## Что улучшить в проекте
@@ -401,14 +427,13 @@ claw/
 
 ### Средний приоритет
 - ~~Ввести formal review decision artifacts: `review_decision.json`, `findings.json`, approvals, waivers, follow-up queue.~~ — **✅ сделано** (2026-03-13)
-- Довести queue maturity: retry/backoff policy, poison-job threshold, DLQ handling, lease renewal heartbeat в worker loop.
+- ~~Довести queue maturity: retry/backoff policy, poison-job threshold, DLQ handling, lease renewal heartbeat в worker loop.~~ — **✅ частично закрыто** (2026-03-13: retry/backoff + `dead_letter` + heartbeat в worker; дальше нужен stress/failure-injection слой)
 - Harden shell-command trust boundary для hooks и executor overrides (`CLAW_HOOK_COMMAND`, `CLAW_AGENT_COMMAND*`): argv/registry contract вместо raw shell где возможно, trusted-only env override policy.
 - Исправить execution robustness gaps: safe JSON reads в `claw status`, concurrency-safe/idempotent `git_worktree` creation, clamp timeout override `CLAW_AGENT_TIMEOUT_SECONDS >= 1`.
 - ~~Формализовать hook delivery contract: idempotency, event versioning, retry semantics.~~ — **✅ сделано** (2026-03-13)
-- Добавить явный queue/job contract versioning и migration story для будущих изменений схем.
+- ~~Добавить явный queue/job contract versioning и migration story для будущих изменений схем.~~ — **✅ сделано** (`docs/CONTRACT_VERSIONING.md`, 2026-03-13)
 - ~~Сделать `claw review-batch` как часть unified CLI вместо standalone entrypoint-only usage.~~ — **✅ сделано** (2026-03-13)
 - Добавить multi-project worker/reconciler loop с безопасным fair scheduling.
-- Обновить template/demo artifacts под `preferred_agent: auto`, execution defaults и routing coverage tests.
 - Убрать latent runtime inconsistencies: сломанный `stdin` mode в `_system/engine/agent_exec.py`, side-effect predicate в `reconcile_hooks.py`, отсутствие reviewer registry validation в `generate_review_batch.py`.
 - ~~Исправить `.gitignore` политику для `docs/`, чтобы проектная документация не терялась из индекса по умолчанию.~~ — **✅ сделано** (2026-03-13)
 
@@ -420,14 +445,12 @@ claw/
 ---
 
 ## Ближайшие шаги
-1. ~~Убрать race в нумерации `RUN-XXXX`~~ — **✅ сделано**
-2. ~~Встроить `task_planner.py` в `scripts/build_run.py` и расширить `job.schema.json` / `meta.schema.json` под `routing` + `execution`~~ — **✅ сделано**
-3. ~~Добавить `claw launch-plan`~~ — **✅ сделано**
-4. Переключить `scripts/execute_job.py` на `job.execution.workspace_mode` и материализацию workspace backend'ов
-5. Обновить demo/template project так, чтобы routing проверялся через `preferred_agent: auto`
-6. ~~Добавить unified `claw review-batch`~~ — **✅ сделано**
-7. ~~Закрыть clean-worktree parity для `docs/` и template docs artifacts~~ — **✅ сделано**
-8. После стабилизации runtime вернуться к OpenClaw bridge
+1. **9.6** — добавить concurrency / stress / failure-injection тесты для queue + worker + hooks
+2. **9.7** — ужесточить trust boundary для `CLAW_HOOK_COMMAND` и `CLAW_AGENT_COMMAND*`
+3. **9.8** — закрыть execution robustness gaps (`claw status`, `git_worktree`, timeout clamp)
+4. **9.9** — убрать latent runtime edge cases (`stdin` mode, reviewer validation, dead-letter predicate)
+5. **10.2** — оформить отдельный parallel execution guide по worktree isolation и merge discipline
+6. **8.2** — собрать richer status view по ошибкам, approvals, hooks и pending reviews
 
 ---
 

@@ -14,6 +14,7 @@ TASKS.md
 SESSION*.md
 
 # Project docs are source artifacts and must remain trackable.
+!README.md
 !docs/
 !docs/**
 !projects/*/docs/
