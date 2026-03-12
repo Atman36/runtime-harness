@@ -19,7 +19,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileQueue, QueueEmpty, enqueue_run, execute_run_task, find_run_dir, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
+from _system.engine import FileQueue, QueueEmpty, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
 from generate_review_batch import POLICY_PATH, classify_run, generate_batches, load_policy, load_run  # noqa: E402
 
 
@@ -266,6 +266,103 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _preview_agent_command(repo_root: Path, agent: str, project_root: Path, workspace_mode: str) -> dict:
+    """Build a representative command preview without actually running anything."""
+    import shlex as _shlex
+
+    import yaml as _yaml
+
+    _AGENT_DEFAULTS: dict[str, dict] = {
+        "codex": {
+            "command": "codex",
+            "args": "exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -C {project_root}",
+            "prompt_mode": "arg",
+            "cwd": "project_root",
+            "default_timeout_seconds": 3600,
+        },
+        "claude": {
+            "command": "claude",
+            "args": "-p --permission-mode bypassPermissions --output-format text",
+            "prompt_mode": "arg",
+            "cwd": "project_root",
+            "default_timeout_seconds": 3600,
+        },
+    }
+
+    registry: dict = {}
+    agents_registry_path = repo_root / "_system" / "registry" / "agents.yaml"
+    if agents_registry_path.is_file():
+        try:
+            loaded = _yaml.safe_load(agents_registry_path.read_text(encoding="utf-8")) or {}
+            agents_raw = loaded.get("agents", {}) if isinstance(loaded, dict) else {}
+            registry = {str(k): v for k, v in agents_raw.items() if isinstance(v, dict)}
+        except Exception:
+            pass
+
+    agent_config = dict(_AGENT_DEFAULTS.get(agent, {"command": agent, "args": "", "prompt_mode": "arg", "cwd": "project_root", "default_timeout_seconds": 3600}))
+    agent_config.update(registry.get(agent, {}))
+
+    executable = str(agent_config.get("command") or agent).strip() or agent
+    args_template = str(agent_config.get("args") or "").strip()
+    prompt_mode = str(agent_config.get("prompt_mode") or "arg").strip().lower() or "arg"
+    cwd_mode = str(agent_config.get("cwd") or "project_root").strip().lower() or "project_root"
+    timeout_seconds = int(agent_config.get("default_timeout_seconds") or 3600)
+
+    workspace_root_preview = "<worktree_root>" if workspace_mode in {"git_worktree", "isolated_checkout"} else str(project_root)
+
+    args_list: list[str] = []
+    if args_template:
+        try:
+            rendered = args_template.format(
+                project_root=project_root,
+                source_project_root=project_root,
+                run_dir="<run_dir>",
+                workspace_root=workspace_root_preview,
+            )
+            args_list = _shlex.split(rendered)
+        except (KeyError, ValueError):
+            args_list = _shlex.split(args_template)
+
+    if cwd_mode == "workspace_root":
+        cwd_preview = workspace_root_preview
+    elif cwd_mode == "run_dir":
+        cwd_preview = "<run_dir>"
+    else:
+        cwd_preview = str(project_root)
+
+    parts = [executable, *args_list]
+    if prompt_mode == "arg":
+        parts.append("<prompt>")
+        command_str = " ".join(parts)
+    else:
+        command_str = " ".join(parts) + " <<< <prompt_file>"
+
+    return {
+        "command": command_str,
+        "cwd": cwd_preview,
+        "prompt_mode": prompt_mode,
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def cmd_launch_plan(args: argparse.Namespace) -> int:
+    try:
+        plan = plan_task_run(REPO_ROOT, args.task_path)
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    plan_dict = plan_to_dict(plan)
+    plan_dict["command_preview"] = _preview_agent_command(
+        REPO_ROOT,
+        agent=plan.routing.selected_agent,
+        project_root=plan.project_root,
+        workspace_mode=plan.execution.workspace_mode,
+    )
+    print(json.dumps(plan_dict, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="claw")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -316,6 +413,10 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("project_root")
     status.add_argument("run_id")
     status.set_defaults(func=cmd_status)
+
+    launch_plan = subcommands.add_parser("launch-plan", help="Preview execution plan for a task without running it")
+    launch_plan.add_argument("task_path")
+    launch_plan.set_defaults(func=cmd_launch_plan)
 
     return parser
 
