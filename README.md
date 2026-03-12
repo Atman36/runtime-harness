@@ -13,6 +13,9 @@ Every task run produces immutable artifacts on disk. There is no daemon, no data
 - **Worker loop** — lease heartbeat, exponential backoff, retry exhaustion → `dead_letter`
 - **Fair scheduler** — `claw scheduler` rotates across projects instead of draining one queue forever
 - **Agent routing** — rules-based dispatch to Codex or Claude; `launch-plan` for dry-run preview
+- **Workflow contract** — optional `docs/WORKFLOW.md` defines approval gates, retry budget, timeouts, and allowed edit scope
+- **Task graph snapshot** — `state/tasks_snapshot.json` captures task structure with checksum; `task-lint` checks invalid dependencies and cycles
+- **Structured diagnostics** — JSON-facing commands return stable `reason_code` values plus `likely_cause` / `next_action`
 - **Richer status** — `claw dashboard` / `openclaw status` expose approvals, pending reviews, retry backlog, ready tasks, recent failures
 - **Approval UX** — filesystem-backed `ask-human` requests with explicit resolve step
 - **Continuous loop** — `claw orchestrate` can pick the next ready task, execute it, apply review/approval gates, then continue
@@ -100,6 +103,27 @@ awaiting_approval → (approve) → pending
 
 Queue items live in `projects/<slug>/state/queue/<state>/`.
 
+## Project control surface
+
+Project-level execution policy lives in `projects/<slug>/docs/WORKFLOW.md`.
+It is human-readable, schema-checked, and loaded by the orchestrator as an
+overlay on top of registry defaults.
+
+```bash
+# Validate the project workflow contract
+python3 scripts/validate_artifacts.py --workflow projects/my-project
+
+# Refresh the structural task graph snapshot
+python3 scripts/claw.py task-snapshot projects/my-project
+
+# Lint task dependencies and detect cycles
+python3 scripts/claw.py task-lint projects/my-project
+```
+
+The task snapshot is written to `projects/<slug>/state/tasks_snapshot.json`
+with a stable checksum so status, selection, and diagnostics can rely on a
+cheap derived artifact instead of reparsing every task ad hoc.
+
 ## Agent routing
 
 | Use Claude when | Use Codex when |
@@ -150,8 +174,9 @@ runtime-harness/
 ├── projects/
 │   ├── _template/         # canonical project scaffold
 │   └── <slug>/
-│       ├── docs/ specs/ tasks/ runs/ reviews/
-│       └── state/         # queue/, hooks/, approvals/, review_cadence.json, metrics_snapshot.json
+│       ├── docs/          # includes WORKFLOW.md project policy surface
+│       ├── specs/ tasks/ runs/ reviews/
+│       └── state/         # queue/, hooks/, approvals/, review_cadence.json, metrics_snapshot.json, tasks_snapshot.json
 ├── scripts/               # claw.py, build_run.py, execute_job.py, validate_artifacts.py
 └── tests/                 # run_all.sh + per-feature test scripts
 ```

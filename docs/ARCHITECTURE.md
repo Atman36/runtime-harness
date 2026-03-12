@@ -1,7 +1,7 @@
 # Architecture — claw
 
 Date: 2026-03-13
-Status: authoritative / reflects code as of Epic 7 + 9.1–9.5 completion
+Status: authoritative / reflects code as of Epic 7 + 9.x hardening and project control surface completion
 
 ---
 
@@ -73,6 +73,8 @@ OpenClaw commands expose a **clean JSON API** over the engine, designed to be ca
 | `openclaw wake` | Reconcile pending/failed hooks; run retry cycle |
 
 All `openclaw_*` commands write diagnostic output to **stderr** and return clean JSON on **stdout**. This is enforced because `callback` and `wake` outputs are consumed programmatically.
+Structured failures use a stable error envelope from `_system/engine/error_codes.py`:
+`code`, `likely_cause`, and `next_action` are emitted alongside the error message so chat and cron callers do not need to parse free-form stderr.
 
 ---
 
@@ -97,6 +99,21 @@ Required front-matter fields:
 ### Spec (`specs/SPEC-NNN.md`)
 
 Acceptance criteria for a task. Required sections: `goal`, `scope`, `constraints`, `acceptance criteria`, `notes`.
+
+### Workflow Contract (`docs/WORKFLOW.md`)
+
+A project-local control surface stored as Markdown with YAML front matter.
+It is optional but, when present, it is loaded by the orchestrator before task selection.
+
+Current contract surface includes:
+- `contract_version`
+- `approval_gates`
+- `retry_policy`
+- `timeout_policy`
+- `scope`
+
+The contract remains human-editable while still being validated by
+`scripts/validate_artifacts.py --workflow <project>`.
 
 ### Run directory (`runs/YYYY-MM-DD/RUN-XXXX/`)
 
@@ -146,6 +163,17 @@ projects/<slug>/state/queue/
 ```
 
 All state transitions are atomic via `os.replace`.
+
+### Task Graph Snapshot (`state/tasks_snapshot.json`)
+
+`snapshot_version: 1`. A derived artifact written by `claw task-snapshot` and refreshed by `claw orchestrate` before entering its main loop.
+
+Fields:
+- `project`, `updated_at`, `task_count`
+- `tasks[]` with `task_id`, `status`, `priority`, `dependencies`, `preferred_agent`, `ready`, `active`, `task_path`
+- `checksum` over canonical JSON
+
+Its purpose is structural, not operational: it captures task graph shape for linting, status, and selection diagnostics. Runtime counters still live in `metrics_snapshot.json`.
 
 ### Hook Payload (`state/hooks/<state>/<hook_id>.json`)
 
@@ -212,6 +240,13 @@ scripts/build_run.py
           • on exhausted attempts → state/queue/dead_letter/
           • updates state/review_cadence.json
           • triggers review batch generation if threshold met
+
+### Orchestrate preflight
+
+Before `cmd_orchestrate()` starts its accept/review/approval loop, it performs two control-surface checks:
+
+1. Loads `docs/WORKFLOW.md` if present and embeds a compact contract summary into the JSON result.
+2. Refreshes `state/tasks_snapshot.json` and lints the dependency graph. A cycle aborts orchestration immediately with `reason_code: "task_graph_cycle"`.
 ```
 
 ### Queue State Machine

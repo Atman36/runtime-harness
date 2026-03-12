@@ -10,12 +10,16 @@
 - показывать dry-run execution decision через `claw launch-plan`
 - запускать агента напрямую
 - ставить run в filesystem queue
+- строить `state/tasks_snapshot.json` как derived artifact task graph
+- проверять `depends_on` на битые ссылки и циклы через `claw task-lint`
+- читать project workflow contract из `docs/WORKFLOW.md`
 - забирать queued job worker'ом
 - сохранять `result/report/logs`
 - валидировать `job/result/meta` после записи артефактов
 - создавать completion hook на диске
 - доставлять hook сразу или повторять через reconcile
 - автоматически запускать review batch generation по cadence и immediate triggers
+- возвращать structured diagnostics для JSON-facing команд через `reason_code`, `likely_cause`, `next_action`
 
 Этот файл фиксирует текущий контракт, чтобы последующие изменения не возвращали систему в ad-hoc shell.
 
@@ -166,6 +170,19 @@ python3 scripts/claw.py resolve-approval projects/demo-project APPROVAL-12345678
 python3 scripts/claw.py orchestrate projects/demo-project --max-steps 2
 ```
 
+Построить structural task snapshot и проверить dependency graph:
+
+```bash
+python3 scripts/claw.py task-snapshot projects/demo-project
+python3 scripts/claw.py task-lint projects/demo-project
+```
+
+Проверить project workflow contract:
+
+```bash
+python3 scripts/validate_artifacts.py --workflow projects/demo-project
+```
+
 Доставить pending hooks:
 
 ```bash
@@ -255,6 +272,28 @@ Worker после завершения run:
 - обновляет cadence counter
 - вызывает review batch generation при `failed`, `needs_review`, `risky_area`, `uncertainty`, `large_diff`
 - вызывает cadence batch после каждых 5 успешных run
+
+### Orchestrate preflight
+
+Перед основным loop `claw orchestrate`:
+- загружает `docs/WORKFLOW.md`, если файл существует
+- обновляет `state/tasks_snapshot.json`
+- прогоняет lint dependency graph
+- останавливается до запуска worker, если найден цикл задач
+
+Это важно, потому что selector и orchestration loop получают deterministic
+task-graph snapshot, а policy слой проекта перестаёт быть неявным.
+
+### Structured diagnostics
+
+JSON-facing команды (`orchestrate`, `openclaw wake`, stderr error envelope)
+используют стабильные reason codes. Типовые коды:
+- `queue_empty`
+- `approval_pending`
+- `review_pending`
+- `failure_budget_exhausted`
+- `task_graph_cycle`
+- `hook_dispatch_failed`
 
 ---
 

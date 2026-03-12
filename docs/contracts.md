@@ -12,6 +12,7 @@ Located in `_system/contracts/`:
 | `job.schema.json` | `runs/**/job.json` | `job_version`, `run_id`, `run_path`, `created_at`, `project`, `preferred_agent`, `routing`, `execution`, `task`, `spec`, `artifacts` |
 | `result.schema.json` | `runs/**/result.json` | `run_id`, `status` |
 | `meta.schema.json` | `runs/**/meta.json` | `run_id`, `status`, `project`, `routing`, `execution` |
+| `workflow.schema.json` | `projects/<slug>/docs/WORKFLOW.md` front matter | `contract_version`, `project`, `approval_gates`, `retry_policy` |
 
 Schemas follow [JSON Schema draft 2020-12](https://json-schema.org/draft/2020-12/schema).
 `jsonschema` (PyPI) is used when available; a built-in fallback covers the
@@ -47,11 +48,68 @@ python3 scripts/validate_artifacts.py --project projects/my-project
 # All projects in the repo
 python3 scripts/validate_artifacts.py --all
 
+# Project workflow contract
+python3 scripts/validate_artifacts.py --workflow projects/my-project
+
 # Suppress passing lines (only show errors)
 python3 scripts/validate_artifacts.py --quiet --project projects/my-project
 ```
 
 Exit codes: `0` = all valid, `1` = validation errors, `2` = usage/missing files.
+
+## Workflow Contract
+
+`projects/<slug>/docs/WORKFLOW.md` is the project-level policy surface.
+It is intentionally human-readable Markdown with YAML front matter rather than
+a pure JSON artifact, but the front matter is still validated against
+`_system/contracts/workflow.schema.json`.
+
+Current control fields include:
+- approval gates
+- retry budget
+- timeout defaults
+- edit scope / allowed agents
+
+The validator treats a missing workflow contract as optional. If the file
+exists, it must satisfy the schema and field-level validation performed by
+`_system/engine/workflow_contract.py`.
+
+## Task Graph Snapshot
+
+`projects/<slug>/state/tasks_snapshot.json` is a derived structural artifact,
+not a hand-edited contract.
+
+It is produced by:
+
+```bash
+python3 scripts/claw.py task-snapshot projects/my-project
+```
+
+Shape:
+
+```json
+{
+  "snapshot_version": 1,
+  "project": "my-project",
+  "updated_at": "2026-03-13T12:00:00Z",
+  "task_count": 3,
+  "tasks": [],
+  "checksum": "..."
+}
+```
+
+The checksum is computed from canonical JSON for the task list. This allows
+cheap drift detection and gives the orchestrator a stable structural view of
+`depends_on` relationships.
+
+Linting is exposed separately:
+
+```bash
+python3 scripts/claw.py task-lint projects/my-project
+```
+
+`task-lint` reports unknown dependencies and cycles; `claw orchestrate`
+refreshes the snapshot and aborts immediately if a cycle is detected.
 
 ## Runtime Validation Integration
 
