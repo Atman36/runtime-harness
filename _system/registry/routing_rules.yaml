@@ -1,0 +1,23 @@
+routing_rules:
+  - name: codex-clear-implementation
+    preferred_agent: codex
+    when:
+      any_tags:
+        - implementation
+        - tests
+        - fixes
+        - shell
+      spec_clarity: clear
+  - name: claude-ambiguous-design
+    preferred_agent: claude
+    when:
+      any_tags:
+        - design
+        - ux
+        - architecture
+        - research
+      ambiguity: high
+  - name: default-codex
+    preferred_agent: codex
+    when:
+      fallback: true

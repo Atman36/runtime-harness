@@ -1,0 +1,19 @@
+agents:
+  codex:
+    label: Codex
+    roles:
+      - implementation
+      - tests
+      - fixes
+      - shell_glue
+    command: codex
+    default_timeout_seconds: 3600
+  claude:
+    label: Claude
+    roles:
+      - design
+      - ux
+      - architecture
+      - research
+    command: claude
+    default_timeout_seconds: 3600

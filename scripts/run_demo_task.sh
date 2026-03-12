@@ -17,7 +17,11 @@ fi
 run_id="$(date +"%Y%m%d-%H%M%S")"
 created_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 run_dir=".demo-runs/$run_id"
-template_path="templates/report.template.md"
+template_path="_system/templates/report.template.md"
+
+if [ ! -f "$template_path" ]; then
+  template_path="templates/report.template.md"
+fi
 
 mkdir -p "$run_dir"
 cp "$spec_path" "$run_dir/spec.md"

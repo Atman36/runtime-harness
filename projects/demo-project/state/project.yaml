@@ -1,0 +1,5 @@
+slug: demo-project
+status: active
+created_from_template: true
+default_task_template: ../../../_system/templates/task.template.md
+default_spec_template: ../../../_system/templates/spec.template.md

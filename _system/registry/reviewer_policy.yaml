@@ -1,0 +1,12 @@
+reviewer_policy:
+  cadence:
+    successful_runs_batch: 5
+  immediate_triggers:
+    - failed
+    - needs_review
+    - risky_area
+    - uncertainty
+    - large_diff
+  default_mapping:
+    codex: claude
+    claude: codex
