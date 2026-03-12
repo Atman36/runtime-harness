@@ -53,11 +53,13 @@
 | 8.1 | Multi-project worker loop с fair scheduling | Этап 7 done | 8 | — |
 | 8.2 | Cross-project status view (ошибки, approvals, pending reviews) | 8.1 | 8 | после 8.1 |
 | 8.3 | Approval UX: `ask_human` как реальный сценарий (не только queue state) | 8.1 | 8 | параллельно 8.2 |
+| 8.4 | Continuous orchestration loop: task selector → implement → validate → review → decide → enqueue next task | 8.1, 8.2, 8.3, 9.6-9.9 | 8 | после стабилизации scheduler/runtime |
 
 **Предлагаемые GitHub issue titles:**
 - `feat: multi-project worker loop with fair scheduling`
 - `feat: richer status view across projects`
 - `feat: approval UX for ask_human flow`
+- `feat: autonomous run-review-next-task orchestration loop`
 
 ---
 

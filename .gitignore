@@ -1,24 +1,44 @@
+# ── Runtime artifacts ────────────────────────────────────────────────────────
 .demo-runs/
-projects/*/runs/*
+runs/
+projects/*/runs/
 projects/*/state/queue/*/*.json
 projects/*/state/hooks/*/*.json
 projects/*/state/review_cadence.json
+projects/*/state/metrics_snapshot.json
+
+# ── Python ───────────────────────────────────────────────────────────────────
 **/__pycache__/
-README.md
-README-*.md
-*_REPORT.md
+*.pyc
+*.pyo
+
+# ── Session / personal workspace files ──────────────────────────────────────
 AGENTS.md
 CLAUDE.md
 CONTINUITY.md
 TASKS.md
 SESSION*.md
+README-*.md
+*_REPORT.md
 
-# Project docs are source artifacts and must remain trackable.
-!README.md
+# ── Personal dev scripts ─────────────────────────────────────────────────────
+_system/scripts/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+
+# ── Project docs are source artifacts — must remain trackable ────────────────
+# (negation rules must come last; more specific exclusions follow below)
 !docs/
 !docs/**
 !projects/*/docs/
 !projects/*/docs/**
 
-.DS_Store
-**/.DS_Store
+# ── Internal docs excluded from public repo (override the !docs/** above) ───
+docs/PRD.md
+docs/PRO_FRAMEWORK_ANALYSIS_PROMPT.md
+
+# ── macOS metadata inside tracked doc dirs (re-exclude after !docs/**) ──────
+docs/.DS_Store
+projects/**/docs/.DS_Store

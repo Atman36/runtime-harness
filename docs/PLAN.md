@@ -15,8 +15,7 @@
 - **Engine**: queue, worker loop, result/report contracts, hooks, retry/reconcile, approvals
 - **OpenClaw**: chat entrypoint, wake events, cron/reconcile, orchestration UX
 
-Основной донор engine:
-- `/Users/Apple/Developer/multi-agent-cli-orchestrator`
+Engine архитектура вдохновлена паттернами filesystem-first queue и formal artifact contracts.
 
 ---
 
@@ -110,9 +109,7 @@ claw/
 
 ---
 
-## Что берём из донора
-Источник:
-- `/Users/Apple/Developer/multi-agent-cli-orchestrator`
+## Что берём из engine-паттернов
 
 ### Копировать / адаптировать
 - `fsqueue/` идеи и атомарные переходы состояний
@@ -400,7 +397,7 @@ claw/
 - Этот баг не виден при code review — проявляется только при запуске теста с реальными данными. `run_all.sh` поймал его за секунды.
 
 ### Инсайты после параллельного запуска Codex + Claude (сессия 2026-03-13)
-- **`isolation=worktree` не изолирует агентов, если промпт содержит абсолютный путь к main repo.** Агенты писали напрямую в `/Users/Apple/progect/claw` несмотря на sandbox. Чтобы получить реальную изоляцию — передавать агенту путь к worktree, а не к main directory.
+- **`isolation=worktree` не изолирует агентов, если промпт содержит абсолютный путь к main repo.** Чтобы получить реальную изоляцию — передавать агенту путь к worktree, а не к main directory.
 - **Строгое файловое разделение заменяет изоляцию worktree** при условии, что файлы не пересекаются: два агента параллельно писали в один каталог без конфликтов, потому что каждый трогал свой набор файлов.
 - **Плановый дефолт и runtime дефолт должны быть синхронизированы.** `task_planner.py` дефолтит `shared_project`, но `execute_job.py` его не знал → баг. Всякий раз, когда planner добавляет новое значение в enum — executor должен его обрабатывать. Это нужно проверять в `execute_job_test.sh`.
 - **`run_all.sh` — обязательный финальный шаг оркестратора.** Первый запуск поймал regression раньше, чем мёрж или ревью. Без автотестов баг ушёл бы в main branch незаметно.
