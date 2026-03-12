@@ -52,6 +52,7 @@ run_one="$run_day_root/RUN-0001"
 run_two="$run_day_root/RUN-0002"
 invalid_boolean_task="$workspace/projects/demo-project/tasks/TASK-INVALID-BOOLEAN.md"
 invalid_risk_flags_task="$workspace/projects/demo-project/tasks/TASK-INVALID-RISK.md"
+invalid_project_slug_workspace="$tmp_root/invalid-project-slug"
 
 bash "$workspace/scripts/run_task.sh" "$task_path"
 bash "$workspace/scripts/run_task.sh" "$task_path"
@@ -80,6 +81,7 @@ assert_contains "$run_one/meta.json" "\"status\": \"created\""
 assert_contains "$run_one/meta.json" "\"preferred_agent\": \"codex\""
 
 assert_contains "$run_one/job.json" "\"run_id\": \"RUN-0001\""
+assert_contains "$run_one/job.json" "\"run_path\": \"runs/$today/RUN-0001\""
 assert_contains "$run_one/job.json" "\"project\": \"demo-project\""
 assert_contains "$run_one/job.json" "\"task\": {"
 assert_contains "$run_one/job.json" "\"spec\": {"
@@ -126,5 +128,30 @@ if bash "$workspace/scripts/run_task.sh" "$invalid_risk_flags_task" >"$workspace
 fi
 
 assert_contains "$workspace/invalid-risk.err" "Task front matter risk_flags must be a JSON array"
+
+mkdir -p "$invalid_project_slug_workspace"
+cp -R "$repo_root/_system" "$invalid_project_slug_workspace/_system"
+cp -R "$repo_root/projects" "$invalid_project_slug_workspace/projects"
+mkdir -p "$invalid_project_slug_workspace/scripts"
+cp "$repo_root/scripts/run_task.sh" "$invalid_project_slug_workspace/scripts/run_task.sh"
+
+python3 - "$invalid_project_slug_workspace/projects/demo-project/state/project.yaml" <<'EOF'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("slug: demo-project", "slug: wrong-slug", 1)
+path.write_text(text, encoding="utf-8")
+EOF
+
+if bash "$invalid_project_slug_workspace/scripts/run_task.sh" \
+  "$invalid_project_slug_workspace/projects/demo-project/tasks/TASK-001.md" \
+  >"$invalid_project_slug_workspace/invalid-project.out" 2>"$invalid_project_slug_workspace/invalid-project.err"; then
+  echo "Expected run_task.sh to reject mismatched project slug" >&2
+  exit 1
+fi
+
+assert_contains "$invalid_project_slug_workspace/invalid-project.err" "Project slug 'wrong-slug' in state/project.yaml does not match directory 'demo-project'"
 
 echo "task to job test: ok"

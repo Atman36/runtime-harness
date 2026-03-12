@@ -27,6 +27,7 @@ task_path="$(cd "$(dirname "$task_input")" && pwd)/$(basename "$task_input")"
 task_dir="$(dirname "$task_path")"
 project_root="$(cd "$task_dir/.." && pwd)"
 project_slug="$(basename "$project_root")"
+project_state_path="$project_root/state/project.yaml"
 
 prompt_template="$repo_root/_system/templates/prompt.template.md"
 report_template="$repo_root/_system/templates/report.template.md"
@@ -63,6 +64,13 @@ read_front_matter_value() {
       exit
     }
   ' "$file_path" | sed 's/^"//; s/"$//'
+}
+
+read_project_state_value() {
+  local file_path="$1"
+  local key="$2"
+
+  awk -F': ' -v search_key="$key" '$1 == search_key { print substr($0, index($0, ":") + 2); exit }' "$file_path"
 }
 
 resolve_path() {
@@ -169,6 +177,23 @@ if [ -n "$project_from_task" ] && [ "$project_from_task" != "$project_slug" ]; t
   exit 1
 fi
 
+if [ ! -f "$project_state_path" ]; then
+  echo "Project state file not found: $project_state_path" >&2
+  exit 1
+fi
+
+project_slug_from_state="$(read_project_state_value "$project_state_path" "slug")"
+
+if [ -z "$project_slug_from_state" ]; then
+  echo "Project state file must include slug: $project_state_path" >&2
+  exit 1
+fi
+
+if [ "$project_slug_from_state" != "$project_slug" ]; then
+  echo "Project slug '$project_slug_from_state' in state/project.yaml does not match directory '$project_slug'" >&2
+  exit 1
+fi
+
 spec_path="$(resolve_path "$task_dir" "$spec_reference")"
 
 if [ ! -f "$spec_path" ]; then
@@ -231,6 +256,7 @@ cat > "$run_dir/job.json" <<EOF
 {
   "job_version": 1,
   "run_id": "$(json_escape "$run_id")",
+  "run_path": "runs/$(json_escape "$run_date")/$(json_escape "$run_id")",
   "created_at": "$(json_escape "$created_at")",
   "project": "$(json_escape "$project_slug")",
   "preferred_agent": "$(json_escape "$preferred_agent")",

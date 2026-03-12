@@ -1,3 +1,13 @@
 .demo-runs/
 projects/*/runs/*
 .DS_Store
+docs/
+**/docs/
+README.md
+README-*.md
+*_REPORT.md
+AGENTS.md
+CLAUDE.md
+CONTINUITY.md
+TASKS.md
+SESSION*.md
