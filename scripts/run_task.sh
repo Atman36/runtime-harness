@@ -2,8 +2,15 @@
 
 set -euo pipefail
 
+execute_after_create=0
+
+if [ "$#" -ge 1 ] && [ "$1" = "--execute" ]; then
+  execute_after_create=1
+  shift
+fi
+
 if [ "$#" -ne 1 ]; then
-  echo "Usage: bash scripts/run_task.sh <task-path>" >&2
+  echo "Usage: bash scripts/run_task.sh [--execute] <task-path>" >&2
   exit 1
 fi
 
@@ -222,3 +229,7 @@ cat > "$run_dir/result.json" <<EOF
 EOF
 
 printf 'Created task run: %s\n' "$run_dir"
+
+if [ "$execute_after_create" -eq 1 ]; then
+  bash "$script_dir/execute_job.sh" "$run_dir"
+fi
