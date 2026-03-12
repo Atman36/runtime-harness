@@ -4,8 +4,85 @@
   "title": "Claw Job",
   "description": "Describes a single task run job created by run_task.sh. Consumed by execute_job.py and the queue worker.",
   "type": "object",
-  "required": ["job_version", "run_id", "run_path", "created_at", "project", "preferred_agent", "task", "spec", "artifacts"],
+  "required": [
+    "job_version",
+    "run_id",
+    "run_path",
+    "created_at",
+    "project",
+    "preferred_agent",
+    "routing",
+    "execution",
+    "task",
+    "spec",
+    "artifacts"
+  ],
   "additionalProperties": false,
+  "$defs": {
+    "routing": {
+      "type": "object",
+      "required": ["selected_agent", "selection_source", "routing_rule"],
+      "additionalProperties": false,
+      "properties": {
+        "selected_agent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Agent key selected by the planner."
+        },
+        "selection_source": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the planner selected this agent, e.g. task_front_matter or routing_rules."
+        },
+        "routing_rule": {
+          "type": ["string", "null"],
+          "description": "Name of the matched routing rule, or null when no rule was involved."
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": [
+        "workspace_mode",
+        "workspace_root",
+        "workspace_materialization_required",
+        "edit_scope",
+        "parallel_safe",
+        "concurrency_group"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "workspace_mode": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Execution workspace policy selected by the planner."
+        },
+        "workspace_root": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Resolved source project root used as the basis for workspace materialization."
+        },
+        "workspace_materialization_required": {
+          "type": "boolean",
+          "description": "Whether execution requires creating a separate workspace."
+        },
+        "edit_scope": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Logical scopes the task is expected to edit."
+        },
+        "parallel_safe": {
+          "type": "boolean",
+          "description": "Whether the planner marked this task as safe to run in parallel."
+        },
+        "concurrency_group": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable planner-derived concurrency grouping key."
+        }
+      }
+    }
+  },
   "properties": {
     "job_version": {
       "type": "integer",
@@ -38,6 +115,12 @@
     "review_policy": {
       "type": "string",
       "description": "Review policy identifier, e.g. standard."
+    },
+    "routing": {
+      "$ref": "#/$defs/routing"
+    },
+    "execution": {
+      "$ref": "#/$defs/execution"
     },
     "task": {
       "type": "object",

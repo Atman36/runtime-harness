@@ -57,6 +57,36 @@ invalid_boolean_task="$workspace/projects/demo-project/tasks/TASK-INVALID-BOOLEA
 invalid_risk_flags_task="$workspace/projects/demo-project/tasks/TASK-INVALID-RISK.md"
 invalid_project_slug_workspace="$tmp_root/invalid-project-slug"
 
+python3 - "$task_path" "$project_root/state/project.yaml" <<'EOF'
+from pathlib import Path
+import sys
+
+task_path = Path(sys.argv[1])
+project_state_path = Path(sys.argv[2])
+
+task_text = task_path.read_text(encoding="utf-8")
+task_text = task_text.replace("preferred_agent: codex", "preferred_agent: auto", 1)
+task_text = task_text.replace(
+    "priority: high\nproject: demo-project\n",
+    "priority: high\nambiguity: high\ntags:\n  - design\nproject: demo-project\n",
+    1,
+)
+task_path.write_text(task_text, encoding="utf-8")
+
+project_state_path.write_text(
+    project_state_path.read_text(encoding="utf-8")
+    + "\n"
+    + "default_agent: codex\n"
+    + "execution:\n"
+    + "  workspace_mode: git_worktree\n"
+    + "  default_edit_scope:\n"
+    + "    - apps\n"
+    + "    - tests\n"
+    + "  parallel_safe: true\n",
+    encoding="utf-8",
+)
+EOF
+
 bash "$workspace/scripts/run_task.sh" "$task_path"
 bash "$workspace/scripts/run_task.sh" "$task_path"
 
@@ -81,13 +111,56 @@ assert_contains "$run_one/prompt.txt" "Spec: ../specs/SPEC-001.md"
 assert_contains "$run_one/meta.json" "\"run_id\": \"RUN-0001\""
 assert_contains "$run_one/meta.json" "\"task_id\": \"TASK-001\""
 assert_contains "$run_one/meta.json" "\"status\": \"created\""
-assert_contains "$run_one/meta.json" "\"preferred_agent\": \"codex\""
+assert_contains "$run_one/meta.json" "\"preferred_agent\": \"claude\""
 
 assert_contains "$run_one/job.json" "\"run_id\": \"RUN-0001\""
 assert_contains "$run_one/job.json" "\"run_path\": \"runs/$today/RUN-0001\""
 assert_contains "$run_one/job.json" "\"project\": \"demo-project\""
 assert_contains "$run_one/job.json" "\"task\": {"
 assert_contains "$run_one/job.json" "\"spec\": {"
+assert_contains "$run_one/job.json" "\"preferred_agent\": \"claude\""
+
+PYTHONPATH="$workspace" python3 - "$workspace" "$task_path" "$run_one" <<'EOF'
+import json
+import sys
+from pathlib import Path
+
+from _system.engine.task_planner import plan_task_run
+
+workspace = Path(sys.argv[1])
+task_path = Path(sys.argv[2])
+run_dir = Path(sys.argv[3])
+
+plan = plan_task_run(workspace, task_path)
+expected_routing = {
+    "selected_agent": plan.routing.selected_agent,
+    "selection_source": plan.routing.selection_source,
+    "routing_rule": plan.routing.routing_rule,
+}
+expected_execution = {
+    "workspace_mode": plan.execution.workspace_mode,
+    "workspace_root": plan.execution.workspace_root,
+    "workspace_materialization_required": plan.execution.workspace_materialization_required,
+    "edit_scope": plan.execution.edit_scope,
+    "parallel_safe": plan.execution.parallel_safe,
+    "concurrency_group": plan.execution.concurrency_group,
+}
+
+job = json.loads((run_dir / "job.json").read_text(encoding="utf-8"))
+meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+
+assert job["preferred_agent"] == plan.routing.selected_agent, job
+assert job["review_policy"] == plan.review_policy, job
+assert job["task"]["priority"] == plan.priority, job
+assert job["routing"] == expected_routing, job["routing"]
+assert job["execution"] == expected_execution, job["execution"]
+
+assert meta["preferred_agent"] == plan.routing.selected_agent, meta
+assert meta["review_policy"] == plan.review_policy, meta
+assert meta["priority"] == plan.priority, meta
+assert meta["routing"] == expected_routing, meta["routing"]
+assert meta["execution"] == expected_execution, meta["execution"]
+EOF
 
 assert_contains "$run_one/result.json" "\"status\": \"pending\""
 assert_contains "$run_one/report.md" "- Project: demo-project"

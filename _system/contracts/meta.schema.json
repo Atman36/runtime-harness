@@ -4,7 +4,63 @@
   "title": "Claw Run Metadata",
   "description": "Lifecycle metadata for a task run. Begins sparse at creation and accumulates fields through the run lifecycle.",
   "type": "object",
-  "required": ["run_id", "status", "project"],
+  "required": ["run_id", "status", "project", "routing", "execution"],
+  "$defs": {
+    "routing": {
+      "type": "object",
+      "required": ["selected_agent", "selection_source", "routing_rule"],
+      "additionalProperties": false,
+      "properties": {
+        "selected_agent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selection_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "routing_rule": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": [
+        "workspace_mode",
+        "workspace_root",
+        "workspace_materialization_required",
+        "edit_scope",
+        "parallel_safe",
+        "concurrency_group"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "workspace_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace_materialization_required": {
+          "type": "boolean"
+        },
+        "edit_scope": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "parallel_safe": {
+          "type": "boolean"
+        },
+        "concurrency_group": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
   "properties": {
     "run_id": {
       "type": "string",
@@ -48,6 +104,12 @@
     },
     "priority": {
       "type": "string"
+    },
+    "routing": {
+      "$ref": "#/$defs/routing"
+    },
+    "execution": {
+      "$ref": "#/$defs/execution"
     },
     "started_at": {
       "type": ["string", "null"]

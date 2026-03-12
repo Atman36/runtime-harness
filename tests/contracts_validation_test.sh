@@ -46,8 +46,21 @@ cat > "$job_run/job.json" <<'EOF'
   "run_path": "runs/2024-03-12/RUN-0001",
   "created_at": "2024-03-12T10:00:00Z",
   "project": "demo-project",
-  "preferred_agent": "codex",
+  "preferred_agent": "claude",
   "review_policy": "standard",
+  "routing": {
+    "selected_agent": "claude",
+    "selection_source": "routing_rules",
+    "routing_rule": "claude-ambiguous-design"
+  },
+  "execution": {
+    "workspace_mode": "git_worktree",
+    "workspace_root": "/tmp/demo-project",
+    "workspace_materialization_required": true,
+    "edit_scope": ["apps", "tests"],
+    "parallel_safe": true,
+    "concurrency_group": "demo-project:git_worktree:apps,tests"
+  },
   "task": {
     "id": "TASK-001",
     "title": "Test task",
@@ -129,6 +142,19 @@ cat > "$bad_needs_review_run/job.json" <<'EOF'
   "created_at": "2024-03-12T10:00:00Z",
   "project": "demo-project",
   "preferred_agent": "codex",
+  "routing": {
+    "selected_agent": "codex",
+    "selection_source": "task_front_matter",
+    "routing_rule": null
+  },
+  "execution": {
+    "workspace_mode": "shared_project",
+    "workspace_root": "/tmp/demo-project",
+    "workspace_materialization_required": false,
+    "edit_scope": ["_system", "scripts"],
+    "parallel_safe": false,
+    "concurrency_group": "demo-project:shared_project:_system,scripts"
+  },
   "task": {
     "id": "TASK-001",
     "needs_review": "maybe",
@@ -149,6 +175,50 @@ cat > "$bad_needs_review_run/job.json" <<'EOF'
 }
 EOF
 assert_invalid "job.json needs_review not boolean" "$bad_needs_review_run/job.json"
+
+bad_execution_run="$tmp_root/bad_execution_run"
+mkdir -p "$bad_execution_run"
+cat > "$bad_execution_run/job.json" <<'EOF'
+{
+  "job_version": 1,
+  "run_id": "RUN-0001",
+  "run_path": "runs/2024-03-12/RUN-0001",
+  "created_at": "2024-03-12T10:00:00Z",
+  "project": "demo-project",
+  "preferred_agent": "codex",
+  "routing": {
+    "selected_agent": "codex",
+    "selection_source": "project_default",
+    "routing_rule": null
+  },
+  "execution": {
+    "workspace_mode": "shared_project",
+    "workspace_root": "/tmp/demo-project",
+    "workspace_materialization_required": false,
+    "edit_scope": "scripts",
+    "parallel_safe": false,
+    "concurrency_group": "demo-project:shared_project:scripts"
+  },
+  "task": {
+    "id": "TASK-001",
+    "needs_review": false,
+    "risk_flags": []
+  },
+  "spec": {
+    "source_path": "specs/SPEC-001.md",
+    "copied_path": "spec.md"
+  },
+  "artifacts": {
+    "prompt_path": "prompt.txt",
+    "meta_path": "meta.json",
+    "report_path": "report.md",
+    "result_path": "result.json",
+    "stdout_path": "stdout.log",
+    "stderr_path": "stderr.log"
+  }
+}
+EOF
+assert_invalid "job.json execution.edit_scope must be an array" "$bad_execution_run/job.json"
 
 # ── result.json ───────────────────────────────────────────────────────────────
 
@@ -229,9 +299,22 @@ cat > "$meta_run/meta.json" <<'EOF'
   "task_title": "Test task",
   "task_path": "tasks/TASK-001.md",
   "spec_path": "specs/SPEC-001.md",
-  "preferred_agent": "codex",
+  "preferred_agent": "claude",
   "review_policy": "standard",
-  "priority": "medium"
+  "priority": "medium",
+  "routing": {
+    "selected_agent": "claude",
+    "selection_source": "routing_rules",
+    "routing_rule": "claude-ambiguous-design"
+  },
+  "execution": {
+    "workspace_mode": "git_worktree",
+    "workspace_root": "/tmp/demo-project",
+    "workspace_materialization_required": true,
+    "edit_scope": ["apps", "tests"],
+    "parallel_safe": true,
+    "concurrency_group": "demo-project:git_worktree:apps,tests"
+  }
 }
 EOF
 assert_valid "valid meta.json (created status)" "$meta_run/meta.json"
@@ -247,6 +330,20 @@ cat > "$completed_meta_run/meta.json" <<'EOF'
   "status": "completed",
   "project": "demo-project",
   "task_id": "TASK-002",
+  "preferred_agent": "codex",
+  "routing": {
+    "selected_agent": "codex",
+    "selection_source": "project_default",
+    "routing_rule": null
+  },
+  "execution": {
+    "workspace_mode": "shared_project",
+    "workspace_root": "/tmp/demo-project",
+    "workspace_materialization_required": false,
+    "edit_scope": ["_system", "scripts"],
+    "parallel_safe": false,
+    "concurrency_group": "demo-project:shared_project:_system,scripts"
+  },
   "started_at": "2024-03-12T10:01:00Z",
   "finished_at": "2024-03-12T10:05:00Z",
   "last_exit_code": 0,
@@ -278,6 +375,30 @@ cat > "$no_project_meta_run/meta.json" <<'EOF'
 }
 EOF
 assert_invalid "meta.json missing project field" "$no_project_meta_run/meta.json"
+
+bad_meta_execution_run="$tmp_root/bad_meta_execution_run"
+mkdir -p "$bad_meta_execution_run"
+cat > "$bad_meta_execution_run/meta.json" <<'EOF'
+{
+  "run_id": "RUN-0003",
+  "status": "created",
+  "project": "demo-project",
+  "routing": {
+    "selected_agent": "codex",
+    "selection_source": "project_default",
+    "routing_rule": null
+  },
+  "execution": {
+    "workspace_mode": "shared_project",
+    "workspace_root": "/tmp/demo-project",
+    "workspace_materialization_required": false,
+    "edit_scope": "_system",
+    "parallel_safe": false,
+    "concurrency_group": "demo-project:shared_project:_system"
+  }
+}
+EOF
+assert_invalid "meta.json execution.edit_scope must be an array" "$bad_meta_execution_run/meta.json"
 
 # ── run directory validation ──────────────────────────────────────────────────
 

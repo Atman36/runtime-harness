@@ -15,6 +15,12 @@ from typing import Any
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from _system.engine.task_planner import TaskRunPlan, plan_task_run
+
 
 FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 
@@ -141,6 +147,25 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def routing_payload(plan: TaskRunPlan) -> dict[str, Any]:
+    return {
+        "selected_agent": plan.routing.selected_agent,
+        "selection_source": plan.routing.selection_source,
+        "routing_rule": plan.routing.routing_rule,
+    }
+
+
+def execution_payload(plan: TaskRunPlan) -> dict[str, Any]:
+    return {
+        "workspace_mode": plan.execution.workspace_mode,
+        "workspace_root": plan.execution.workspace_root,
+        "workspace_materialization_required": plan.execution.workspace_materialization_required,
+        "edit_scope": plan.execution.edit_scope,
+        "parallel_safe": plan.execution.parallel_safe,
+        "concurrency_group": plan.execution.concurrency_group,
+    }
+
+
 def create_run(context: RunContext) -> Path:
     front_matter = read_front_matter(context.task_path)
     task_id, spec_reference, risk_flags = validate_task_front_matter(context.task_path, context.project_slug, front_matter)
@@ -155,7 +180,8 @@ def create_run(context: RunContext) -> Path:
             f"Project slug '{project_slug_from_state}' in state/project.yaml does not match directory '{context.project_slug}'"
         )
 
-    spec_path = resolve_path(context.task_dir, spec_reference)
+    plan = plan_task_run(context.repo_root, context.task_path)
+    spec_path = plan.spec_path
     ensure_file(spec_path, f"Spec file not found: {spec_path}")
 
     run_date = datetime.now().strftime("%Y-%m-%d")
@@ -178,11 +204,13 @@ def create_run(context: RunContext) -> Path:
 
     task_source_rel = context.task_path.relative_to(context.project_root).as_posix()
     spec_source_rel = spec_path.relative_to(context.project_root).as_posix()
-    preferred_agent = str(front_matter.get("preferred_agent") or "").strip() or "codex"
-    review_policy = str(front_matter.get("review_policy") or "").strip() or "standard"
-    priority = str(front_matter.get("priority") or "").strip()
+    routing = routing_payload(plan)
+    execution = execution_payload(plan)
+    preferred_agent = plan.routing.selected_agent
+    review_policy = plan.review_policy
+    priority = plan.priority
     task_status = str(front_matter.get("status") or "").strip()
-    task_title = str(front_matter.get("title") or "").strip()
+    task_title = plan.task_title
     concurrency_key = front_matter.get("concurrency_key")
     if concurrency_key is not None:
         concurrency_key = str(concurrency_key).strip() or None
@@ -201,6 +229,8 @@ def create_run(context: RunContext) -> Path:
         "preferred_agent": preferred_agent,
         "review_policy": review_policy,
         "priority": priority,
+        "routing": routing,
+        "execution": execution,
     }
     if concurrency_key:
         meta["concurrency_key"] = concurrency_key
@@ -213,6 +243,8 @@ def create_run(context: RunContext) -> Path:
         "project": context.project_slug,
         "preferred_agent": preferred_agent,
         "review_policy": review_policy,
+        "routing": routing,
+        "execution": execution,
         "task": {
             "id": task_id,
             "title": task_title,
