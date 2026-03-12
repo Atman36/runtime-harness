@@ -203,6 +203,10 @@ claw/
 - queue approval/reclaim lifecycle работает
 - formal contracts/schema validation доступны локально
 - review batch generation работает поверх run artifacts
+- post-artifact validation автоматически встраивается в `execute_job.py`
+- worker автоматически ведёт review cadence state и триггерит review batch
+- planner routing/execution сохраняются в `job.json` и `meta.json`
+- `claw launch-plan` показывает dry-run execution decision до реального запуска
 - `codex` и `claude` запускаются локально из репозитория
 
 ### Уже подтверждено тестами
@@ -214,6 +218,8 @@ claw/
 - queue approval/reclaim flow
 - contracts validation
 - review batch generation
+- runtime integration for validation + review cadence
+- launch-plan dry-run preview
 
 ### Ещё не подтверждено
 - multi-project scheduling
@@ -271,7 +277,8 @@ v1 считается успешной, если пользователь мож
 
 ## 13. Next step
 Следующий практический шаг после текущего состояния:
-- убрать race в нумерации `RUN-XXXX`
-- зафиксировать schema/contract для `job.json` и `result.json`
-- добавить reclaim/approval lifecycle в queue
-- реализовать review batch поверх уже существующих run artifacts
+- переключить `execute_job.py` на persisted `job.execution` и workspace backends
+- обновить demo/template artifacts под `preferred_agent: auto` и execution defaults
+- добавить unified `claw review-batch`
+- закрыть clean-worktree parity для `docs/` и template docs artifacts
+- после этого возвращаться к OpenClaw bridge

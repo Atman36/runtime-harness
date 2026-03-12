@@ -7,12 +7,15 @@
 
 `claw` уже умеет:
 - собирать `task/spec -> job`
+- показывать dry-run execution decision через `claw launch-plan`
 - запускать агента напрямую
 - ставить run в filesystem queue
 - забирать queued job worker'ом
 - сохранять `result/report/logs`
+- валидировать `job/result/meta` после записи артефактов
 - создавать completion hook на диске
 - доставлять hook сразу или повторять через reconcile
+- автоматически запускать review batch generation по cadence и immediate triggers
 
 Этот файл фиксирует текущий контракт, чтобы последующие изменения не возвращали систему в ad-hoc shell.
 
@@ -24,6 +27,7 @@
 ```text
 TASK.md + SPEC.md
   -> scripts/run_task.sh --execute
+  -> planner routing/execution persisted into job/meta
   -> projects/<slug>/runs/YYYY-MM-DD/RUN-XXXX/
       - task.md
       - spec.md
@@ -37,6 +41,7 @@ TASK.md + SPEC.md
   -> scripts/execute_job.py
   -> selected agent CLI
   -> result/report/logs updated
+  -> artifact validation embedded into result/meta
   -> state/hooks/pending/<hook>.json
   -> immediate dispatch attempt
   -> state/hooks/sent/ or state/hooks/failed/
@@ -46,17 +51,26 @@ TASK.md + SPEC.md
 ```text
 TASK.md + SPEC.md
   -> scripts/claw.py enqueue
+  -> planner routing/execution persisted into job/meta
   -> projects/<slug>/runs/YYYY-MM-DD/RUN-XXXX/
   -> projects/<slug>/state/queue/pending/RUN-XXXX.json
   -> scripts/claw.py worker <project-root> --once
   -> state/queue/running/ -> done/failed/
   -> scripts/execute_job.py
   -> hooks pending/sent/failed
+  -> state/review_cadence.json updated
+  -> automatic review batch generation when trigger fires
 ```
 
 ---
 
 ## Основные команды
+
+Посмотреть execution decision до запуска:
+
+```bash
+python3 scripts/claw.py launch-plan projects/demo-project/tasks/TASK-001.md
+```
 
 Создать run artifacts без исполнения:
 
@@ -91,6 +105,7 @@ python3 scripts/claw.py run --enqueue --awaiting-approval projects/demo-project/
 ```bash
 python3 scripts/claw.py worker projects/demo-project --once
 python3 scripts/claw.py worker projects/demo-project --once --stale-after-seconds 900
+python3 scripts/claw.py worker projects/demo-project --once --skip-review
 ```
 
 Подтвердить job, ожидающий approval:
@@ -168,6 +183,8 @@ agents:
 
 Поддерживаемые шаблонные переменные в `args`:
 - `{project_root}`
+- `{source_project_root}`
+- `{workspace_root}`
 - `{run_dir}`
 
 Зачем это нужно:
@@ -199,6 +216,13 @@ Use case:
 Специальных queue-env пока нет.
 Сейчас queue worker использует тот же `execute_job.py`, поэтому наследует agent-related env overrides полностью.
 
+### Review execution
+Worker после завершения run:
+- читает `result.json`
+- обновляет cadence counter
+- вызывает review batch generation при `failed`, `needs_review`, `risky_area`, `uncertainty`, `large_diff`
+- вызывает cadence batch после каждых 5 успешных run
+
 ---
 
 ## Run contract
@@ -213,13 +237,17 @@ projects/<slug>/runs/YYYY-MM-DD/RUN-XXXX/
 ### Важные поля
 - `meta.json`
   - текущий статус исполнения
+  - persisted `routing` / `execution` summary
   - executor metadata
+  - validation snapshot
   - hook snapshot
 - `job.json`
   - описание запуска
+  - persisted `routing` / `execution` contract
   - `run_path` для связки с queue item
 - `result.json`
   - итоговый машиночитаемый результат
+  - validation snapshot with `valid/errors`
 
 ### Дополнительная валидация
 `run_task.sh` теперь:
@@ -227,6 +255,16 @@ projects/<slug>/runs/YYYY-MM-DD/RUN-XXXX/
 - валидирует, что он совпадает с именем каталога проекта
 
 Это уменьшает риск quietly запускать task в криво переименованной структуре.
+
+### Post-artifact validation
+`execute_job.py` после записи `stdout/stderr/report` валидирует:
+- `job.json`
+- `result.json`
+- `meta.json`
+
+И пишет снимок валидации в:
+- `result.json.validation`
+- `meta.json.validation`
 
 ---
 
@@ -241,6 +279,12 @@ projects/<slug>/state/queue/
 ├── done/
 ├── failed/
 └── awaiting_approval/
+```
+
+Дополнительно project-level review cadence хранится в:
+
+```text
+projects/<slug>/state/review_cadence.json
 ```
 
 ### Queue item
@@ -335,6 +379,7 @@ projects/<slug>/state/hooks/
 - task -> job artifacts
 - execution success path
 - execution failure path
+- post-artifact validation embedding
 - registry-driven agent invocation
 - hook immediate success
 - hook pending when no command is configured
@@ -344,20 +389,18 @@ projects/<slug>/state/hooks/
 - hook timeout -> failed
 - atomic-safe hook rewrite behavior
 - queue enqueue -> worker -> status flow
+- automatic review cadence + immediate review trigger flow
 
 ---
 
 ## Что ещё не реализовано
 
 Пока не сделано:
-- formal JSON schema для текущих `job.json` и `result.json`
-- reclaim stale `state/queue/running/*`
-- runtime-путь для `awaiting_approval`
-- auto-review / opposite-model reviewer loop
 - OpenClaw wake/system-event bridge
 - multi-project worker / scheduler
 
 Текущее состояние стоит воспринимать как:
 - уже рабочий локальный orchestration foundation
 - уже не просто shell scripts
+- уже с dry-run planner preview перед запуском
 - ещё не полный orchestration engine v1

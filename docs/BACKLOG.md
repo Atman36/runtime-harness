@@ -10,9 +10,9 @@
 
 | # | Задача | Зависит от | Phase | Параллельность |
 |---|--------|------------|-------|----------------|
-| 6.1 | Встроить `task_planner.py` в `build_run.py` и сохранять `routing` / `execution` в artifacts | Этап 2 done | 6 | — |
+| 6.1 | ✅ Встроить `task_planner.py` в `build_run.py` и сохранять `routing` / `execution` в artifacts | Этап 2 done | 6 | done |
 | 6.2 | Переключить `execute_job.py` на `job.execution` и workspace backends (`shared_project`, `git_worktree`, `isolated_checkout`) | 6.1 | 6 | после 6.1 |
-| 6.3 | Добавить `claw launch-plan` с preview агента, routing rule, workspace mode, concurrency group и command preview | 6.1 | 6 | параллельно 6.2 |
+| 6.3 | ✅ Добавить `claw launch-plan` с preview агента, routing rule, workspace mode, concurrency group и command preview | 6.1 | 6 | done |
 | 6.4 | Обновить demo/template artifacts под `preferred_agent: auto` и project execution defaults; покрыть тестами | 6.1 | 6 | параллельно 6.2 |
 | 6.5 | Ввести formal review decision artifacts: findings, approvals, waivers, follow-up actions | Этап 5 done | 6 | после 6.1 |
 | 6.6 | Формализовать hook delivery contract: idempotency, event versioning, retry semantics | Этап 4 done | 6 | параллельно 6.5 |
@@ -71,16 +71,18 @@
 | 9.2 | Retry/backoff policy + poison-job threshold + DLQ handling + lease heartbeat в worker loop | Этап 2 done | 9 | независимо |
 | 9.3 | `claw review-batch` как unified CLI (не standalone только) | Этап 5 done | 9 | независимо |
 | 9.4 | Run/review metrics snapshot в state (для status/dashboard) | Этап 5 done | 9 | независимо |
-| 9.5 | Исправить `.gitignore` политику для `docs/` | — | 9 | независимо |
+| 9.5 | Исправить `.gitignore`/индексацию для `docs/` и template docs parity | — | 9 | независимо |
 
 **Предлагаемые GitHub issue titles:**
 - `feat: job contract versioning and schema migration`
 - `feat: queue retry, dlq, and lease heartbeat maturity`
 - `feat: claw review-batch as first-class CLI command`
 - `feat: run/review metrics state snapshot`
-- `fix: docs/ not excluded from git index by default`
+- `fix: docs/ and template docs are tracked in clean worktrees`
 
 **Что можно параллелить:** 9.1, 9.2, 9.3, 9.4, 9.5 независимы друг от друга.
+
+**Инсайт после параллельного запуска Codex + Claude:** 6.1 и 6.3 хорошо режутся на независимые slices при запуске в отдельных git worktree; без изоляции такой параллелизм быстро превращается в merge-шум.
 
 ---
 
