@@ -280,6 +280,48 @@ claw/
 
 ---
 
+## Инсайты после запуска
+
+### Что подтвердилось
+- Разделение на run artifacts, queue state и hooks оказалось удачным: состояние системы читается с диска без скрытой магии.
+- `run_path` как стабильная связь между queue item и run artifacts снимает большую часть lookup-хаоса.
+- Вынесение runtime helpers из `scripts/claw.py` в engine-модуль упрощает дальнейшую сборку API без shell-спагетти.
+- Standalone `validate_artifacts.py` и `generate_review_batch.py` позволяют проверять систему независимо от worker loop, что хорошо для smoke/debug сценариев.
+
+### Что проявилось как слабое место
+- Нумерация `RUN-XXXX` всё ещё уязвима к race при параллельном создании run.
+- Validation и review batch пока живут как отдельные CLI, а не как часть обязательного runtime lifecycle.
+- `docs/` глобально заигнорен в репозитории, из-за чего изменения в документации легко не попадают в коммиты случайно.
+- `review batch` сейчас формируется по существующим run artifacts, но не имеет автоматического триггера после завершения worker/hook cycle.
+- Worker остаётся project-scoped; для реальной эксплуатации может понадобиться scheduler над несколькими проектами.
+
+### Практический вывод
+- Архитектура уже жизнеспособна как local-first orchestration shell.
+- Следующий потолок сложности теперь не в queue/hook mechanics, а в orchestration policy: routing, automatic review cadence, approval UX и multi-project scheduling.
+
+---
+
+## Что улучшить в проекте
+
+### Высокий приоритет
+- Убрать race в генерации `RUN-XXXX`: lock file, atomic counter или UUID + human-friendly alias.
+- Встроить schema validation в `run_task.sh`/`execute_job.py`/worker path, чтобы невалидные артефакты отлавливались сразу, а не только отдельным CLI.
+- Автоматически запускать review batch generation после завершения run или по reconcile cadence.
+- Применять `routing_rules.yaml` в runtime при создании job, а не держать rules только в registry.
+
+### Средний приоритет
+- Добавить явный queue/job contract versioning и migration story для будущих изменений схем.
+- Сделать `claw review-batch` как часть unified CLI вместо standalone entrypoint-only usage.
+- Добавить multi-project worker/reconciler loop с безопасным fair scheduling.
+- Исправить `.gitignore` политику для `docs/`, чтобы проектная документация не терялась из индекса по умолчанию.
+
+### Низкий приоритет, но полезно
+- Сохранить summary/metrics по runs и review batches в отдельный state snapshot для status/dashboard сценариев.
+- Добавить richer status view: последние ошибки, awaiting approval jobs, pending hooks, pending reviews.
+- Уточнить policy для `ask_human` и approval UX, чтобы `awaiting_approval` стало частью реального сценария, а не только queue state.
+
+---
+
 ## Ближайшие шаги
 1. Убрать race в нумерации `RUN-XXXX`
 2. Встроить schema validation и review batch в основной runtime без ручного вызова отдельных CLI
