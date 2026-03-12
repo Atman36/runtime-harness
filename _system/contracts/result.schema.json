@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:claw:result.schema.json",
+  "title": "Claw Result",
+  "description": "Records the execution outcome of a job run. Starts sparse (status: pending) and is updated in-place as the run progresses through its lifecycle.",
+  "type": "object",
+  "required": ["run_id", "status"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^RUN-[0-9]{4,}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "running", "success", "failed"],
+      "description": "Lifecycle status of the run."
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp when the result file was first created."
+    },
+    "started_at": {
+      "type": ["string", "null"]
+    },
+    "finished_at": {
+      "type": ["string", "null"]
+    },
+    "agent": {
+      "type": "string",
+      "description": "Agent key that executed (or will execute) this run."
+    },
+    "exit_code": {
+      "type": ["integer", "null"]
+    },
+    "duration_seconds": {
+      "type": ["number", "null"]
+    },
+    "command": {
+      "type": ["string", "null"],
+      "description": "Display form of the agent command (without actual prompt text)."
+    },
+    "summary": {
+      "type": ["string", "null"],
+      "description": "Trimmed stdout/stderr summary from the agent run."
+    },
+    "hook": {
+      "type": "object",
+      "description": "Hook delivery snapshot after run completion."
+    }
+  }
+}

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -17,103 +16,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine.file_queue import DuplicateJobError, FileQueue, QueueEmpty  # noqa: E402
-
-
-def read_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def run_command(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False)
-
-
-def resolve_project_root(argument: str) -> Path:
-    path = Path(argument).expanduser().resolve()
-    if not path.is_dir():
-        raise FileNotFoundError(f"Project root not found: {argument}")
-    if not (path / "state" / "project.yaml").is_file():
-        raise FileNotFoundError(f"Expected project root with state/project.yaml: {argument}")
-    return path
-
-
-def queue_root_for_project(project_root: Path) -> Path:
-    return project_root / "state" / "queue"
-
-
-def execute_run_task(task_path: str, *, execute: bool = False) -> Path:
-    command = ["bash", str(REPO_ROOT / "scripts" / "run_task.sh")]
-    if execute:
-        command.append("--execute")
-    command.append(task_path)
-    completed = run_command(command, cwd=REPO_ROOT)
-    if completed.returncode != 0:
-        sys.stderr.write(completed.stderr)
-        raise SystemExit(completed.returncode)
-
-    created_line = ""
-    for line in (completed.stdout or "").splitlines():
-        if line.startswith("Created task run: "):
-            created_line = line
-    if not created_line:
-        raise RuntimeError("Could not determine created run directory from run_task.sh output")
-
-    return Path(created_line.removeprefix("Created task run: ").strip()).resolve()
-
-
-def build_queue_payload(project_root: Path, run_dir: Path) -> dict:
-    job = read_json(run_dir / "job.json")
-    task = job.get("task", {})
-    relative_run_path = run_dir.relative_to(project_root).as_posix()
-    return {
-        "job_id": job["run_id"],
-        "job_version": 1,
-        "run_id": job["run_id"],
-        "run_path": relative_run_path,
-        "project": job.get("project"),
-        "preferred_agent": job.get("preferred_agent"),
-        "review_policy": job.get("review_policy"),
-        "created_at": job.get("created_at"),
-        "task": {
-            "id": task.get("id"),
-            "title": task.get("title"),
-            "priority": task.get("priority"),
-        },
-    }
-
-
-def enqueue_run(run_dir: Path) -> dict:
-    project_root = run_dir
-    while project_root.name != "runs":
-        if project_root.parent == project_root:
-            raise RuntimeError(f"Could not resolve project root from run dir: {run_dir}")
-        project_root = project_root.parent
-    project_root = project_root.parent
-
-    queue = FileQueue(queue_root_for_project(project_root))
-    payload = build_queue_payload(project_root, run_dir)
-    try:
-        queue.enqueue(payload)
-    except DuplicateJobError as exc:
-        raise RuntimeError(str(exc)) from exc
-    return payload
-
-
-def find_run_dir(project_root: Path, run_id: str) -> Path | None:
-    queue = FileQueue(queue_root_for_project(project_root))
-    queued_path = queue.find_job(run_id)
-    if queued_path is not None:
-        payload = read_json(queued_path)
-        run_path = payload.get("run_path")
-        if run_path:
-            return (project_root / run_path).resolve()
-
-    runs_root = project_root / "runs"
-    for meta_path in runs_root.rglob("meta.json"):
-        meta = read_json(meta_path)
-        if meta.get("run_id") == run_id:
-            return meta_path.parent.resolve()
-    return None
+from _system.engine import FileQueue, QueueEmpty, enqueue_run, execute_run_task, find_run_dir, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
 
 
 def cmd_create_project(args: argparse.Namespace) -> int:
@@ -127,19 +30,29 @@ def cmd_create_project(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    run_dir = execute_run_task(args.task_path, execute=args.execute)
+    if args.awaiting_approval and not args.enqueue:
+        raise SystemExit("--awaiting-approval requires --enqueue")
+
+    run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=args.execute)
     if args.enqueue:
-        payload = enqueue_run(run_dir)
-        print(json.dumps({"status": "queued", "job_id": payload["job_id"], "run_path": payload["run_path"]}, ensure_ascii=False))
+        queue_state = "awaiting_approval" if args.awaiting_approval else "pending"
+        payload = enqueue_run(run_dir, state=queue_state)
+        print(
+            json.dumps(
+                {"status": "queued", "job_id": payload["job_id"], "run_path": payload["run_path"], "queue_state": queue_state},
+                ensure_ascii=False,
+            )
+        )
         return 0
     print(json.dumps({"status": "created", "run_dir": str(run_dir)}, ensure_ascii=False))
     return 0
 
 
 def cmd_enqueue(args: argparse.Namespace) -> int:
-    run_dir = execute_run_task(args.task_path, execute=False)
-    payload = enqueue_run(run_dir)
-    print(json.dumps({"status": "queued", "job_id": payload["job_id"], "run_path": payload["run_path"]}, ensure_ascii=False))
+    queue_state = "awaiting_approval" if args.awaiting_approval else "pending"
+    run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=False)
+    payload = enqueue_run(run_dir, state=queue_state)
+    print(json.dumps({"status": "queued", "job_id": payload["job_id"], "run_path": payload["run_path"], "queue_state": queue_state}, ensure_ascii=False))
     return 0
 
 
@@ -149,11 +62,15 @@ def cmd_worker(args: argparse.Namespace) -> int:
     claimed_count = 0
 
     while True:
+        reclaimed = 0
+        if args.stale_after_seconds is not None:
+            reclaimed = queue.reclaim_stale_running(args.stale_after_seconds)
+
         try:
             claimed = queue.claim()
         except QueueEmpty:
             if claimed_count == 0:
-                print(json.dumps({"status": "idle"}, ensure_ascii=False))
+                print(json.dumps({"status": "idle", "reclaimed": reclaimed}, ensure_ascii=False))
             return 0
 
         claimed_count += 1
@@ -176,6 +93,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
                     "run_path": payload["run_path"],
                     "queue_state": status,
                     "exit_code": completed.returncode,
+                    "reclaimed": reclaimed,
                 },
                 ensure_ascii=False,
             )
@@ -199,6 +117,24 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     sys.stdout.write(completed.stdout)
     sys.stderr.write(completed.stderr)
     return completed.returncode
+
+
+def cmd_approve(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    queue = FileQueue(queue_root_for_project(project_root))
+    if not queue.approve(args.run_id):
+        print(json.dumps({"status": "not_found", "job_id": args.run_id}, ensure_ascii=False))
+        return 1
+    print(json.dumps({"status": "approved", "job_id": args.run_id, "queue_state": "pending"}, ensure_ascii=False))
+    return 0
+
+
+def cmd_reclaim(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    queue = FileQueue(queue_root_for_project(project_root))
+    reclaimed = queue.reclaim_stale_running(args.stale_after_seconds)
+    print(json.dumps({"status": "reclaimed", "reclaimed": reclaimed, "queue_state": "pending"}, ensure_ascii=False))
+    return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -239,15 +175,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("task_path")
     run.add_argument("--execute", action="store_true")
     run.add_argument("--enqueue", action="store_true")
+    run.add_argument("--awaiting-approval", action="store_true")
     run.set_defaults(func=cmd_run)
 
     enqueue = subcommands.add_parser("enqueue", help="Create a run and place it into the queue")
     enqueue.add_argument("task_path")
+    enqueue.add_argument("--awaiting-approval", action="store_true")
     enqueue.set_defaults(func=cmd_enqueue)
 
     worker = subcommands.add_parser("worker", help="Claim queued jobs for one project")
     worker.add_argument("project_root")
     worker.add_argument("--once", action="store_true")
+    worker.add_argument("--stale-after-seconds", type=int)
     worker.set_defaults(func=cmd_worker)
 
     dispatch = subcommands.add_parser("dispatch", help="Dispatch pending hooks for a project")
@@ -257,6 +196,16 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile = subcommands.add_parser("reconcile", help="Retry stale or failed hooks for a project")
     reconcile.add_argument("project_root")
     reconcile.set_defaults(func=cmd_reconcile)
+
+    approve = subcommands.add_parser("approve", help="Move a queued job from awaiting approval back to pending")
+    approve.add_argument("project_root")
+    approve.add_argument("run_id")
+    approve.set_defaults(func=cmd_approve)
+
+    reclaim = subcommands.add_parser("reclaim", help="Move stale running jobs back to pending")
+    reclaim.add_argument("project_root")
+    reclaim.add_argument("--stale-after-seconds", type=int, required=True)
+    reclaim.set_defaults(func=cmd_reclaim)
 
     status = subcommands.add_parser("status", help="Show queue and run status for one run")
     status.add_argument("project_root")

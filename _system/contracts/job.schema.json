@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:claw:job.schema.json",
+  "title": "Claw Job",
+  "description": "Describes a single task run job created by run_task.sh. Consumed by execute_job.py and the queue worker.",
+  "type": "object",
+  "required": ["job_version", "run_id", "run_path", "created_at", "project", "preferred_agent", "task", "spec", "artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "job_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version; always 1."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^RUN-[0-9]{4,}$",
+      "description": "Sequential run identifier within a project-date partition, e.g. RUN-0001."
+    },
+    "run_path": {
+      "type": "string",
+      "description": "Relative path from project root to the run directory, e.g. runs/2024-03-12/RUN-0001."
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp when the job was created."
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Project slug — must match the project directory name."
+    },
+    "preferred_agent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent key from agents.yaml, e.g. codex or claude."
+    },
+    "review_policy": {
+      "type": "string",
+      "description": "Review policy identifier, e.g. standard."
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "needs_review", "risk_flags"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Task identifier from the task file front matter."
+        },
+        "title": {"type": "string"},
+        "status": {"type": "string"},
+        "priority": {"type": "string"},
+        "source_path": {
+          "type": "string",
+          "description": "Relative path from project root to the original task file."
+        },
+        "copied_path": {
+          "type": "string",
+          "description": "Filename of the task copy inside the run directory."
+        },
+        "needs_review": {
+          "type": "boolean",
+          "description": "Whether this task explicitly requests human or reviewer-agent review."
+        },
+        "risk_flags": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "List of risk tags, e.g. [\"risky_area\", \"large_diff\"]."
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["source_path", "copied_path"],
+      "additionalProperties": false,
+      "properties": {
+        "source_path": {
+          "type": "string",
+          "description": "Relative path from project root to the original spec file."
+        },
+        "copied_path": {
+          "type": "string",
+          "description": "Filename of the spec copy inside the run directory."
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "required": ["prompt_path", "meta_path", "report_path", "result_path", "stdout_path", "stderr_path"],
+      "additionalProperties": false,
+      "properties": {
+        "prompt_path":  {"type": "string"},
+        "meta_path":    {"type": "string"},
+        "report_path":  {"type": "string"},
+        "result_path":  {"type": "string"},
+        "stdout_path":  {"type": "string"},
+        "stderr_path":  {"type": "string"}
+      }
+    }
+  }
+}

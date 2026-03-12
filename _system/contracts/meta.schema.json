@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:claw:meta.schema.json",
+  "title": "Claw Run Metadata",
+  "description": "Lifecycle metadata for a task run. Begins sparse at creation and accumulates fields through the run lifecycle.",
+  "type": "object",
+  "required": ["run_id", "status", "project"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^RUN-[0-9]{4,}$"
+    },
+    "run_date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "Date partition for this run, YYYY-MM-DD."
+    },
+    "created_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp when the run was created."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["created", "running", "completed", "failed"],
+      "description": "Lifecycle status of the run from meta's perspective."
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "task_title": {
+      "type": "string"
+    },
+    "task_path": {
+      "type": "string"
+    },
+    "spec_path": {
+      "type": "string"
+    },
+    "preferred_agent": {
+      "type": "string"
+    },
+    "review_policy": {
+      "type": "string"
+    },
+    "priority": {
+      "type": "string"
+    },
+    "started_at": {
+      "type": ["string", "null"]
+    },
+    "finished_at": {
+      "type": ["string", "null"]
+    },
+    "last_exit_code": {
+      "type": ["integer", "null"]
+    },
+    "executor": {
+      "type": "object",
+      "description": "Agent execution context recorded by execute_job.py."
+    },
+    "hook": {
+      "type": "object",
+      "description": "Hook delivery snapshot after run completion."
+    }
+  }
+}
