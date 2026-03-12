@@ -1,5 +1,9 @@
 .demo-runs/
 projects/*/runs/*
+projects/*/state/queue/*/*.json
+projects/*/state/hooks/*/*.json
+projects/*/state/review_cadence.json
+**/__pycache__/
 .DS_Store
 docs/
 **/docs/

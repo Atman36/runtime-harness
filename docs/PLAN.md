@@ -1,7 +1,7 @@
 # PLAN — дальнейшее развитие `claw`
 
 Дата: 2026-03-12
-Статус: working plan / updated after engine + contracts + review slice
+Статус: working plan / updated after orchestration session (race fix + runtime design)
 
 ## Цель
 Собрать в `claw` рабочую инфраструктуру для управления проектами, спеками, задачами и агентными запусками через Codex / Claude с фиксированными артефактами, file-backed queue, hook/callback-механикой и review-циклом.
@@ -88,6 +88,8 @@ claw/
 - Добавлены formal contracts в `_system/contracts/` и CLI-валидатор `scripts/validate_artifacts.py`
 - Добавлен standalone review batch generator `scripts/generate_review_batch.py`
 - Локальный запуск `codex` и `claude` из репозитория подтверждён smoke-проверкой
+- **Race в `RUN-XXXX` устранена** (commit `fe11887`): `mkdir -p` → атомарный retry-loop с `mkdir`
+- **Архитектурный дизайн runtime-интеграции** завершён: `projects/demo-project/reviews/REVIEW-runtime-integration-design.md`
 
 ### Тестовое покрытие
 - `foundation_scaffold_test.sh`
@@ -152,7 +154,7 @@ claw/
 ## План реализации
 
 ## Этап 2 — engine import
-**Статус:** in progress / run id race remains
+**Статус:** ✅ завершён
 
 ### Уже сделано
 - добавлен minimal file queue
@@ -162,9 +164,7 @@ claw/
 - добавлен reclaim stale running jobs
 - поддержан lifecycle `awaiting_approval`
 - формализованы `job.json` / `result.json` schema
-
-### Осталось
-- решить race в генерации `RUN-XXXX`
+- **race в `RUN-XXXX` устранена**: атомарный `mkdir`-loop (commit `fe11887`)
 
 ### DoD
 - engine запускается локально
@@ -175,16 +175,17 @@ claw/
 ---
 
 ## Этап 5 — reviewer system
-**Статус:** in progress / standalone batch generator added
+**Статус:** in progress / дизайн интеграции готов, реализация ждёт
 
 ### Уже сделано
 - счётчик successful runs реализован через cadence batch size из policy
 - добавлен review batch generator
 - opposite-model reviewer mapping применяется из policy registry
 - immediate triggers работают для `failed`, `needs_review`, `risky_area`, `uncertainty`, `large_diff`
+- **архитектурный дизайн** встройки validation + review batch в runtime lifecycle готов (`REVIEW-runtime-integration-design.md`)
 
 ### Осталось
-- встроить генерацию batch в runtime cadence без ручного вызова
+- реализовать дизайн: `run_post_artifact_validation()` в `execute_job.py`, `maybe_trigger_review()` в `claw.py`, `state/review_cadence.json`
 - связать batch generation с chat/OpenClaw flow
 
 ### Правила
@@ -289,8 +290,7 @@ claw/
 - Standalone `validate_artifacts.py` и `generate_review_batch.py` позволяют проверять систему независимо от worker loop, что хорошо для smoke/debug сценариев.
 
 ### Что проявилось как слабое место
-- Нумерация `RUN-XXXX` всё ещё уязвима к race при параллельном создании run.
-- Validation и review batch пока живут как отдельные CLI, а не как часть обязательного runtime lifecycle.
+- Validation и review batch пока живут как отдельные CLI, а не как часть обязательного runtime lifecycle (дизайн готов, нужна реализация).
 - `docs/` глобально заигнорен в репозитории, из-за чего изменения в документации легко не попадают в коммиты случайно.
 - `review batch` сейчас формируется по существующим run artifacts, но не имеет автоматического триггера после завершения worker/hook cycle.
 - Worker остаётся project-scoped; для реальной эксплуатации может понадобиться scheduler над несколькими проектами.
@@ -304,9 +304,8 @@ claw/
 ## Что улучшить в проекте
 
 ### Высокий приоритет
-- Убрать race в генерации `RUN-XXXX`: lock file, atomic counter или UUID + human-friendly alias.
-- Встроить schema validation в `run_task.sh`/`execute_job.py`/worker path, чтобы невалидные артефакты отлавливались сразу, а не только отдельным CLI.
-- Автоматически запускать review batch generation после завершения run или по reconcile cadence.
+- ~~Убрать race в генерации `RUN-XXXX`~~ — **✅ сделано** (commit `fe11887`)
+- Реализовать дизайн из `REVIEW-runtime-integration-design.md`: встроить validation в `execute_job.py`, review batch cadence в `claw.py worker`.
 - Применять `routing_rules.yaml` в runtime при создании job, а не держать rules только в registry.
 
 ### Средний приоритет
@@ -323,8 +322,8 @@ claw/
 ---
 
 ## Ближайшие шаги
-1. Убрать race в нумерации `RUN-XXXX`
-2. Встроить schema validation и review batch в основной runtime без ручного вызова отдельных CLI
+1. ~~Убрать race в нумерации `RUN-XXXX`~~ — **✅ сделано**
+2. Реализовать дизайн из `REVIEW-runtime-integration-design.md` (Codex-задача с готовой спекой по секциям 5.3 + 5.4)
 3. Применить `routing_rules.yaml` и `reviewer_policy.yaml` в runtime, а не только хранить их в registry
 4. Решить, нужен ли multi-project worker loop или пока достаточно project-scoped worker
 5. Добавить bridge в OpenClaw для queue submit / run status / completion summary
