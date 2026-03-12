@@ -60,7 +60,7 @@ done
 for round in 1 2 3; do
   for index in 1 2 3 4 5 6; do
     CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
-      python3 "$workspace/scripts/claw.py" worker "$project_root" --once >"$workspace/worker-$round-$index.stdout" 2>"$workspace/worker-$round-$index.stderr" &
+      python3 "$workspace/scripts/claw.py" worker "$project_root" --once --skip-review >"$workspace/worker-$round-$index.stdout" 2>"$workspace/worker-$round-$index.stderr" &
   done
   wait
 

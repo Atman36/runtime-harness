@@ -5,7 +5,7 @@
 ---
 
 ## Текущая фаза
-**Этап 8/9 — Scheduler + Reliability complete**
+**v2 autonomy slice complete**
 
 ## Статус этапов
 
@@ -59,16 +59,17 @@
 - **Добавлен `docs/PARALLEL_EXECUTION.md`**: зафиксированы worktree isolation, edit scope discipline, merge rules и требования к непрерывному run→review→next-task циклу
 - **Hardening slice `9.6–9.9` закрыт**: trusted argv contract для env overrides, safe JSON fallback в `claw status`, lock-based `git_worktree` materialization, timeout clamp, reviewer registry validation, side-effect free `is_dead_letter()`
 - **Scheduler/orchestration slice `8.1–8.4` закрыт**: `claw scheduler`, `claw dashboard`, filesystem-backed `ask-human` approvals и `claw orchestrate`
+- **Auto-review executor закрыт**: `claw.py worker` автоматически запускает reviewer agent по pending decision stubs сразу после batch generation
+- **Follow-up task auto-enqueue закрыт**: `needs_follow_up` reviewer decisions материализуются в новые `TASK-*` и сразу ставятся в queue
+- **Failure budget закрыт**: `state/orchestration_state.json` хранит consecutive failures между вызовами `orchestrate`, а retry approval очищает stale queued retry
 
 ## In Progress
 
-_(docs sync for scheduler/orchestration flows)_
+_(нет)_
 
 ## Next
 
-1. Auto-review executor поверх существующих review decision stubs
-2. Follow-up task materialization из `needs_follow_up`
-3. Дописать docs/examples для scheduler/orchestrate approval loop
+_(нет — roadmap tasks закрыты)_
 
 ---
 
@@ -153,3 +154,5 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | 9.1 + 10.1 + 10.3 docs realignment after dual-agent run | `README.md`, `docs/ARCHITECTURE.md`, `docs/CONTRACT_VERSIONING.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `git show`; selective merge from parallel worktrees; `bash tests/run_all.sh` | ✅ architecture/versioning story documented; roadmap kept in sync without losing newer 9.7-9.9 items; dual-agent merge insights captured in docs | 10.2 parallel execution guide |
 | 2026-03-13 | 10.2 parallel execution guide + continuous loop requirements | `docs/PARALLEL_EXECUTION.md`, `README.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/run_all.sh` | ✅ worktree isolation, merge discipline, concurrency groups and requirements for autonomous run→review→next-task loop documented; backlog extended with 8.4 continuous orchestration loop | 9.6 stress/failure injection |
 | 2026-03-13 | 9.6–9.9 runtime hardening + 8.1–8.4 scheduler/orchestration | `scripts/claw.py`, `scripts/execute_job.py`, `scripts/hooklib.py`, `scripts/generate_review_batch.py`, `scripts/reconcile_hooks.py`, `_system/engine/trusted_command.py`, `_system/engine/agent_exec.py`, `tests/concurrency_stress_test.sh`, `tests/runtime_hardening_test.sh`, `tests/scheduler_dashboard_test.sh`, `tests/orchestration_loop_test.sh`, `tests/run_all.sh`, `.gitignore`, `docs/*.md`, `README.md` | `bash tests/runtime_hardening_test.sh`; `bash tests/concurrency_stress_test.sh`; `bash tests/scheduler_dashboard_test.sh`; `bash tests/orchestration_loop_test.sh`; `bash tests/run_all.sh` | ✅ trusted argv overrides, safe status/worktree/runtime fixes, fair multi-project scheduler, richer dashboard, ask-human approvals and continuous task loop implemented end-to-end | auto-review executor |
+| 2026-03-13 | Верификация закрытия эпиков 9.6–9.9, 8.1–8.4 и анализ оставшихся дыр в orchestrate loop | `scripts/claw.py` (`cmd_orchestrate`, `evaluate_run_decision`), `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/run_all.sh`; code audit `cmd_orchestrate` + decision engine | ✅ все тесты зелёные; confirmed: follow_up_task не материализуется, failure budget отсутствует — зафиксированы как следующие задачи | follow-up task auto-enqueue |
+| 2026-03-13 | v2 autonomy closure: auto-review executor + follow-up materialization + failure budget | `scripts/claw.py`, `tests/orchestration_autonomy_test.sh`, `tests/review_runtime_integration_test.sh`, `tests/worker_reliability_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/orchestration_autonomy_test.sh`; `bash tests/orchestration_loop_test.sh`; `bash tests/review_runtime_integration_test.sh`; `bash tests/worker_reliability_test.sh`; `bash tests/run_all.sh` | ✅ reviewer agent auto-starts from worker, `needs_follow_up` creates and enqueues new tasks, failure budget persists across orchestrate invocations, retry approval drops stale queued retries | — |

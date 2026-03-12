@@ -23,17 +23,21 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileQueue, QueueEmpty, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
+from _system.engine import FileQueue, QueueEmpty, build_agent_command, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
+from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
 from generate_review_batch import POLICY_PATH, classify_run, generate_batches, load_policy, load_run  # noqa: E402
 from hooklib import dispatch_hook_file, iter_hook_files, trim_text  # noqa: E402
 
 
 CADENCE_STATE_FILE = "review_cadence.json"
 METRICS_SNAPSHOT_FILE = "metrics_snapshot.json"
+ORCHESTRATION_STATE_FILE = "orchestration_state.json"
 FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
+TASK_ID_RE = re.compile(r"^TASK-(\d+)$")
 DEFAULT_WORKER_LEASE_SECONDS = 600
 DEFAULT_RETRY_BACKOFF_BASE_SECONDS = 30
 DEFAULT_RETRY_BACKOFF_MAX_SECONDS = 300
+DEFAULT_ORCHESTRATE_FAILURE_BUDGET = 3
 TASK_DONE_STATUSES = {"done", "completed", "accepted"}
 TASK_ACTIVE_STATUSES = {"in_progress", "running", "queued", "awaiting_review", "awaiting_approval"}
 TASK_BLOCKED_STATUSES = {"blocked", "cancelled"}
@@ -124,6 +128,44 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     finally:
         if temp_path.exists():
             temp_path.unlink()
+
+
+def load_orchestration_state(project_root: Path) -> dict:
+    path = project_root / "state" / ORCHESTRATION_STATE_FILE
+    default_state = {
+        "consecutive_failures": 0,
+        "last_run_id": None,
+        "last_decision": None,
+        "last_updated_at": None,
+    }
+    try:
+        payload = read_json(path)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return dict(default_state)
+    if not isinstance(payload, dict):
+        return dict(default_state)
+    try:
+        consecutive_failures = max(0, int(payload.get("consecutive_failures", 0)))
+    except (TypeError, ValueError):
+        consecutive_failures = 0
+    return {
+        "consecutive_failures": consecutive_failures,
+        "last_run_id": payload.get("last_run_id"),
+        "last_decision": payload.get("last_decision"),
+        "last_updated_at": payload.get("last_updated_at"),
+    }
+
+
+def save_orchestration_state(project_root: Path, state: dict) -> None:
+    write_json_atomic(
+        project_root / "state" / ORCHESTRATION_STATE_FILE,
+        {
+            "consecutive_failures": max(0, int(state.get("consecutive_failures", 0))),
+            "last_run_id": state.get("last_run_id"),
+            "last_decision": state.get("last_decision"),
+            "last_updated_at": state.get("last_updated_at"),
+        },
+    )
 
 
 def hook_counts(project_root: Path) -> dict[str, int]:
@@ -257,6 +299,98 @@ def update_task_status(task_path: Path, status: str) -> None:
     write_front_matter(task_path, front_matter, body)
 
 
+def next_task_id(project_root: Path) -> str:
+    tasks_root = project_root / "tasks"
+    max_index = 0
+    for task_path in tasks_root.glob("TASK-*.md"):
+        match = TASK_ID_RE.match(task_path.stem)
+        if match is None:
+            continue
+        max_index = max(max_index, int(match.group(1)))
+    return f"TASK-{max_index + 1:03d}"
+
+
+def resolve_follow_up_spec_reference(project_root: Path, meta: dict) -> str:
+    task_rel_path = str(meta.get("task_path") or "").strip()
+    if task_rel_path:
+        source_task = (project_root / task_rel_path).resolve()
+        if source_task.is_file():
+            front_matter, _body = read_front_matter(source_task)
+            spec_reference = str(front_matter.get("spec") or "").strip()
+            if spec_reference:
+                return spec_reference
+
+    spec_rel_path = str(meta.get("spec_path") or "").strip()
+    if spec_rel_path:
+        tasks_root = project_root / "tasks"
+        return os.path.relpath(project_root / spec_rel_path, tasks_root)
+    return "../specs/SPEC-001.md"
+
+
+def find_follow_up_task(project_root: Path, *, review_id: str, action_id: str) -> Path | None:
+    tasks_root = project_root / "tasks"
+    for task_path in sorted(tasks_root.glob("TASK-*.md")):
+        front_matter, _body = read_front_matter(task_path)
+        if str(front_matter.get("source_review_id") or "").strip() != review_id:
+            continue
+        if str(front_matter.get("follow_up_action_id") or "").strip() != action_id:
+            continue
+        return task_path
+    return None
+
+
+def create_follow_up_task(
+    project_root: Path,
+    *,
+    meta: dict,
+    decision: dict,
+    action: dict,
+) -> Path:
+    task_id = next_task_id(project_root)
+    description = str(action.get("description") or "").strip()
+    source_task_id = str(meta.get("task_id") or "").strip()
+    assigned_agent = str(action.get("assigned_agent") or meta.get("preferred_agent") or "auto").strip() or "auto"
+    task_path = project_root / "tasks" / f"{task_id}.md"
+    title = f"Follow-up: {description}"
+    front_matter = {
+        "id": task_id,
+        "title": title,
+        "status": "todo",
+        "spec": resolve_follow_up_spec_reference(project_root, meta),
+        "preferred_agent": assigned_agent,
+        "review_policy": str(meta.get("review_policy") or "standard").strip() or "standard",
+        "priority": str(meta.get("priority") or "medium").strip() or "medium",
+        "project": project_root.name,
+        "needs_review": False,
+        "risk_flags": [],
+        "dependencies": [source_task_id] if source_task_id else [],
+        "tags": ["follow_up"],
+        "source_run_id": str(meta.get("run_id") or "").strip(),
+        "source_review_id": str(decision.get("review_id") or "").strip(),
+        "follow_up_action_id": str(action.get("action_id") or "").strip(),
+    }
+    body = "\n".join(
+        [
+            "# Task",
+            "",
+            "## Goal",
+            description,
+            "",
+            "## Context",
+            f"- Generated from review decision `{decision.get('review_id', '')}` for run `{meta.get('run_id', '')}`.",
+            f"- Source task: `{source_task_id or 'unknown'}`.",
+            f"- Follow-up action: `{action.get('action_id', '')}`.",
+            "",
+            "## Notes",
+            "- Auto-generated by `claw orchestrate` from reviewer follow-up actions.",
+            "- Keep scope limited to the reviewer-requested delta.",
+            "",
+        ]
+    )
+    write_front_matter(task_path, front_matter, body)
+    return task_path
+
+
 def approvals_root(project_root: Path) -> Path:
     return project_root / "state" / "approvals"
 
@@ -276,6 +410,18 @@ def ensure_approval_dirs(project_root: Path) -> dict[str, Path]:
 def approval_counts(project_root: Path) -> dict[str, int]:
     directories = ensure_approval_dirs(project_root)
     return {name: len(list(path.glob("*.json"))) for name, path in directories.items()}
+
+
+def drop_queue_job(project_root: Path, job_id: str) -> bool:
+    queue = FileQueue(queue_root_for_project(project_root))
+    path = queue.find_job(job_id)
+    if path is None:
+        return False
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def load_approval_requests(project_root: Path, *, state: str = "pending") -> list[dict]:
@@ -351,6 +497,7 @@ def resolve_approval_request(project_root: Path, approval_id: str, *, decision: 
         task_path = (project_root / task_rel_path).resolve()
         if task_path.is_file():
             if decision == "approved" and payload.get("requested_action") == "retry":
+                drop_queue_job(project_root, str(payload.get("run_id") or ""))
                 update_task_status(task_path, "todo")
             elif decision == "approved" and payload.get("requested_action") == "accept":
                 update_task_status(task_path, "done")
@@ -461,6 +608,7 @@ def load_pending_review_decisions(project_root: Path, *, run_id: str | None = No
             continue
         if run_id and payload.get("run_id") != run_id:
             continue
+        payload["decision_file"] = path.relative_to(project_root).as_posix()
         pending.append(payload)
     return pending
 
@@ -477,12 +625,127 @@ def load_resolved_review_decision(project_root: Path, run_id: str) -> dict | Non
             continue
         if payload.get("decision") in {"pending", None}:
             continue
+        payload["decision_file"] = path.relative_to(project_root).as_posix()
         resolved.append(payload)
 
     if not resolved:
         return None
     resolved.sort(key=lambda payload: str(payload.get("decided_at") or payload.get("review_id") or ""))
     return resolved[-1]
+
+
+def record_orchestration_decision(project_root: Path, *, run_id: str, decision: dict, failure_budget: int) -> dict:
+    state = load_orchestration_state(project_root)
+    outcome = str(decision.get("decision") or "unknown")
+    reason = str(decision.get("reason") or outcome)
+    if outcome == "accept":
+        state["consecutive_failures"] = 0
+    elif outcome == "ask_human" and reason in {"run_failed", "rejected"}:
+        state["consecutive_failures"] = int(state.get("consecutive_failures", 0)) + 1
+    state["last_run_id"] = run_id
+    state["last_decision"] = reason
+    state["last_updated_at"] = utc_now()
+    save_orchestration_state(project_root, state)
+    return {
+        "consecutive_failures": int(state.get("consecutive_failures", 0)),
+        "failure_budget": max(1, int(failure_budget)),
+        "failure_budget_exhausted": int(state.get("consecutive_failures", 0)) >= max(1, int(failure_budget)),
+        "last_run_id": state.get("last_run_id"),
+        "last_decision": state.get("last_decision"),
+        "last_updated_at": state.get("last_updated_at"),
+    }
+
+
+def materialize_follow_up_tasks(project_root: Path, run_dir: Path, decision: dict) -> dict:
+    decision_file = decision.get("decision_file")
+    decision_path = (project_root / str(decision_file)).resolve() if isinstance(decision_file, str) and decision_file else None
+    actions = decision.get("follow_up_actions")
+    if not isinstance(actions, list) or not actions:
+        return {"status": "missing_follow_up_actions", "tasks": [], "runs": []}
+
+    meta, _meta_error = load_json_status(run_dir / "meta.json")
+    if not meta:
+        return {"status": "missing_run_meta", "tasks": [], "runs": []}
+
+    created_tasks: list[dict] = []
+    enqueued_runs: list[dict] = []
+    updated_actions: list[dict] = []
+
+    for raw_action in actions:
+        action = dict(raw_action) if isinstance(raw_action, dict) else {}
+        action_id = str(action.get("action_id") or "").strip()
+        description = str(action.get("description") or "").strip()
+        action_status = str(action.get("status") or "pending").strip() or "pending"
+        if not action_id or not description:
+            updated_actions.append(action)
+            continue
+
+        existing_task: Path | None = None
+        existing_task_path = str(action.get("task_path") or "").strip()
+        if existing_task_path:
+            candidate = (project_root / existing_task_path).resolve()
+            if candidate.is_file():
+                existing_task = candidate
+        if existing_task is None:
+            existing_task = find_follow_up_task(project_root, review_id=str(decision.get("review_id") or "").strip(), action_id=action_id)
+
+        if existing_task is None and action_status == "pending":
+            existing_task = create_follow_up_task(project_root, meta=meta, decision=decision, action=action)
+            created_tasks.append(
+                {
+                    "task_id": existing_task.stem,
+                    "task_path": existing_task.relative_to(project_root).as_posix(),
+                }
+            )
+
+        if existing_task is not None:
+            action["task_id"] = existing_task.stem
+            action["task_path"] = existing_task.relative_to(project_root).as_posix()
+            task_front_matter, _body = read_front_matter(existing_task)
+            task_status = str(task_front_matter.get("status") or "todo").strip().lower()
+            if task_status in TASK_DONE_STATUSES:
+                action["status"] = "done"
+                updated_actions.append(action)
+                continue
+            if task_status in TASK_ACTIVE_STATUSES:
+                action["status"] = "in_progress"
+                updated_actions.append(action)
+                continue
+
+        if existing_task is not None and action_status == "pending":
+            previous_status = str(read_front_matter(existing_task)[0].get("status") or "todo").strip().lower() or "todo"
+            update_task_status(existing_task, "queued")
+            try:
+                follow_up_run_dir, _payload = enqueue_task_path(existing_task)
+            except Exception:
+                update_task_status(existing_task, previous_status)
+                raise
+            action["status"] = "in_progress"
+            action["materialized_at"] = utc_now()
+            action["enqueued_run_id"] = follow_up_run_dir.name
+            action["enqueued_run_path"] = follow_up_run_dir.relative_to(project_root).as_posix()
+            enqueued_runs.append(
+                {
+                    "run_id": follow_up_run_dir.name,
+                    "run_path": follow_up_run_dir.relative_to(project_root).as_posix(),
+                    "task_id": existing_task.stem,
+                }
+            )
+
+        updated_actions.append(action)
+
+    if decision_path is not None:
+        updated_decision = dict(decision)
+        updated_decision.pop("decision_file", None)
+        updated_decision["follow_up_actions"] = updated_actions
+        if created_tasks or enqueued_runs:
+            updated_decision["follow_up_materialized_at"] = utc_now()
+        write_json_atomic(decision_path, updated_decision)
+
+    if not created_tasks and not enqueued_runs and not any(str(action.get("task_path") or "").strip() for action in updated_actions):
+        return {"status": "missing_follow_up_actions", "tasks": [], "runs": []}
+
+    return {"status": "materialized", "tasks": created_tasks, "runs": enqueued_runs}
 
 
 def recent_failure_records(project_root: Path, *, limit: int = 3) -> list[dict]:
@@ -609,18 +872,28 @@ def evaluate_run_decision(project_root: Path, run_dir: Path, *, result_status: s
             reason="run_failed",
             requested_action="retry",
         )
-        return {"decision": "ask_human", "approval_id": approval["approval_id"]}
+        return {"decision": "ask_human", "approval_id": approval["approval_id"], "reason": "run_failed"}
 
     pending_reviews = load_pending_review_decisions(project_root, run_id=run_id)
     if pending_reviews:
-        return {"decision": "awaiting_review", "pending_reviews": len(pending_reviews)}
+        return {"decision": "awaiting_review", "pending_reviews": len(pending_reviews), "reason": "pending_review"}
 
     resolved_decision = load_resolved_review_decision(project_root, run_id)
     if resolved_decision is not None:
         decision = str(resolved_decision.get("decision") or "pending")
         if decision in {"approved", "approved_with_notes", "waived"}:
             accept_run(project_root, run_dir)
-            return {"decision": "accept"}
+            return {"decision": "accept", "reason": decision}
+        if decision == "needs_follow_up":
+            follow_up = materialize_follow_up_tasks(project_root, run_dir, resolved_decision)
+            if follow_up["status"] == "materialized":
+                accept_run(project_root, run_dir)
+                return {
+                    "decision": "accept",
+                    "reason": "needs_follow_up",
+                    "follow_up_tasks": follow_up["tasks"],
+                    "follow_up_runs": follow_up["runs"],
+                }
         approval = create_approval_request(
             project_root,
             run_id=run_id,
@@ -630,10 +903,10 @@ def evaluate_run_decision(project_root: Path, run_dir: Path, *, result_status: s
             reason=decision,
             requested_action="follow_up" if decision == "needs_follow_up" else "retry",
         )
-        return {"decision": "ask_human", "approval_id": approval["approval_id"]}
+        return {"decision": "ask_human", "approval_id": approval["approval_id"], "reason": decision}
 
     accept_run(project_root, run_dir)
-    return {"decision": "accept"}
+    return {"decision": "accept", "reason": "no_review_required"}
 
 
 def collect_run_results(project_root: Path) -> list[tuple[Path, dict]]:
@@ -836,6 +1109,143 @@ def maybe_trigger_review(project_root: Path, run_dir: Path, result_status: str, 
         return []
 
 
+def build_review_prompt(project_root: Path, *, batch_id: str, reviewer: str, stubs: list[dict]) -> str:
+    lines = [
+        f"Review batch `{batch_id}` for project `{project_root.name}`.",
+        "Inspect the listed runs and update each pending review decision stub in place.",
+        "Only edit the decision stub JSON files listed below. Do not modify source code, task files, or run artifacts.",
+        "Each stub must remain valid against `_system/contracts/review_decision.schema.json`.",
+        "Set `decided_at` to the current UTC timestamp and replace `decision: pending` with one of:",
+        "- approved",
+        "- approved_with_notes",
+        "- waived",
+        "- rejected",
+        "- needs_follow_up",
+        "Populate `findings` for every stub. If you choose `needs_follow_up`, also populate `follow_up_actions` with actionable steps.",
+        "",
+        "Pending stubs:",
+    ]
+
+    for stub in stubs:
+        run_dir = find_run_dir(project_root, str(stub.get("run_id") or ""))
+        run_rel = run_dir.relative_to(project_root).as_posix() if run_dir is not None else "<missing-run>"
+        lines.extend(
+            [
+                f"- Stub: `{stub['decision_file']}`",
+                f"  Run: `{run_rel}`",
+                f"  Batch manifest: `reviews/{batch_id}.json`",
+                f"  Batch brief: `reviews/{batch_id}.md`",
+                "  Inspect:",
+                f"  - `{run_rel}/result.json`",
+                f"  - `{run_rel}/report.md`",
+                f"  - `{run_rel}/stdout.log`",
+                f"  - `{run_rel}/stderr.log`",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            f"Use reviewer agent `{reviewer}` judgement conservatively. When in doubt, prefer `approved_with_notes` over `approved`.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def run_agent_prompt(project_root: Path, *, agent: str, prompt: str) -> tuple[subprocess.CompletedProcess[str], str, int]:
+    agent_command = build_agent_command(REPO_ROOT, agent=agent, project_root=project_root, prompt=prompt)
+    override_env = f"CLAW_AGENT_COMMAND_{agent.upper()}"
+    override_raw = os.environ.get(override_env) or os.environ.get("CLAW_AGENT_COMMAND")
+    timeout_seconds = max(1, int(os.environ.get("CLAW_AGENT_TIMEOUT_SECONDS") or agent_command.timeout_seconds))
+    command = list(agent_command.command)
+    prompt_input: str | None = None
+    display = command_display(command)
+    cwd = agent_command.cwd
+
+    if override_raw:
+        env_name = override_env if os.environ.get(override_env) else "CLAW_AGENT_COMMAND"
+        override = parse_trusted_argv(override_raw, env_name=env_name)
+        if override is None:
+            raise ValueError(f"{env_name} must define a trusted argv command")
+        command = override
+        display = command_display(command)
+        prompt_input = prompt
+    elif agent_command.prompt_mode == "stdin":
+        prompt_input = prompt
+
+    try:
+        completed = subprocess.run(
+            command,
+            input=prompt_input,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        completed = subprocess.CompletedProcess(
+            command,
+            124,
+            exc.stdout or "",
+            (exc.stderr or "") + f"\nTimed out after {timeout_seconds} seconds\n",
+        )
+    return completed, display, timeout_seconds
+
+
+def maybe_execute_pending_reviews(project_root: Path) -> list[dict]:
+    pending = load_pending_review_decisions(project_root)
+    if not pending:
+        return []
+
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for stub in pending:
+        batch_id = str(stub.get("batch_id") or "ad-hoc")
+        reviewer = str(stub.get("reviewer_agent") or "claude")
+        grouped.setdefault((batch_id, reviewer), []).append(stub)
+
+    executions: list[dict] = []
+    for (batch_id, reviewer), stubs in sorted(grouped.items()):
+        prompt = build_review_prompt(project_root, batch_id=batch_id, reviewer=reviewer, stubs=stubs)
+        try:
+            completed, command, timeout_seconds = run_agent_prompt(project_root, agent=reviewer, prompt=prompt)
+        except Exception as exc:
+            executions.append(
+                {
+                    "batch_id": batch_id,
+                    "reviewer": reviewer,
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
+            continue
+
+        if completed.stdout:
+            sys.stderr.write(completed.stdout)
+        if completed.stderr:
+            sys.stderr.write(completed.stderr)
+
+        remaining = [
+            stub
+            for stub in load_pending_review_decisions(project_root)
+            if str(stub.get("batch_id") or "ad-hoc") == batch_id and str(stub.get("reviewer_agent") or "claude") == reviewer
+        ]
+        executions.append(
+            {
+                "batch_id": batch_id,
+                "reviewer": reviewer,
+                "status": "resolved" if completed.returncode == 0 and not remaining else "pending",
+                "command": command,
+                "timeout_seconds": timeout_seconds,
+                "returncode": completed.returncode,
+                "resolved_count": len(stubs) - len(remaining),
+                "remaining_count": len(remaining),
+            }
+        )
+
+    return executions
+
+
 def cmd_create_project(args: argparse.Namespace) -> int:
     command = ["bash", str(REPO_ROOT / "scripts" / "create_project.sh"), args.project_slug]
     if args.destination_root:
@@ -923,6 +1333,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
 
         next_retry_at = None
         retry_backoff_seconds = None
+        review_execution: list[dict] = []
         if completed.returncode == 0:
             queue.ack(claimed, result_status=result_status, exit_code=completed.returncode)
             queue_state = "done"
@@ -958,6 +1369,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
 
         if review_policy is not None:
             maybe_trigger_review(project_root, run_dir, result_status, review_policy)
+            review_execution = maybe_execute_pending_reviews(project_root)
 
         refresh_metrics_snapshot(project_root)
 
@@ -976,6 +1388,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
                     "next_retry_at": next_retry_at,
                     "retry_backoff_seconds": retry_backoff_seconds,
                     "heartbeat_warnings": heartbeat_warnings,
+                    "review_execution": review_execution,
                     "reclaimed": reclaimed,
                 },
                 ensure_ascii=False,
@@ -1162,9 +1575,11 @@ def cmd_resolve_approval(args: argparse.Namespace) -> int:
 def cmd_orchestrate(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     max_steps = max(1, int(args.max_steps))
+    failure_budget = max(1, int(args.failure_budget))
     steps = 0
     accepted_runs: list[str] = []
     last_status = "idle"
+    budget_state = load_orchestration_state(project_root)
 
     while steps < max_steps:
         dashboard = build_project_dashboard(project_root, recent_limit=args.recent, ready_limit=args.ready_limit)
@@ -1200,6 +1615,7 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
             break
 
         decision = evaluate_run_decision(project_root, run_dir, result_status=result_status)
+        budget_state = record_orchestration_decision(project_root, run_id=run_dir.name, decision=decision, failure_budget=failure_budget)
         if decision["decision"] == "accept":
             accepted_runs.append(run_dir.name)
             last_status = "accepted"
@@ -1208,7 +1624,7 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
             last_status = "awaiting_review"
             break
         if decision["decision"] == "ask_human":
-            last_status = "awaiting_approval"
+            last_status = "failure_budget_exhausted" if budget_state["failure_budget_exhausted"] else "awaiting_approval"
             break
 
     payload = {
@@ -1216,6 +1632,7 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "project": project_root.name,
         "steps": steps,
         "accepted_runs": accepted_runs,
+        "orchestration": budget_state,
         "pending_reviews": load_pending_review_decisions(project_root),
         "pending_approvals": load_approval_requests(project_root, state="pending"),
         "ready_tasks": [
@@ -1730,6 +2147,7 @@ def build_parser() -> argparse.ArgumentParser:
     orchestrate = subcommands.add_parser("orchestrate", help="Run a task->queue->worker decision loop for one project")
     orchestrate.add_argument("project_root")
     orchestrate.add_argument("--max-steps", type=int, default=1)
+    orchestrate.add_argument("--failure-budget", type=int, default=DEFAULT_ORCHESTRATE_FAILURE_BUDGET)
     orchestrate.add_argument("--skip-review", action="store_true")
     orchestrate.add_argument("--recent", type=int, default=5)
     orchestrate.add_argument("--ready-limit", type=int, default=3)

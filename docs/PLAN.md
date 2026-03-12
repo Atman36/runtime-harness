@@ -299,15 +299,14 @@ claw/
 
 ## Следующие незавершённые задачи
 
-- selective docs polish для новых scheduler/orchestration flows
-- auto-review executor поверх уже существующих decision stubs
-- follow-up task materialization из `needs_follow_up` reviewer decisions
+- _(нет — autonomy backlog закрыт)_
 
 **Закрыто в текущей сессии:**
 - **9.1:** queue/job contract versioning + migration story → `docs/CONTRACT_VERSIONING.md`
 - **9.2:** worker reliability maturity → retry/backoff + lease heartbeat + `dead_letter` wired into `cmd_worker`
 - **9.6–9.9:** runtime hardening + stress coverage → trusted command boundary, safe status JSON, worktree locks, timeout clamp, reviewer validation, side-effect free dead-letter checks
 - **8.1–8.4:** scheduler/orchestration layer → `scheduler`, `dashboard`, `ask-human`, `resolve-approval`, `orchestrate`
+- **v2 autonomy closure:** worker автоматически запускает reviewer agent по pending decision stubs; `needs_follow_up` reviewer decisions материализуются в новые `TASK-*` и сразу ставятся в queue; `state/orchestration_state.json` хранит failure budget между вызовами `orchestrate`
 - **10.1:** architecture doc → `docs/ARCHITECTURE.md`
 - **10.2:** parallel execution guide → `docs/PARALLEL_EXECUTION.md`
 - **10.3:** README realignment → `README.md`
@@ -448,22 +447,20 @@ claw/
 
 ### Низкий приоритет, но полезно
 - ~~Сохранить summary/metrics по runs и review batches в отдельный state snapshot для status/dashboard сценариев.~~ — **✅ сделано** (2026-03-13)
-- Добавить richer status view: последние ошибки, awaiting approval jobs, pending hooks, pending reviews.
-- Уточнить policy для `ask_human` и approval UX, чтобы `awaiting_approval` стало частью реального сценария, а не только queue state.
+- ~~Добавить richer status view: последние ошибки, awaiting approval jobs, pending hooks, pending reviews.~~ — **✅ сделано** (8.2, 2026-03-13)
+- ~~Уточнить policy для `ask_human` и approval UX, чтобы `awaiting_approval` стало частью реального сценария, а не только queue state.~~ — **✅ сделано** (8.3, 2026-03-13)
 
 ---
 
 ## Ближайшие шаги
-1. **9.6** — добавить concurrency / stress / failure-injection тесты для queue + worker + hooks
-2. **9.7** — ужесточить trust boundary для `CLAW_HOOK_COMMAND` и `CLAW_AGENT_COMMAND*`
-3. **9.8** — закрыть execution robustness gaps (`claw status`, `git_worktree`, timeout clamp)
-4. **9.9** — убрать latent runtime edge cases (`stdin` mode, reviewer validation, dead-letter predicate)
-5. **10.2** — оформить отдельный parallel execution guide по worktree isolation и merge discipline
-6. **8.2** — собрать richer status view по ошибкам, approvals, hooks и pending reviews
+
+Все roadmap-задачи из текущего плана закрыты.
+
+Следующие изменения теперь относятся уже к post-v2 расширениям, а не к незавершённому базовому execution loop.
 
 ---
 
-## Критерий успеха v1
+## Критерий успеха v1 — ✅ достигнут (commit `172bf5b`)
 `claw` считается достаточно собранным для v1, если пользователь может:
 - создать проект
 - добавить spec и task

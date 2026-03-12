@@ -71,6 +71,25 @@ exit 9
 EOF
 chmod +x "$workspace/scripts/fake_fail_agent.sh"
 
+cat > "$workspace/scripts/fake_reviewer.py" <<'EOF'
+#!/usr/bin/env python3
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.stdin.read()
+for path in sorted((Path.cwd() / "reviews" / "decisions").glob("*.json")):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("decision") != "pending":
+        continue
+    payload["decided_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    payload["decision"] = "approved"
+    payload["findings"] = []
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+EOF
+chmod +x "$workspace/scripts/fake_reviewer.py"
+
 project_root="$workspace/projects/demo-project"
 task_path="$project_root/tasks/TASK-001.md"
 today="$(date +"%Y-%m-%d")"
@@ -82,6 +101,7 @@ for _ in 1 2 3 4; do
 done
 
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
+CLAW_AGENT_COMMAND_CLAUDE="python3 $workspace/scripts/fake_reviewer.py" \
   python3 "$workspace/scripts/claw.py" worker "$project_root" >/dev/null
 
 assert_batch_count "$reviews_dir" 0
@@ -91,6 +111,7 @@ assert_contains "$cadence_state" '"successful_since_last_batch": 4'
 python3 "$workspace/scripts/claw.py" enqueue "$task_path" >/dev/null
 
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
+CLAW_AGENT_COMMAND_CLAUDE="python3 $workspace/scripts/fake_reviewer.py" \
   python3 "$workspace/scripts/claw.py" worker "$project_root" >/dev/null
 
 assert_batch_count "$reviews_dir" 1
@@ -111,6 +132,7 @@ path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 PY
 
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_fail_agent.sh" \
+CLAW_AGENT_COMMAND_CLAUDE="python3 $workspace/scripts/fake_reviewer.py" \
   python3 "$workspace/scripts/claw.py" worker "$project_root" >/dev/null
 
 assert_batch_count "$reviews_dir" 2

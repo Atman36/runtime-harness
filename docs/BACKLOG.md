@@ -134,7 +134,7 @@ E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8
 
 ---
 
-## Критерий v1 (DoD)
+## Критерий v1 (DoD) — ✅ достигнут (commit `172bf5b`)
 
 Пользователь может:
 - создать проект
@@ -144,3 +144,11 @@ E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8
 - посмотреть status run без ручного поиска по каталогу
 - собрать review batch по cadence и risk triggers
 - поставить задачу из OpenClaw и получить completion summary обратно
+- запустить `claw orchestrate` для непрерывного цикла задач до idle / approval
+
+## Следующая фаза (v2) — ✅ завершена
+
+Закрыто для полной автономии:
+- follow-up task auto-enqueue из `needs_follow_up` reviewer decisions
+- failure budget в orchestrate loop (N consecutive fails → stop)
+- auto-review executor (reviewer стартует автоматически после run)

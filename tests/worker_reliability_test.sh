@@ -121,7 +121,7 @@ done_one="$queue_root/done/RUN-0001.json"
 pending_one="$queue_root/pending/RUN-0001.json"
 success_stdout="$workspace/worker-success.stdout"
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
-  python3 "$workspace/scripts/claw.py" worker "$project_root" --once >"$success_stdout"
+  python3 "$workspace/scripts/claw.py" worker "$project_root" --once --skip-review >"$success_stdout"
 assert_file "$done_one"
 assert_not_exists "$pending_one"
 assert_contains "$success_stdout" '"queue_state": "done"'
@@ -134,7 +134,7 @@ done_two="$queue_root/done/RUN-0002.json"
 set_queue_field "$pending_two" "max_attempts" "3"
 set +e
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_fail_agent.sh" \
-  python3 "$workspace/scripts/claw.py" worker "$project_root" --once --retry-backoff-base-seconds 30 >"$retry_stdout" 2>"$workspace/worker-retry.stderr"
+  python3 "$workspace/scripts/claw.py" worker "$project_root" --once --skip-review --retry-backoff-base-seconds 30 >"$retry_stdout" 2>"$workspace/worker-retry.stderr"
 retry_rc=$?
 set -e
 assert_eq "$retry_rc" "7"
@@ -145,7 +145,7 @@ assert_contains "$pending_two" '"next_retry_at"'
 assert_contains "$pending_two" '"retry_backoff_seconds": 30'
 
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
-  python3 "$workspace/scripts/claw.py" worker "$project_root" --once >"$retry_idle_stdout"
+  python3 "$workspace/scripts/claw.py" worker "$project_root" --once --skip-review >"$retry_idle_stdout"
 assert_contains "$retry_idle_stdout" '"status": "idle"'
 assert_file "$pending_two"
 
@@ -162,7 +162,7 @@ PY
 
 retry_resume_stdout="$workspace/worker-retry-resume.stdout"
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
-  python3 "$workspace/scripts/claw.py" worker "$project_root" --once >"$retry_resume_stdout"
+  python3 "$workspace/scripts/claw.py" worker "$project_root" --once --skip-review >"$retry_resume_stdout"
 assert_contains "$retry_resume_stdout" '"queue_state": "done"'
 assert_file "$done_two"
 
@@ -173,7 +173,7 @@ dead_stdout="$workspace/worker-dead.stdout"
 set_queue_field "$pending_three" "max_attempts" "1"
 set +e
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_fail_agent.sh" \
-  python3 "$workspace/scripts/claw.py" worker "$project_root" --once >"$dead_stdout" 2>"$workspace/worker-dead.stderr"
+  python3 "$workspace/scripts/claw.py" worker "$project_root" --once --skip-review >"$dead_stdout" 2>"$workspace/worker-dead.stderr"
 dead_rc=$?
 set -e
 assert_eq "$dead_rc" "7"
@@ -187,7 +187,7 @@ python3 "$workspace/scripts/claw.py" enqueue "$task_path" >/dev/null
 heartbeat_stdout="$workspace/worker-heartbeat.stdout"
 done_four="$queue_root/done/RUN-0004.json"
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_sleep_success_agent.sh" \
-  python3 "$workspace/scripts/claw.py" worker "$project_root" --once --lease-seconds 1 --heartbeat-interval-seconds 0.2 >"$heartbeat_stdout"
+  python3 "$workspace/scripts/claw.py" worker "$project_root" --once --skip-review --lease-seconds 1 --heartbeat-interval-seconds 0.2 >"$heartbeat_stdout"
 assert_file "$done_four"
 assert_contains "$heartbeat_stdout" '"queue_state": "done"'
 assert_contains "$done_four" '"event": "lease_renewed"'
