@@ -1,7 +1,7 @@
 # PLAN — дальнейшее развитие `claw`
 
 Дата: 2026-03-12
-Статус: working plan / updated after orchestration session (race fix + runtime design)
+Статус: working plan / updated after runtime validation + audit gap review
 
 ## Цель
 Собрать в `claw` рабочую инфраструктуру для управления проектами, спеками, задачами и агентными запусками через Codex / Claude с фиксированными артефактами, file-backed queue, hook/callback-механикой и review-циклом.
@@ -90,6 +90,8 @@ claw/
 - Локальный запуск `codex` и `claude` из репозитория подтверждён smoke-проверкой
 - **Race в `RUN-XXXX` устранена** (commit `fe11887`): `mkdir -p` → атомарный retry-loop с `mkdir`
 - **Архитектурный дизайн runtime-интеграции** завершён: `projects/demo-project/reviews/REVIEW-runtime-integration-design.md`
+- **Runtime validation встроена в execution lifecycle**: `execute_job.py` пишет `validation` в `result.json` и `meta.json`
+- **Review cadence встроен в worker lifecycle**: `claw.py worker` ведёт `state/review_cadence.json` и автоматически вызывает review batch generation
 
 ### Тестовое покрытие
 - `foundation_scaffold_test.sh`
@@ -100,6 +102,7 @@ claw/
 - `queue_lifecycle_test.sh`
 - `contracts_validation_test.sh`
 - `review_batch_test.sh`
+- `review_runtime_integration_test.sh`
 
 ---
 
@@ -175,7 +178,7 @@ claw/
 ---
 
 ## Этап 5 — reviewer system
-**Статус:** in progress / дизайн интеграции готов, реализация ждёт
+**Статус:** ✅ завершён локально
 
 ### Уже сделано
 - счётчик successful runs реализован через cadence batch size из policy
@@ -183,10 +186,12 @@ claw/
 - opposite-model reviewer mapping применяется из policy registry
 - immediate triggers работают для `failed`, `needs_review`, `risky_area`, `uncertainty`, `large_diff`
 - **архитектурный дизайн** встройки validation + review batch в runtime lifecycle готов (`REVIEW-runtime-integration-design.md`)
-
-### Осталось
-- реализовать дизайн: `run_post_artifact_validation()` в `execute_job.py`, `maybe_trigger_review()` в `claw.py`, `state/review_cadence.json`
-- связать batch generation с chat/OpenClaw flow
+- реализован `run_post_artifact_validation()` в `execute_job.py`
+- реализован `maybe_trigger_review()` в `claw.py`
+- добавлен `state/review_cadence.json` как project-level state для cadence review
+- `result.schema.json` расширен под `validation`
+- worker lifecycle автоматически запускает review batch generation после завершения run
+- добавлен интеграционный тест на cadence + immediate review trigger
 
 ### Правила
 - review после каждых 5 successful runs
@@ -204,8 +209,27 @@ claw/
 
 ---
 
-## Этап 6 — OpenClaw integration
-**Цель:** управлять всем этим из чата
+## Этап 6 — Runtime hardening before OpenClaw
+**Цель:** довести planner/routing/workspace contracts до реального execution path
+
+### Сделать
+- встроить `task_planner.py` в `build_run.py`, чтобы `routing` и `execution` реально попадали в `job.json` / `meta.json`
+- привязать `execute_job.py` к `job.execution`, а не только к registry/env overrides
+- материализовать workspace backends: `shared_project`, `git_worktree`, `isolated_checkout`
+- сделать `claw launch-plan` для dry-run preview: агент, routing rule, workspace mode, concurrency group, command preview
+- обновить template/demo artifacts под `preferred_agent: auto` и project-level execution defaults
+- закрыть тестами planner -> build -> execute path
+
+### DoD
+- planner используется в основном runtime path, а не только импортируется как helper
+- `routing_rules.yaml` реально влияет на созданный run
+- execution/workspace policy читается из job artifacts и воспроизводима при worker execution
+- demo/template сценарии покрывают routing + execution defaults
+
+---
+
+## Этап 7 — OpenClaw integration
+**Цель:** управлять runtime из чата после стабилизации execution layer
 
 ### Сделать
 - команды / сценарии для:
@@ -221,6 +245,25 @@ claw/
 - задачу можно ставить из OpenClaw
 - completion summary приходит обратно
 - review можно инициировать без ручной возни
+
+---
+
+## Что сделано в последней сессии
+
+- встроена post-artifact validation прямо в `scripts/execute_job.py`
+- `result.json` и `meta.json` теперь получают `validation` snapshot после записи артефактов
+- `scripts/claw.py worker` теперь ведёт cadence state в `state/review_cadence.json`
+- review batch теперь создаётся автоматически при immediate trigger и по cadence успешных запусков
+- тестовые сценарии очищены от закоммиченных runtime artifacts, чтобы прогоны были детерминированными
+- полный `tests/run_all.sh` подтверждён после интеграции reviewer runtime slice
+
+## Следующие незавершённые задачи
+
+- встроить `task_planner.py` в `scripts/build_run.py` и схемы артефактов
+- довести execution contract до фактического workspace selection/materialization в `execute_job.py`
+- добавить `claw launch-plan` и `claw review-batch` в unified CLI
+- обновить template/demo project под `preferred_agent: auto` и execution defaults
+- после этого возвращаться к OpenClaw bridge
 
 ---
 
@@ -290,14 +333,17 @@ claw/
 - Standalone `validate_artifacts.py` и `generate_review_batch.py` позволяют проверять систему независимо от worker loop, что хорошо для smoke/debug сценариев.
 
 ### Что проявилось как слабое место
-- Validation и review batch пока живут как отдельные CLI, а не как часть обязательного runtime lifecycle (дизайн готов, нужна реализация).
+- `task_planner.py` и `agent_exec.py` добавлены, но пока не встроены в основной путь `build_run.py -> execute_job.py`.
+- `routing_rules.yaml` есть и читается planner-модулем, но при создании реального run выбор агента всё ещё идёт из front matter / fallback `codex`.
+- execution/workspace contract не сохраняется в run artifacts и поэтому не управляет фактическим запуском worker'а.
 - `docs/` глобально заигнорен в репозитории, из-за чего изменения в документации легко не попадают в коммиты случайно.
-- `review batch` сейчас формируется по существующим run artifacts, но не имеет автоматического триггера после завершения worker/hook cycle.
+- review cadence встроен, но отсутствует formal review decision lifecycle: findings, approvals, waivers, follow-up actions.
+- lease renewal API и dead-letter state появились в queue, но worker пока не использует heartbeat/retry policy как first-class operational contract.
 - Worker остаётся project-scoped; для реальной эксплуатации может понадобиться scheduler над несколькими проектами.
 
 ### Практический вывод
 - Архитектура уже жизнеспособна как local-first orchestration shell.
-- Следующий потолок сложности теперь не в queue/hook mechanics, а в orchestration policy: routing, automatic review cadence, approval UX и multi-project scheduling.
+- Следующий потолок сложности теперь не в queue/hook mechanics, а в orchestration policy: routing, execution isolation, review decisions и queue maturity.
 
 ---
 
@@ -305,13 +351,20 @@ claw/
 
 ### Высокий приоритет
 - ~~Убрать race в генерации `RUN-XXXX`~~ — **✅ сделано** (commit `fe11887`)
-- Реализовать дизайн из `REVIEW-runtime-integration-design.md`: встроить validation в `execute_job.py`, review batch cadence в `claw.py worker`.
+- ~~Реализовать дизайн из `REVIEW-runtime-integration-design.md`: встроить validation в `execute_job.py`, review batch cadence в `claw.py worker`.~~ — **✅ сделано**
+- Встроить planner в runtime path: `build_run.py` должен использовать `task_planner.py` и сохранять `routing` / `execution` в artifacts.
 - Применять `routing_rules.yaml` в runtime при создании job, а не держать rules только в registry.
+- Подчинить workspace execution контракту из job artifacts и довести backends `shared_project` / `git_worktree` / `isolated_checkout`.
+- Добавить `claw launch-plan` для dry-run preview execution decision.
 
 ### Средний приоритет
+- Ввести formal review decision artifacts: `review_decision.json`, `findings.json`, approvals, waivers, follow-up queue.
+- Довести queue maturity: retry/backoff policy, poison-job threshold, DLQ handling, lease renewal heartbeat в worker loop.
+- Формализовать hook delivery contract: idempotency, event versioning, retry semantics.
 - Добавить явный queue/job contract versioning и migration story для будущих изменений схем.
 - Сделать `claw review-batch` как часть unified CLI вместо standalone entrypoint-only usage.
 - Добавить multi-project worker/reconciler loop с безопасным fair scheduling.
+- Обновить template/demo artifacts под `preferred_agent: auto`, execution defaults и routing coverage tests.
 - Исправить `.gitignore` политику для `docs/`, чтобы проектная документация не терялась из индекса по умолчанию.
 
 ### Низкий приоритет, но полезно
@@ -323,10 +376,11 @@ claw/
 
 ## Ближайшие шаги
 1. ~~Убрать race в нумерации `RUN-XXXX`~~ — **✅ сделано**
-2. Реализовать дизайн из `REVIEW-runtime-integration-design.md` (Codex-задача с готовой спекой по секциям 5.3 + 5.4)
-3. Применить `routing_rules.yaml` и `reviewer_policy.yaml` в runtime, а не только хранить их в registry
-4. Решить, нужен ли multi-project worker loop или пока достаточно project-scoped worker
-5. Добавить bridge в OpenClaw для queue submit / run status / completion summary
+2. Встроить `task_planner.py` в `scripts/build_run.py` и расширить `job.schema.json` / `meta.schema.json` под `routing` + `execution`
+3. Переключить `scripts/execute_job.py` на `job.execution.workspace_mode` и материализацию workspace backend'ов
+4. Добавить `claw launch-plan` и unified `claw review-batch`
+5. Обновить demo/template project так, чтобы routing проверялся через `preferred_agent: auto`
+6. После стабилизации runtime вернуться к OpenClaw bridge
 
 ---
 
