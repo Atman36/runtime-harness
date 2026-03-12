@@ -1,16 +1,41 @@
 #!/usr/bin/env python3
 
-import json
+from __future__ import annotations
+
 import os
 import shlex
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from hooklib import build_hook_payload, dispatch_hook_file, read_json, trim_text, utc_now, write_hook_payload, write_json
+
+
+@dataclass(frozen=True)
+class WorkspaceContext:
+    mode: str
+    source_project_root: Path
+    project_root: Path
+    run_dir: Path
+    workspace_root: Path
+    git_root: Path | None = None
+    preserved: bool = True
+
+    def snapshot(self, cwd: Path) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "source_project_root": str(self.source_project_root),
+            "project_root": str(self.project_root),
+            "run_dir": str(self.run_dir),
+            "workspace_root": str(self.workspace_root),
+            "git_root": str(self.git_root) if self.git_root is not None else None,
+            "cwd": str(cwd),
+            "preserved": self.preserved,
+        }
 
 
 def resolve_run_dir(argument: str) -> Path:
@@ -57,6 +82,7 @@ def default_agent_config(agent: str) -> dict:
             "args": "exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -C {project_root}",
             "prompt_mode": "arg",
             "cwd": "project_root",
+            "workspace_mode": "project_root",
             "default_timeout_seconds": "3600",
         },
         "claude": {
@@ -64,6 +90,7 @@ def default_agent_config(agent: str) -> dict:
             "args": "-p --permission-mode bypassPermissions --output-format text",
             "prompt_mode": "arg",
             "cwd": "project_root",
+            "workspace_mode": "project_root",
             "default_timeout_seconds": "3600",
         },
     }
@@ -79,42 +106,181 @@ def parse_timeout_seconds(raw_value: str | int | None, fallback: int) -> int:
         return fallback
 
 
-def render_agent_args(template: str, project_root: Path, run_dir: Path) -> list[str]:
+def render_agent_args(
+    template: str,
+    project_root: Path,
+    run_dir: Path,
+    *,
+    source_project_root: Path,
+    workspace_root: Path,
+) -> list[str]:
     if not template:
         return []
-    rendered = template.format(project_root=project_root, run_dir=run_dir)
+    rendered = template.format(
+        project_root=project_root,
+        source_project_root=source_project_root,
+        run_dir=run_dir,
+        workspace_root=workspace_root,
+    )
     return shlex.split(rendered)
 
 
-def resolve_command_cwd(mode: str, project_root: Path, run_dir: Path) -> Path:
+def resolve_command_cwd(mode: str, project_root: Path, run_dir: Path, *, workspace_root: Path) -> Path:
     if mode == "project_root":
         return project_root
     if mode == "run_dir":
         return run_dir
+    if mode == "workspace_root":
+        return workspace_root
     raise ValueError(f"Unsupported agent cwd mode: {mode}")
 
 
-def build_command(agent: str, prompt: str, project_root: Path, run_dir: Path, registry: dict) -> tuple[list[str], str, int, str | None, Path]:
+def find_git_root(project_root: Path) -> Path:
+    completed = subprocess.run(
+        ["git", "-C", str(project_root), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        stderr = (completed.stderr or "").strip()
+        raise ValueError(f"git worktree mode requires a git repository: {stderr or project_root}")
+    git_root = (completed.stdout or "").strip()
+    if not git_root:
+        raise ValueError(f"Unable to resolve git root for {project_root}")
+    return Path(git_root).resolve()
+
+
+def workspace_base_path(git_root: Path) -> Path:
+    override = os.environ.get("CLAW_WORKSPACE_BASE_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return git_root.parent / f".{git_root.name}-worktrees"
+
+
+def _sanitize_segment(value: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in value).strip("-") or "workspace"
+
+
+def worktree_name_for_run(source_project_root: Path, run_dir: Path, git_root: Path) -> str:
+    try:
+        relative_project = source_project_root.relative_to(git_root)
+        project_token = "-".join(relative_project.parts)
+    except ValueError:
+        project_token = source_project_root.name
+    date_token = run_dir.parent.name if run_dir.parent.name else "run"
+    return _sanitize_segment(f"{project_token}-{date_token}-{run_dir.name}")
+
+
+def ensure_git_worktree(source_project_root: Path, run_dir: Path) -> WorkspaceContext:
+    git_root = find_git_root(source_project_root)
+    base_dir = workspace_base_path(git_root)
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    worktree_root = base_dir / worktree_name_for_run(source_project_root, run_dir, git_root)
+    if worktree_root.exists() and not (worktree_root / ".git").exists():
+        if any(worktree_root.iterdir()):
+            raise ValueError(f"Existing path is not a git worktree: {worktree_root}")
+    if not (worktree_root / ".git").exists():
+        completed = subprocess.run(
+            ["git", "-C", str(git_root), "worktree", "add", "--detach", str(worktree_root), "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            stderr = (completed.stderr or completed.stdout or "").strip()
+            raise ValueError(f"Failed to create git worktree at {worktree_root}: {stderr}")
+
+    try:
+        relative_project = source_project_root.relative_to(git_root)
+    except ValueError as exc:
+        raise ValueError(f"Project root {source_project_root} is not inside git root {git_root}") from exc
+
+    effective_project_root = (worktree_root / relative_project).resolve()
+    if not effective_project_root.exists():
+        raise ValueError(f"Effective project root missing inside worktree: {effective_project_root}")
+
+    return WorkspaceContext(
+        mode="git_worktree",
+        source_project_root=source_project_root,
+        project_root=effective_project_root,
+        run_dir=run_dir,
+        workspace_root=worktree_root,
+        git_root=git_root,
+        preserved=True,
+    )
+
+
+def resolve_workspace(agent: str, source_project_root: Path, run_dir: Path, registry: dict) -> WorkspaceContext:
+    agent_config = default_agent_config(agent)
+    agent_config.update(registry.get(agent, {}))
+    requested_mode = os.environ.get("CLAW_WORKSPACE_MODE") or agent_config.get("workspace_mode") or "project_root"
+    mode = str(requested_mode).strip().lower() or "project_root"
+
+    if mode == "project_root":
+        return WorkspaceContext(
+            mode="project_root",
+            source_project_root=source_project_root,
+            project_root=source_project_root,
+            run_dir=run_dir,
+            workspace_root=source_project_root,
+            git_root=None,
+            preserved=True,
+        )
+
+    if mode == "run_dir":
+        return WorkspaceContext(
+            mode="run_dir",
+            source_project_root=source_project_root,
+            project_root=source_project_root,
+            run_dir=run_dir,
+            workspace_root=run_dir,
+            git_root=None,
+            preserved=True,
+        )
+
+    if mode == "git_worktree":
+        return ensure_git_worktree(source_project_root, run_dir)
+
+    raise ValueError(f"Unsupported workspace mode: {mode}")
+
+
+def build_command(agent: str, prompt: str, workspace: WorkspaceContext, registry: dict) -> tuple[list[str], str, int, str | None, Path]:
     override = os.environ.get(f"CLAW_AGENT_COMMAND_{agent.upper()}") or os.environ.get("CLAW_AGENT_COMMAND")
     agent_config = default_agent_config(agent)
     agent_config.update(registry.get(agent, {}))
     default_timeout = parse_timeout_seconds(agent_config.get("default_timeout_seconds"), 3600)
 
-    if override:
-        return ["/bin/bash", "-lc", override], override, default_timeout, prompt, project_root
+    cwd_mode = str(agent_config.get("cwd", "project_root")).strip().lower() or "project_root"
+    working_directory = resolve_command_cwd(
+        cwd_mode,
+        workspace.project_root,
+        workspace.run_dir,
+        workspace_root=workspace.workspace_root,
+    )
 
-    executable = agent_config.get("command", "").strip()
+    if override:
+        return ["/bin/bash", "-lc", override], override, default_timeout, prompt, working_directory
+
+    executable = str(agent_config.get("command", "")).strip()
     if not executable:
         raise ValueError(f"Unsupported preferred_agent: {agent}")
 
-    prompt_mode = agent_config.get("prompt_mode", "arg").strip().lower() or "arg"
+    prompt_mode = str(agent_config.get("prompt_mode", "arg")).strip().lower() or "arg"
     if prompt_mode not in {"arg", "stdin"}:
         raise ValueError(f"Unsupported prompt mode for {agent}: {prompt_mode}")
 
-    cwd_mode = agent_config.get("cwd", "project_root").strip().lower() or "project_root"
-    working_directory = resolve_command_cwd(cwd_mode, project_root, run_dir)
-
-    command = [executable, *render_agent_args(agent_config.get("args", ""), project_root, run_dir)]
+    command = [
+        executable,
+        *render_agent_args(
+            str(agent_config.get("args", "")),
+            workspace.project_root,
+            workspace.run_dir,
+            source_project_root=workspace.source_project_root,
+            workspace_root=workspace.workspace_root,
+        ),
+    ]
     display_parts = list(command)
     prompt_input = None
 
@@ -128,7 +294,18 @@ def build_command(agent: str, prompt: str, project_root: Path, run_dir: Path, re
     return command, " ".join(display_parts), default_timeout, prompt_input, working_directory
 
 
-def render_report(job: dict, status: str, started_at: str, finished_at: str, exit_code: int, command_display: str, summary: str, artifacts: dict, working_directory: Path) -> str:
+def render_report(
+    job: dict,
+    status: str,
+    started_at: str,
+    finished_at: str,
+    exit_code: int,
+    command_display: str,
+    summary: str,
+    artifacts: dict,
+    working_directory: Path,
+    workspace: WorkspaceContext,
+) -> str:
     risk_line = "- None noted during execution."
     if status != "success":
         risk_line = "- Run failed or ended non-zero; inspect stderr.log before trusting artifacts."
@@ -156,6 +333,15 @@ def render_report(job: dict, status: str, started_at: str, finished_at: str, exi
         f"- Working directory: {working_directory}",
         f"- Stdout log: {artifacts.get('stdout_path', 'stdout.log')}",
         f"- Stderr log: {artifacts.get('stderr_path', 'stderr.log')}",
+        "",
+        "## Workspace",
+        f"- Mode: {workspace.mode}",
+        f"- Source project root: {workspace.source_project_root}",
+        f"- Effective project root: {workspace.project_root}",
+        f"- Workspace root: {workspace.workspace_root}",
+        f"- Run directory: {workspace.run_dir}",
+        f"- Git root: {workspace.git_root or 'n/a'}",
+        f"- Preserved: {'yes' if workspace.preserved else 'no'}",
         "",
         "## Risks",
         risk_line,
@@ -201,7 +387,7 @@ def main() -> int:
     result_path = run_dir / "result.json"
 
     try:
-        project_root = project_root_from_run_dir(run_dir)
+        source_project_root = project_root_from_run_dir(run_dir)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -225,11 +411,11 @@ def main() -> int:
     registry = parse_agents_registry(agents_registry_path)
 
     try:
+        workspace = resolve_workspace(preferred_agent, source_project_root, run_dir, registry)
         command, command_display, default_timeout, command_input, working_directory = build_command(
             preferred_agent,
             prompt,
-            project_root,
-            run_dir,
+            workspace,
             registry,
         )
     except ValueError as exc:
@@ -246,27 +432,35 @@ def main() -> int:
 
     created_at = meta.get("created_at") or result.get("created_at") or job.get("created_at") or utc_now()
     started_at = utc_now()
+    workspace_snapshot = workspace.snapshot(working_directory)
 
     meta.update(
         {
             "status": "running",
             "started_at": started_at,
+            "workspace": workspace_snapshot,
             "executor": {
                 "agent": preferred_agent,
                 "command": command_display,
+                "cwd": str(working_directory),
+                "workspace_mode": workspace.mode,
                 "timeout_seconds": timeout_seconds,
             },
         }
     )
     write_json(meta_path, meta)
 
-    running_result = {
-        "run_id": job.get("run_id"),
-        "status": "running",
-        "created_at": created_at,
-        "started_at": started_at,
-        "agent": preferred_agent,
-    }
+    running_result = dict(result)
+    running_result.update(
+        {
+            "run_id": job.get("run_id"),
+            "status": "running",
+            "created_at": created_at,
+            "started_at": started_at,
+            "agent": preferred_agent,
+            "workspace": workspace_snapshot,
+        }
+    )
     write_json(result_path, running_result)
 
     start_monotonic = time.monotonic()
@@ -312,23 +506,28 @@ def main() -> int:
     summary_source = stdout_text if stdout_text.strip() else stderr_text
     summary = trim_text(summary_source)
 
-    final_result = {
-        "run_id": job.get("run_id"),
-        "status": status,
-        "created_at": created_at,
-        "started_at": started_at,
-        "finished_at": finished_at,
-        "agent": preferred_agent,
-        "exit_code": exit_code,
-        "duration_seconds": duration_seconds,
-        "command": command_display,
-        "summary": summary,
-    }
+    final_result = dict(running_result)
+    final_result.update(
+        {
+            "run_id": job.get("run_id"),
+            "status": status,
+            "created_at": created_at,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "agent": preferred_agent,
+            "exit_code": exit_code,
+            "duration_seconds": duration_seconds,
+            "command": command_display,
+            "summary": summary,
+            "workspace": workspace_snapshot,
+        }
+    )
     meta.update(
         {
             "status": "completed" if status == "success" else "failed",
             "finished_at": finished_at,
             "last_exit_code": exit_code,
+            "workspace": workspace_snapshot,
         }
     )
     write_json(meta_path, meta)
@@ -343,6 +542,7 @@ def main() -> int:
         summary=summary,
         artifacts=artifacts,
         working_directory=working_directory,
+        workspace=workspace,
     )
     report_path.write_text(report_text, encoding="utf-8")
 
@@ -354,10 +554,10 @@ def main() -> int:
     meta["hook"] = {}
 
     try:
-        hook_payload = build_hook_payload(run_dir, project_root, job, meta, final_result)
-        hook_path = write_hook_payload(project_root, hook_payload, "pending")
+        hook_payload = build_hook_payload(run_dir, source_project_root, job, meta, final_result)
+        hook_path = write_hook_payload(source_project_root, hook_payload, "pending")
         hook_delivery = dispatch_hook_file(hook_path)
-        hook_rel_path = hook_delivery["path"].relative_to(project_root).as_posix()
+        hook_rel_path = hook_delivery["path"].relative_to(source_project_root).as_posix()
         hook_snapshot = {
             "hook_id": hook_delivery["hook_id"],
             "delivery_status": hook_delivery["status"],

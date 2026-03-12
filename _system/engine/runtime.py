@@ -30,7 +30,7 @@ def queue_root_for_project(project_root: Path) -> Path:
 
 
 def execute_run_task(repo_root: Path, task_path: str, *, execute: bool = False) -> Path:
-    command = ["bash", str(repo_root / "scripts" / "run_task.sh")]
+    command = [sys.executable, str(repo_root / "scripts" / "build_run.py")]
     if execute:
         command.append("--execute")
     command.append(task_path)
@@ -44,7 +44,7 @@ def execute_run_task(repo_root: Path, task_path: str, *, execute: bool = False) 
         if line.startswith("Created task run: "):
             created_line = line
     if not created_line:
-        raise RuntimeError("Could not determine created run directory from run_task.sh output")
+        raise RuntimeError("Could not determine created run directory from build_run.py output")
 
     return Path(created_line.removeprefix("Created task run: ").strip()).resolve()
 
@@ -53,9 +53,10 @@ def build_queue_payload(project_root: Path, run_dir: Path) -> dict:
     job = read_json(run_dir / "job.json")
     task = job.get("task", {})
     relative_run_path = run_dir.relative_to(project_root).as_posix()
-    return {
+    payload = {
         "job_id": job["run_id"],
         "job_version": 1,
+        "queue_version": 2,
         "run_id": job["run_id"],
         "run_path": relative_run_path,
         "project": job.get("project"),
@@ -66,8 +67,13 @@ def build_queue_payload(project_root: Path, run_dir: Path) -> dict:
             "id": task.get("id"),
             "title": task.get("title"),
             "priority": task.get("priority"),
+            "concurrency_key": task.get("concurrency_key"),
         },
     }
+    concurrency_key = task.get("concurrency_key")
+    if concurrency_key:
+        payload["concurrency_key"] = concurrency_key
+    return payload
 
 
 def project_root_from_run_dir(run_dir: Path) -> Path:

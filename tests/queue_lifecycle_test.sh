@@ -41,6 +41,7 @@ mkdir -p "$workspace/scripts"
 cp -R "$repo_root/_system" "$workspace/_system"
 cp -R "$repo_root/projects" "$workspace/projects"
 cp "$repo_root/scripts/run_task.sh" "$workspace/scripts/run_task.sh"
+cp "$repo_root/scripts/build_run.py" "$workspace/scripts/build_run.py"
 cp "$repo_root/scripts/execute_job.sh" "$workspace/scripts/execute_job.sh"
 cp "$repo_root/scripts/execute_job.py" "$workspace/scripts/execute_job.py"
 cp "$repo_root/scripts/validate_artifacts.py" "$workspace/scripts/validate_artifacts.py"
@@ -98,6 +99,7 @@ assert_file "$pending_two"
 
 WORKSPACE="$workspace" PYTHONPATH="$workspace" python3 - <<'PY'
 import os
+import json
 import time
 from pathlib import Path
 
@@ -110,6 +112,9 @@ claimed = queue.claim()
 target = project_root / "state" / "queue" / "running" / "RUN-0002.json"
 old_timestamp = time.time() - 30
 os.utime(target, (old_timestamp, old_timestamp))
+payload = json.loads(target.read_text(encoding="utf-8"))
+payload["queue"]["lease_expires_at"] = "2000-01-01T00:00:00Z"
+target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 print(claimed.job_id)
 PY
 
