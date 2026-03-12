@@ -99,12 +99,12 @@
 
 ## Epic 10 — Docs & Architecture
 **Приоритет:** P2
-**Статус:** 📋 in progress
+**Статус:** ✅ done
 
 | # | Задача | Зависит от | Phase | Параллельность |
 |---|--------|------------|-------|----------------|
 | 10.1 | ✅ Architecture doc: Run lifecycle, entity map, agent execution backends | — | 10 | done |
-| 10.2 | Parallel execution guide: git_worktree isolation, edit scope, concurrency groups | 9.2 | 10 | после 9.2 |
+| 10.2 | ✅ Parallel execution guide: git_worktree isolation, edit scope, concurrency groups | 9.2 | 10 | done |
 | 10.3 | ✅ README realignment под актуальную архитектуру (убрать shell-first описание) | — | 10 | done |
 
 **Примечание:** `agent_exec.py`, `scripts/run_task.py` и `_system/contracts/queue_item.schema.json` реализованы в коде, но не отслеживались в backlog — считаются delivered в рамках Epic 6.

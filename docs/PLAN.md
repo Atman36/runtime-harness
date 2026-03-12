@@ -292,13 +292,14 @@ claw/
 - **9.7:** harden shell-command trust boundary для hooks и executor overrides (`CLAW_HOOK_COMMAND`, `CLAW_AGENT_COMMAND*`): уйти от raw `bash -lc` где возможно, валидировать формат команды, явно задокументировать trusted-only env overrides
 - **9.8:** execution robustness fixes: safe JSON reads в `claw status`, idempotent/concurrency-safe `git_worktree` materialization, валидация `CLAW_AGENT_TIMEOUT_SECONDS` через `max(1, ...)`
 - **9.9:** cleanup latent runtime edge cases: починить `stdin` mode в `_system/engine/agent_exec.py`, валидировать reviewer против agents registry, сделать `is_dead_letter()` side-effect free
-- **10.2:** parallel execution guide (git_worktree isolation, edit scope, concurrency groups)
 - **8.2:** richer cross-project status view (ошибки, approvals, pending reviews)
+- **8.4:** continuous orchestration loop: task selector → implement → validate → review → decide → enqueue next task
 
 **Закрыто в текущей сессии:**
 - **9.1:** queue/job contract versioning + migration story → `docs/CONTRACT_VERSIONING.md`
 - **9.2:** worker reliability maturity → retry/backoff + lease heartbeat + `dead_letter` wired into `cmd_worker`
 - **10.1:** architecture doc → `docs/ARCHITECTURE.md`
+- **10.2:** parallel execution guide → `docs/PARALLEL_EXECUTION.md`
 - **10.3:** README realignment → `README.md`
 
 **Реализовано, но не отслеживалось в плане:**
@@ -408,6 +409,7 @@ claw/
 - **Planning docs — merge-sensitive слой.** `PLAN/BACKLOG/STATUS` живут быстрее, чем feature-ветка агента, поэтому их нельзя мёржить blind cherry-pick без сверки с live roadmap.
 - **Completion summary агента — это не merge criterion.** Перед интеграцией оркестратор должен смотреть реальный `git show`/diff, иначе легко принять устаревшую или слишком широкую документационную правку.
 - **Тесты + selective merge — лучшая связка для двухагентного режима.** Codex может закрывать runtime slice, Claude — narrative/docs slice, а оркестратор сводит их только после `run_all.sh` и ручной проверки конфликтных документов.
+- **Для непрерывного цикла недостаточно просто “после run запускать reviewer”.** Нужны ещё task selector, review gate, decision engine, queue chaining, stop-conditions и видимость состояния цикла — иначе получится бесконечный шум, а не orchestration.
 
 ---
 

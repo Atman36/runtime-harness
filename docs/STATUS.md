@@ -54,10 +54,11 @@
 - **Добавлен `state/metrics_snapshot.json`**: queue/hooks/runs/reviews summary теперь сохраняется в state и переиспользуется в `claw openclaw status`
 - **`claw.py worker` теперь продлевает lease, делает retry с exponential backoff и переводит job в `dead_letter` при исчерпании попыток**; покрыто `tests/worker_reliability_test.sh`
 - **Добавлены `docs/ARCHITECTURE.md`, `docs/CONTRACT_VERSIONING.md` и актуальный `README.md`**: архитектура, versioning/migration story и реальная модель системы теперь описаны явно
+- **Добавлен `docs/PARALLEL_EXECUTION.md`**: зафиксированы worktree isolation, edit scope discipline, merge rules и требования к непрерывному run→review→next-task циклу
 
 ## In Progress
 
-_(9.6 — concurrency / stress / failure-injection тесты; 10.2 — parallel execution guide)_
+_(9.6 — concurrency / stress / failure-injection тесты)_
 
 ## Next
 
@@ -65,7 +66,7 @@ _(9.6 — concurrency / stress / failure-injection тесты; 10.2 — parallel
 2. **9.7** — Harden shell-command trust boundary для hooks и executor overrides
 3. **9.8** — Execution robustness fixes (`claw status`, `git_worktree`, timeout clamp)
 4. **9.9** — Cleanup latent runtime edge cases (`stdin` mode, reviewer validation, dead-letter checks)
-5. **8.2 / 10.2** — Richer status view + parallel execution guide
+5. **8.2 / 8.4** — Richer status view + continuous orchestration loop design
 
 ---
 
@@ -138,3 +139,4 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | triage внешнего code review и актуализация roadmap | `docs/PLAN.md`, `docs/STATUS.md` | `rg`; `sed`; `nl`; `bash tests/run_all.sh` | ✅ подтверждены hardening gaps по hook/override shell boundary, worktree concurrency и runtime edge cases; в план добавлены 9.7-9.9 | 9.1 contract versioning |
 | 2026-03-13 | 9.2 worker reliability maturity | `_system/engine/file_queue.py`, `_system/contracts/queue_item.schema.json`, `scripts/claw.py`, `tests/worker_reliability_test.sh`, `tests/run_all.sh` | `bash tests/worker_reliability_test.sh`; `bash tests/run_all.sh` | ✅ worker renews lease, retries with backoff, dead-letters exhausted jobs; JSON output now exposes retry/heartbeat metadata | 9.6 stress/failure injection |
 | 2026-03-13 | 9.1 + 10.1 + 10.3 docs realignment after dual-agent run | `README.md`, `docs/ARCHITECTURE.md`, `docs/CONTRACT_VERSIONING.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `git show`; selective merge from parallel worktrees; `bash tests/run_all.sh` | ✅ architecture/versioning story documented; roadmap kept in sync without losing newer 9.7-9.9 items; dual-agent merge insights captured in docs | 10.2 parallel execution guide |
+| 2026-03-13 | 10.2 parallel execution guide + continuous loop requirements | `docs/PARALLEL_EXECUTION.md`, `README.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/run_all.sh` | ✅ worktree isolation, merge discipline, concurrency groups and requirements for autonomous run→review→next-task loop documented; backlog extended with 8.4 continuous orchestration loop | 9.6 stress/failure injection |
