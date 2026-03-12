@@ -38,11 +38,13 @@ assert_contains() {
 }
 
 mkdir -p "$workspace/scripts"
+mkdir -p "$workspace/bin"
 cp -R "$repo_root/_system" "$workspace/_system"
 cp -R "$repo_root/projects" "$workspace/projects"
 cp "$repo_root/scripts/run_task.sh" "$workspace/scripts/run_task.sh"
 cp "$repo_root/scripts/execute_job.sh" "$workspace/scripts/execute_job.sh"
 cp "$repo_root/scripts/execute_job.py" "$workspace/scripts/execute_job.py"
+cp "$repo_root/scripts/hooklib.py" "$workspace/scripts/hooklib.py"
 
 cat > "$workspace/scripts/fake_success_agent.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -68,12 +70,29 @@ exit 7
 EOF
 chmod +x "$workspace/scripts/fake_fail_agent.sh"
 
+cat > "$workspace/bin/agent-stub" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" > "${AGENT_ARGS_PATH:?AGENT_ARGS_PATH is required}"
+pwd > "${AGENT_CWD_PATH:?AGENT_CWD_PATH is required}"
+
+stdin_payload="$(cat)"
+printf '%s' "$stdin_payload" > "${AGENT_STDIN_PATH:?AGENT_STDIN_PATH is required}"
+
+echo "STUB SUCCESS"
+echo "$(printf '%s\n' "$stdin_payload" | grep -F 'Task: TASK-001' | head -n 1)"
+EOF
+chmod +x "$workspace/bin/agent-stub"
+
 task_path="$workspace/projects/demo-project/tasks/TASK-001.md"
 project_root="$workspace/projects/demo-project"
+project_root_resolved="$(cd "$project_root" && pwd)"
 today="$(date +"%Y-%m-%d")"
 run_day_root="$project_root/runs/$today"
 run_one="$run_day_root/RUN-0001"
 run_two="$run_day_root/RUN-0002"
+run_three="$run_day_root/RUN-0003"
 
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
   bash "$workspace/scripts/run_task.sh" --execute "$task_path"
@@ -109,5 +128,39 @@ assert_contains "$run_two/stderr.log" 'FAKE FAILURE'
 assert_contains "$run_two/report.md" '- Status: failed'
 assert_contains "$run_two/report.md" '- Exit code: 7'
 assert_contains "$run_two/report.md" 'inspect stderr.log'
+
+cat > "$workspace/_system/registry/agents.yaml" <<'EOF'
+agents:
+  codex:
+    label: Codex
+    command: agent-stub
+    args: exec --mode stdin --flag registry
+    prompt_mode: stdin
+    cwd: project_root
+    default_timeout_seconds: 12
+  claude:
+    label: Claude
+    command: agent-stub
+    args: -p --output-format text
+    prompt_mode: arg
+    cwd: project_root
+    default_timeout_seconds: 34
+EOF
+
+bash "$workspace/scripts/run_task.sh" "$task_path"
+
+PATH="$workspace/bin:$PATH" \
+AGENT_ARGS_PATH="$workspace/agent-args.txt" \
+AGENT_CWD_PATH="$workspace/agent-cwd.txt" \
+AGENT_STDIN_PATH="$workspace/agent-stdin.txt" \
+  bash "$workspace/scripts/execute_job.sh" "$run_three"
+
+assert_dir "$run_three"
+assert_contains "$run_three/result.json" '"status": "success"'
+assert_contains "$run_three/result.json" '"exit_code": 0'
+assert_contains "$run_three/stdout.log" 'STUB SUCCESS'
+assert_contains "$workspace/agent-args.txt" 'exec --mode stdin --flag registry'
+assert_contains "$workspace/agent-stdin.txt" 'Task: TASK-001'
+assert_contains "$workspace/agent-cwd.txt" "$project_root_resolved"
 
 echo "execute job test: ok"

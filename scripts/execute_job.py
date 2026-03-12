@@ -2,28 +2,13 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def read_json(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def write_json(path: Path, payload: dict) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.write("\n")
+from hooklib import build_hook_payload, dispatch_hook_file, write_hook_payload, read_json, utc_now, write_json
 
 
 def resolve_run_dir(argument: str) -> Path:
@@ -38,6 +23,14 @@ def resolve_run_dir(argument: str) -> Path:
         return path.parent
 
     raise FileNotFoundError(f"Expected a run directory or job.json path: {argument}")
+
+
+def project_root_from_run_dir(run_dir: Path) -> Path:
+    resolved = run_dir.resolve()
+    for ancestor in resolved.parents:
+        if ancestor.name == "runs":
+            return ancestor.parent
+    raise ValueError(f"Could not resolve project root from run directory: {run_dir}")
 
 
 def parse_agents_registry(path: Path) -> dict:
@@ -63,46 +56,82 @@ def parse_agents_registry(path: Path) -> dict:
     return agents
 
 
-def build_command(agent: str, prompt: str, project_root: Path, registry: dict) -> tuple[list[str], str, int]:
-    override = os.environ.get(f"CLAW_AGENT_COMMAND_{agent.upper()}") or os.environ.get("CLAW_AGENT_COMMAND")
+def default_agent_config(agent: str) -> dict:
+    defaults = {
+        "codex": {
+            "command": "codex",
+            "args": "exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -C {project_root}",
+            "prompt_mode": "arg",
+            "cwd": "project_root",
+            "default_timeout_seconds": "3600",
+        },
+        "claude": {
+            "command": "claude",
+            "args": "-p --permission-mode bypassPermissions --output-format text",
+            "prompt_mode": "arg",
+            "cwd": "project_root",
+            "default_timeout_seconds": "3600",
+        },
+    }
+    return dict(defaults.get(agent, {}))
 
-    default_timeout = 3600
-    if agent in registry:
-        try:
-            default_timeout = int(registry[agent].get("default_timeout_seconds", default_timeout))
-        except ValueError:
-            default_timeout = 3600
+
+def parse_timeout_seconds(raw_value: str | int | None, fallback: int) -> int:
+    if raw_value in (None, ""):
+        return fallback
+    try:
+        return max(1, int(raw_value))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def render_agent_args(template: str, project_root: Path, run_dir: Path) -> list[str]:
+    if not template:
+        return []
+    rendered = template.format(project_root=project_root, run_dir=run_dir)
+    return shlex.split(rendered)
+
+
+def resolve_command_cwd(mode: str, project_root: Path, run_dir: Path) -> Path:
+    if mode == "project_root":
+        return project_root
+    if mode == "run_dir":
+        return run_dir
+    raise ValueError(f"Unsupported agent cwd mode: {mode}")
+
+
+def build_command(agent: str, prompt: str, project_root: Path, run_dir: Path, registry: dict) -> tuple[list[str], str, int, str | None, Path]:
+    override = os.environ.get(f"CLAW_AGENT_COMMAND_{agent.upper()}") or os.environ.get("CLAW_AGENT_COMMAND")
+    agent_config = default_agent_config(agent)
+    agent_config.update(registry.get(agent, {}))
+    default_timeout = parse_timeout_seconds(agent_config.get("default_timeout_seconds"), 3600)
 
     if override:
-        return ["/bin/bash", "-lc", override], override, default_timeout
+        return ["/bin/bash", "-lc", override], override, default_timeout, prompt, project_root
 
-    if agent == "codex":
-        command = [
-            "codex",
-            "exec",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "-C",
-            str(project_root),
-            prompt,
-        ]
-        display = "codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -C <project_root> <prompt>"
-        return command, display, default_timeout
+    executable = agent_config.get("command", "").strip()
+    if not executable:
+        raise ValueError(f"Unsupported preferred_agent: {agent}")
 
-    if agent == "claude":
-        command = [
-            "claude",
-            "-p",
-            "--permission-mode",
-            "bypassPermissions",
-            "--output-format",
-            "text",
-            prompt,
-        ]
-        display = "claude -p --permission-mode bypassPermissions --output-format text <prompt>"
-        return command, display, default_timeout
+    prompt_mode = agent_config.get("prompt_mode", "arg").strip().lower() or "arg"
+    if prompt_mode not in {"arg", "stdin"}:
+        raise ValueError(f"Unsupported prompt mode for {agent}: {prompt_mode}")
 
-    raise ValueError(f"Unsupported preferred_agent: {agent}")
+    cwd_mode = agent_config.get("cwd", "project_root").strip().lower() or "project_root"
+    working_directory = resolve_command_cwd(cwd_mode, project_root, run_dir)
+
+    command = [executable, *render_agent_args(agent_config.get("args", ""), project_root, run_dir)]
+    display_parts = list(command)
+    prompt_input = None
+
+    if prompt_mode == "arg":
+        command.append(prompt)
+        display_parts.append("<prompt>")
+    else:
+        prompt_input = prompt
+        display_parts.append("<stdin>")
+
+    return command, " ".join(display_parts), default_timeout, prompt_input, working_directory
 
 
 def trim_summary(text: str, limit: int = 1200) -> str:
@@ -114,7 +143,7 @@ def trim_summary(text: str, limit: int = 1200) -> str:
     return compact[: limit - 3].rstrip() + "..."
 
 
-def render_report(job: dict, status: str, started_at: str, finished_at: str, exit_code: int, command_display: str, summary: str, artifacts: dict, project_root: Path) -> str:
+def render_report(job: dict, status: str, started_at: str, finished_at: str, exit_code: int, command_display: str, summary: str, artifacts: dict, working_directory: Path) -> str:
     risk_line = "- None noted during execution."
     if status != "success":
         risk_line = "- Run failed or ended non-zero; inspect stderr.log before trusting artifacts."
@@ -139,7 +168,7 @@ def render_report(job: dict, status: str, started_at: str, finished_at: str, exi
         "",
         "## Verification",
         f"- Command: {command_display}",
-        f"- Working directory: {project_root}",
+        f"- Working directory: {working_directory}",
         f"- Stdout log: {artifacts.get('stdout_path', 'stdout.log')}",
         f"- Stderr log: {artifacts.get('stderr_path', 'stderr.log')}",
         "",
@@ -168,6 +197,12 @@ def main() -> int:
     meta_path = run_dir / "meta.json"
     result_path = run_dir / "result.json"
 
+    try:
+        project_root = project_root_from_run_dir(run_dir)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     job = read_json(job_path)
     meta = read_json(meta_path)
     result = read_json(result_path)
@@ -187,7 +222,13 @@ def main() -> int:
     registry = parse_agents_registry(agents_registry_path)
 
     try:
-        command, command_display, default_timeout = build_command(preferred_agent, prompt, run_dir.parents[2], registry)
+        command, command_display, default_timeout, command_input, working_directory = build_command(
+            preferred_agent,
+            prompt,
+            project_root,
+            run_dir,
+            registry,
+        )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -200,7 +241,6 @@ def main() -> int:
         except ValueError:
             timeout_seconds = default_timeout
 
-    project_root = run_dir.parents[2]
     created_at = meta.get("created_at") or result.get("created_at") or job.get("created_at") or utc_now()
     started_at = utc_now()
 
@@ -235,10 +275,10 @@ def main() -> int:
     try:
         completed = subprocess.run(
             command,
-            input=prompt if command[:2] == ["/bin/bash", "-lc"] else None,
+            input=command_input,
             capture_output=True,
             text=True,
-            cwd=project_root,
+            cwd=working_directory,
             timeout=timeout_seconds,
             check=False,
         )
@@ -281,8 +321,6 @@ def main() -> int:
         "command": command_display,
         "summary": summary,
     }
-    write_json(result_path, final_result)
-
     meta.update(
         {
             "status": "completed" if status == "success" else "failed",
@@ -301,9 +339,37 @@ def main() -> int:
         command_display=command_display,
         summary=summary,
         artifacts=artifacts,
-        project_root=project_root,
+        working_directory=working_directory,
     )
     report_path.write_text(report_text, encoding="utf-8")
+
+    final_result["hook"] = {}
+    meta["hook"] = {}
+
+    try:
+        hook_payload = build_hook_payload(run_dir, project_root, job, meta, final_result)
+        hook_path = write_hook_payload(project_root, hook_payload, "pending")
+        hook_delivery = dispatch_hook_file(hook_path)
+        hook_rel_path = hook_delivery["path"].relative_to(project_root).as_posix()
+        hook_snapshot = {
+            "hook_id": hook_delivery["hook_id"],
+            "delivery_status": hook_delivery["status"],
+            "path": hook_rel_path,
+        }
+        final_result["hook"] = hook_snapshot
+        meta["hook"] = hook_snapshot
+    except Exception as exc:  # pragma: no cover - delivery must not hide run result
+        final_result["hook"] = {
+            "delivery_status": "error",
+            "error": str(exc),
+        }
+        meta["hook"] = {
+            "delivery_status": "error",
+            "error": str(exc),
+        }
+
+    write_json(result_path, final_result)
+    write_json(meta_path, meta)
 
     print(f"Executed job: {run_dir} [{status}]")
     return 0 if status == "success" else exit_code
