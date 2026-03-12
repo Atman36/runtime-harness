@@ -188,6 +188,12 @@ claw/
 ## Этап 4 — hooks / callback / reconcile
 **Цель:** чтобы завершения не терялись.
 
+Статус на 2026-03-12:
+- минимальный file-based hook slice реализован в `state/hooks/{pending,sent,failed}`
+- completion hook создаётся из `execute_job.py`
+- есть отдельные `dispatch_hooks.py` и `reconcile_hooks.py`
+- filesystem остаётся source of truth, а delivery выполняется через локальную команду из `CLAW_HOOK_COMMAND`
+
 ### Сделать
 - `pending_hooks/`
 - `sent_hooks/`
