@@ -51,14 +51,14 @@ class FileQueue:
         self.done = self.root / "done"
         self.failed = self.root / "failed"
         self.awaiting_approval = self.root / "awaiting_approval"
-        self.dead_letter = self.root / "dead_letter"
+        self.dead_letter_dir = self.root / "dead_letter"
         for path in (
             self.pending,
             self.running,
             self.done,
             self.failed,
             self.awaiting_approval,
-            self.dead_letter,
+            self.dead_letter_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -71,6 +71,15 @@ class FileQueue:
         expires = datetime.now(timezone.utc) + timedelta(seconds=max(1, int(lease_seconds)))
         return expires.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
     def _job_path(self, folder: Path, job_id: str) -> Path:
         return folder / f"{job_id}.json"
 
@@ -81,7 +90,7 @@ class FileQueue:
             "done": self.done,
             "failed": self.failed,
             "awaiting_approval": self.awaiting_approval,
-            "dead_letter": self.dead_letter,
+            "dead_letter": self.dead_letter_dir,
         }
         try:
             return mapping[state]
@@ -174,6 +183,8 @@ class FileQueue:
             "updated_at": queue.get("updated_at") or payload.get("created_at") or self._utc_now(),
             "attempt_count": as_int(queue.get("attempt_count"), 0),
             "max_attempts": max(1, as_int(queue.get("max_attempts"), DEFAULT_MAX_ATTEMPTS) or DEFAULT_MAX_ATTEMPTS),
+            "next_retry_at": queue.get("next_retry_at"),
+            "retry_backoff_seconds": as_int(queue.get("retry_backoff_seconds"), 0),
             "worker_id": queue.get("worker_id"),
             "last_worker_id": queue.get("last_worker_id"),
             "lease_id": queue.get("lease_id"),
@@ -211,6 +222,7 @@ class FileQueue:
         result_status: str | None = None,
         error: str | None = None,
         clear_lease: bool = True,
+        history_extra: dict[str, Any] | None = None,
     ) -> Path:
         payload = self._read_payload(path)
         from_state = str(payload["queue"].get("state") or "") or None
@@ -226,6 +238,8 @@ class FileQueue:
             queue["lease_id"] = None
             queue["lease_heartbeat_at"] = None
             queue["lease_expires_at"] = None
+        if state != "pending":
+            queue["next_retry_at"] = None
         if result_status is not None:
             queue["last_result_status"] = result_status
         if exit_code is not None:
@@ -234,7 +248,17 @@ class FileQueue:
             queue["last_error"] = error
         if state in {"done", "failed", "dead_letter"}:
             queue["completed_at"] = self._utc_now()
-        self._append_history(payload, event=event, from_state=from_state, to_state=state, exit_code=exit_code, error=error)
+        else:
+            queue["completed_at"] = None
+        self._append_history(
+            payload,
+            event=event,
+            from_state=from_state,
+            to_state=state,
+            exit_code=exit_code,
+            error=error,
+            **(history_extra or {}),
+        )
         self._write_payload(path, payload)
         return self._move_to_dir_no_overwrite(path, self._state_dir(state))
 
@@ -258,6 +282,13 @@ class FileQueue:
     def claim(self, *, worker_id: str | None = None, lease_seconds: int = 600, max_attempts: int | None = None) -> ClaimedJob:
         owner = worker_id or f"worker-{os.getpid()}"
         for path in sorted(self.pending.glob("*.json"), key=lambda candidate: candidate.stat().st_mtime):
+            try:
+                pending_payload = self._read_payload(path, state_hint="pending")
+            except FileNotFoundError:
+                continue
+            next_retry_at = self._parse_timestamp(pending_payload.get("queue", {}).get("next_retry_at"))
+            if next_retry_at is not None and datetime.now(timezone.utc) < next_retry_at:
+                continue
             target = self.running / path.name
             try:
                 os.replace(path, target)
@@ -271,6 +302,7 @@ class FileQueue:
             queue["attempt_count"] = int(queue.get("attempt_count", 0)) + 1
             if max_attempts is not None:
                 queue["max_attempts"] = max(1, int(max_attempts))
+            queue["next_retry_at"] = None
             lease_id = uuid4().hex
             queue["worker_id"] = owner
             queue["last_worker_id"] = owner
@@ -410,11 +442,27 @@ class FileQueue:
         self._transition_path(src, "pending", event="approved")
         return True
 
-    def retry(self, job_id: str) -> bool:
+    def retry(self, job_id: str, *, next_retry_at: str | None = None, backoff_seconds: int | None = None) -> bool:
         src = self._find_job_file(self.failed, job_id)
         if src is None:
             return False
-        self._transition_path(src, "pending", event="retried", error=None)
+        payload = self._read_payload(src, state_hint="failed")
+        queue = payload["queue"]
+        queue["updated_at"] = self._utc_now()
+        queue["next_retry_at"] = next_retry_at
+        if backoff_seconds is not None:
+            queue["retry_backoff_seconds"] = max(0, int(backoff_seconds))
+        self._write_payload(src, payload)
+        self._transition_path(
+            src,
+            "pending",
+            event="retried",
+            error=None,
+            history_extra={
+                "next_retry_at": next_retry_at,
+                "backoff_seconds": queue.get("retry_backoff_seconds"),
+            },
+        )
         return True
 
     def unlock(self, job_id: str) -> bool:

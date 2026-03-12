@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,10 +28,17 @@ from hooklib import dispatch_hook_file, iter_hook_files, trim_text  # noqa: E402
 
 CADENCE_STATE_FILE = "review_cadence.json"
 METRICS_SNAPSHOT_FILE = "metrics_snapshot.json"
+DEFAULT_WORKER_LEASE_SECONDS = 600
+DEFAULT_RETRY_BACKOFF_BASE_SECONDS = 30
+DEFAULT_RETRY_BACKOFF_MAX_SECONDS = 300
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def utc_after_seconds(seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=max(1, int(seconds)))).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def parse_iso_timestamp(value: str | None) -> datetime | None:
@@ -122,10 +131,77 @@ def hook_counts(project_root: Path) -> dict[str, int]:
 def queue_counts(project_root: Path) -> dict[str, int]:
     counts: dict[str, int] = {}
     queue_root = queue_root_for_project(project_root)
-    for state in ("pending", "running", "awaiting_approval", "done", "failed"):
+    for state in ("pending", "running", "awaiting_approval", "done", "failed", "dead_letter"):
         state_dir = queue_root / state
         counts[state] = len(list(state_dir.glob("*.json"))) if state_dir.is_dir() else 0
     return counts
+
+
+def default_heartbeat_interval(lease_seconds: int) -> float:
+    return max(1.0, min(float(max(1, int(lease_seconds))) / 3.0, 60.0))
+
+
+def compute_retry_backoff(attempt_count: int, *, base_seconds: int, max_seconds: int) -> int:
+    exponent = max(0, int(attempt_count) - 1)
+    return min(max(1, int(max_seconds)), max(1, int(base_seconds)) * (2 ** exponent))
+
+
+def summarize_worker_error(completed: subprocess.CompletedProcess[str], heartbeat_warnings: list[str]) -> str:
+    parts: list[str] = []
+    stderr_text = (completed.stderr or "").strip()
+    if stderr_text:
+        parts.append(trim_text(stderr_text, limit=4000))
+    if completed.returncode != 0 and not parts:
+        parts.append(f"execute_job.py exited with code {completed.returncode}")
+    if heartbeat_warnings:
+        parts.extend(heartbeat_warnings)
+    return "\n".join(part for part in parts if part)
+
+
+def run_job_with_lease_heartbeat(
+    queue: FileQueue,
+    claimed,
+    run_dir: Path,
+    *,
+    lease_seconds: int,
+    heartbeat_interval_seconds: float,
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    command = ["python3", str(REPO_ROOT / "scripts" / "execute_job.py"), str(run_dir)]
+    process = subprocess.Popen(
+        command,
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stop_event = threading.Event()
+    heartbeat_warnings: list[str] = []
+
+    def heartbeat_loop() -> None:
+        while not stop_event.wait(heartbeat_interval_seconds):
+            try:
+                renewed = queue.renew_lease(claimed, lease_seconds=lease_seconds)
+            except Exception as exc:  # pragma: no cover - defensive logging path
+                message = f"Lease heartbeat error for {claimed.job_id}: {exc}"
+                heartbeat_warnings.append(message)
+                print(message, file=sys.stderr)
+                continue
+            if renewed:
+                continue
+            message = f"Lease heartbeat stopped for {claimed.job_id}: lease could not be renewed"
+            heartbeat_warnings.append(message)
+            print(message, file=sys.stderr)
+            return
+
+    heartbeat_thread = threading.Thread(target=heartbeat_loop, name=f"lease-heartbeat-{claimed.job_id}", daemon=True)
+    heartbeat_thread.start()
+    try:
+        stdout, stderr = process.communicate()
+    finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=max(heartbeat_interval_seconds, 1.0))
+
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr), heartbeat_warnings
 
 
 def summarize_hook_outcomes(outcomes: list[dict]) -> dict[str, int]:
@@ -383,6 +459,10 @@ def cmd_worker(args: argparse.Namespace) -> int:
     queue = FileQueue(queue_root_for_project(project_root))
     claimed_count = 0
     review_policy = None
+    lease_seconds = max(1, int(args.lease_seconds))
+    heartbeat_interval_seconds = args.heartbeat_interval_seconds
+    if heartbeat_interval_seconds is None or heartbeat_interval_seconds <= 0:
+        heartbeat_interval_seconds = default_heartbeat_interval(lease_seconds)
 
     if not args.skip_review:
         try:
@@ -396,7 +476,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
             reclaimed = queue.reclaim_stale_running(args.stale_after_seconds)
 
         try:
-            claimed = queue.claim()
+            claimed = queue.claim(lease_seconds=lease_seconds)
         except QueueEmpty:
             if claimed_count == 0:
                 print(json.dumps({"status": "idle", "reclaimed": reclaimed}, ensure_ascii=False))
@@ -405,19 +485,53 @@ def cmd_worker(args: argparse.Namespace) -> int:
         claimed_count += 1
         payload = queue.read_claimed(claimed)
         run_dir = (project_root / payload["run_path"]).resolve()
-        completed = run_command(["python3", str(REPO_ROOT / "scripts" / "execute_job.py"), str(run_dir)], cwd=REPO_ROOT)
+        completed, heartbeat_warnings = run_job_with_lease_heartbeat(
+            queue,
+            claimed,
+            run_dir,
+            lease_seconds=lease_seconds,
+            heartbeat_interval_seconds=float(heartbeat_interval_seconds),
+        )
         result_status = "failed"
         try:
             result_status = read_json(run_dir / "result.json").get("status") or result_status
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             result_status = "success" if completed.returncode == 0 else "failed"
 
+        next_retry_at = None
+        retry_backoff_seconds = None
         if completed.returncode == 0:
-            queue.ack(claimed)
-            status = "done"
+            queue.ack(claimed, result_status=result_status, exit_code=completed.returncode)
+            queue_state = "done"
         else:
-            queue.fail(claimed)
-            status = "failed"
+            error_text = summarize_worker_error(completed, heartbeat_warnings)
+            if claimed.attempt_count < claimed.max_attempts:
+                retry_backoff_seconds = compute_retry_backoff(
+                    claimed.attempt_count,
+                    base_seconds=args.retry_backoff_base_seconds,
+                    max_seconds=args.retry_backoff_max_seconds,
+                )
+                next_retry_at = utc_after_seconds(retry_backoff_seconds)
+                queue.fail(
+                    claimed,
+                    result_status=result_status,
+                    exit_code=completed.returncode,
+                    error=error_text,
+                )
+                queue.retry(
+                    claimed.job_id,
+                    next_retry_at=next_retry_at,
+                    backoff_seconds=retry_backoff_seconds,
+                )
+                queue_state = "retried"
+            else:
+                queue.dead_letter(
+                    claimed,
+                    result_status=result_status,
+                    exit_code=completed.returncode,
+                    error=error_text,
+                )
+                queue_state = "dead_letter"
 
         if review_policy is not None:
             maybe_trigger_review(project_root, run_dir, result_status, review_policy)
@@ -431,8 +545,14 @@ def cmd_worker(args: argparse.Namespace) -> int:
                 {
                     "job_id": payload["job_id"],
                     "run_path": payload["run_path"],
-                    "queue_state": status,
+                    "queue_state": queue_state,
+                    "result_status": result_status,
                     "exit_code": completed.returncode,
+                    "attempt_count": claimed.attempt_count,
+                    "max_attempts": claimed.max_attempts,
+                    "next_retry_at": next_retry_at,
+                    "retry_backoff_seconds": retry_backoff_seconds,
+                    "heartbeat_warnings": heartbeat_warnings,
                     "reclaimed": reclaimed,
                 },
                 ensure_ascii=False,
@@ -937,6 +1057,10 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--once", action="store_true")
     worker.add_argument("--skip-review", action="store_true")
     worker.add_argument("--stale-after-seconds", type=int)
+    worker.add_argument("--lease-seconds", type=int, default=DEFAULT_WORKER_LEASE_SECONDS)
+    worker.add_argument("--heartbeat-interval-seconds", type=float)
+    worker.add_argument("--retry-backoff-base-seconds", type=int, default=DEFAULT_RETRY_BACKOFF_BASE_SECONDS)
+    worker.add_argument("--retry-backoff-max-seconds", type=int, default=DEFAULT_RETRY_BACKOFF_MAX_SECONDS)
     worker.set_defaults(func=cmd_worker)
 
     dispatch = subcommands.add_parser("dispatch", help="Dispatch pending hooks for a project")

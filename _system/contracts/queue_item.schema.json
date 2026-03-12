@@ -56,6 +56,13 @@
           "type": "integer",
           "minimum": 1
         },
+        "next_retry_at": {
+          "type": ["string", "null"]
+        },
+        "retry_backoff_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
         "worker_id": {
           "type": ["string", "null"]
         },
@@ -101,7 +108,9 @@
               "attempt_count": {"type": ["integer", "null"]},
               "lease_id": {"type": ["string", "null"]},
               "exit_code": {"type": ["integer", "null"]},
-              "error": {"type": ["string", "null"]}
+              "error": {"type": ["string", "null"]},
+              "next_retry_at": {"type": ["string", "null"]},
+              "backoff_seconds": {"type": ["integer", "null"]}
             }
           }
         }
