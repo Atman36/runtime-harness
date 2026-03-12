@@ -223,7 +223,11 @@ fi
 run_id="$(printf 'RUN-%04d' "$next_run_number")"
 run_dir="$run_day_root/$run_id"
 
-mkdir -p "$run_dir"
+while ! mkdir "$run_dir" 2>/dev/null; do
+  next_run_number=$((next_run_number + 1))
+  run_id="$(printf 'RUN-%04d' "$next_run_number")"
+  run_dir="$run_day_root/$run_id"
+done
 
 cp "$task_path" "$run_dir/task.md"
 cp "$spec_path" "$run_dir/spec.md"
