@@ -3,9 +3,16 @@
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from _system.engine.trusted_command import parse_trusted_argv
 
 
 HOOK_VERSION = 1
@@ -238,9 +245,13 @@ def dispatch_hook_file(hook_path: Path) -> dict:
         }
 
     attempt_count = int(delivery.get("attempt_count", 0)) + 1
+    exit_code = None
+    stdout_text = ""
+    stderr_text = ""
     try:
+        argv = parse_trusted_argv(command, env_name="CLAW_HOOK_COMMAND")
         completed = subprocess.run(
-            ["/bin/bash", "-lc", command],
+            argv,
             input=json.dumps(payload, indent=2) + "\n",
             capture_output=True,
             text=True,
@@ -250,6 +261,12 @@ def dispatch_hook_file(hook_path: Path) -> dict:
         exit_code = completed.returncode
         stdout_text = normalize_process_output(completed.stdout)
         stderr_text = normalize_process_output(completed.stderr)
+    except ValueError as exc:
+        exit_code = 126
+        stderr_text = str(exc)
+    except FileNotFoundError as exc:
+        exit_code = 127
+        stderr_text = f"Command not found: {exc.filename}"
     except subprocess.TimeoutExpired as exc:
         exit_code = 124
         stdout_text = normalize_process_output(exc.stdout)

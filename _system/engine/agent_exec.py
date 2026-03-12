@@ -57,8 +57,9 @@ def build_agent_command(
     prompt_mode = str(config.get("prompt_mode") or "arg").strip() or "arg"
     if prompt_mode == "arg" and prompt:
         command.append(prompt)
-    elif prompt_mode == "stdin" and prompt_path:
-        command.extend(["<", str(prompt_path)])
+    elif prompt_mode == "stdin":
+        # The caller is responsible for sending the prompt via stdin.
+        pass
 
     cwd_mode = str(config.get("cwd") or "project_root").strip()
     cwd = (workspace_root or project_root) if cwd_mode == "workspace_root" else project_root

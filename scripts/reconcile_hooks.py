@@ -14,9 +14,6 @@ def is_dead_letter(hook_path: Path) -> bool:
     delivery_attempts = payload.get("delivery_attempts", 0)
     max_delivery_attempts = payload.get("max_delivery_attempts", 3)
     if isinstance(delivery_attempts, int) and int(delivery_attempts) >= int(max_delivery_attempts):
-        # Mark dead_letter in the file so it's visible
-        payload["dead_letter"] = True
-        write_json_atomic(hook_path, payload)
         return True
     return False
 

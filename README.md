@@ -11,7 +11,11 @@ Every task run produces immutable artifacts on disk. There is no daemon, no data
 - **Task + spec workflow** — structured YAML front matter, project scaffolding, canonical templates
 - **File-backed queue** — atomic state transitions (`pending → running → done / failed → dead_letter`)
 - **Worker loop** — lease heartbeat, exponential backoff, retry exhaustion → `dead_letter`
+- **Fair scheduler** — `claw scheduler` rotates across projects instead of draining one queue forever
 - **Agent routing** — rules-based dispatch to Codex or Claude; `launch-plan` for dry-run preview
+- **Richer status** — `claw dashboard` / `openclaw status` expose approvals, pending reviews, retry backlog, ready tasks, recent failures
+- **Approval UX** — filesystem-backed `ask-human` requests with explicit resolve step
+- **Continuous loop** — `claw orchestrate` can pick the next ready task, execute it, apply review/approval gates, then continue
 - **Hooks & callbacks** — idempotent delivery, retry on failure, `reconcile` for missed events
 - **Review cadence** — automatic review batch generation on cadence or on risky/failed runs
 - **OpenClaw bridge** — submit tasks and receive completion summaries from a chat session
@@ -33,13 +37,23 @@ python3 scripts/claw.py run --execute projects/my-project/tasks/TASK-001.md
 python3 scripts/claw.py run --enqueue projects/my-project/tasks/TASK-001.md
 python3 scripts/claw.py worker projects/my-project --once
 
-# 5. Check status
-python3 scripts/claw.py status projects/my-project
+# 5. Check richer status
+python3 scripts/claw.py dashboard projects/my-project
 
-# 6. Generate a review batch
+# 6. Schedule multiple projects fairly
+python3 scripts/claw.py scheduler --once --max-jobs 2
+
+# 7. Ask for human approval / resolve it
+python3 scripts/claw.py ask-human projects/my-project RUN-0001 --reason "needs product call"
+python3 scripts/claw.py resolve-approval projects/my-project APPROVAL-1234567890 --decision approved
+
+# 8. Run the continuous project loop
+python3 scripts/claw.py orchestrate projects/my-project --max-steps 2
+
+# 9. Generate a review batch
 python3 scripts/claw.py review-batch projects/my-project
 
-# 7. Validate run artifacts
+# 10. Validate run artifacts
 python3 scripts/validate_artifacts.py --project projects/my-project
 ```
 
@@ -102,6 +116,7 @@ Set `preferred_agent: auto` in task front matter to let routing rules decide.
 When running Claude in a chat session, the engine can:
 
 - Accept task submissions from chat (`claw openclaw enqueue`)
+- Inspect richer runtime state (`claw openclaw status`)
 - Send completion summaries back (`claw openclaw callback`)
 - Reconcile missed hooks via cron or event trigger (`claw openclaw wake`)
 
@@ -118,6 +133,9 @@ bash tests/contracts_validation_test.sh
 bash tests/queue_lifecycle_test.sh
 bash tests/openclaw_test.sh
 bash tests/worker_reliability_test.sh
+bash tests/runtime_hardening_test.sh
+bash tests/scheduler_dashboard_test.sh
+bash tests/orchestration_loop_test.sh
 ```
 
 ## Project layout
@@ -133,7 +151,7 @@ runtime-harness/
 │   ├── _template/         # canonical project scaffold
 │   └── <slug>/
 │       ├── docs/ specs/ tasks/ runs/ reviews/
-│       └── state/         # queue/, hooks/, review_cadence.json, metrics_snapshot.json
+│       └── state/         # queue/, hooks/, approvals/, review_cadence.json, metrics_snapshot.json
 ├── scripts/               # claw.py, build_run.py, execute_job.py, validate_artifacts.py
 └── tests/                 # run_all.sh + per-feature test scripts
 ```

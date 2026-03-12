@@ -286,18 +286,28 @@ claw/
 
 **Оркестраторский вывод:** docs-ветка из параллельного worktree быстро устаревает относительно живого roadmap, поэтому merge для `PLAN/BACKLOG/STATUS` должен быть selective, а не blind cherry-pick.
 
+## Что сделано в текущей сессии (2026-03-13, scheduler + hardening)
+
+- **9.6:** добавлены `tests/concurrency_stress_test.sh` и `tests/runtime_hardening_test.sh`; queue/worker/hooks теперь покрыты concurrency, stress и failure-injection regression cases
+- **9.7:** shell env overrides переведены на trusted argv contract; `CLAW_HOOK_COMMAND` и `CLAW_AGENT_COMMAND*` больше не идут через raw `bash -lc`; запрещён shell-eval (`bash -c`, redirection tokens, command substitution)
+- **9.8:** `claw status` читает битый JSON безопасно; `git_worktree`/isolated checkout materialization защищены lock'ом и повторным check; `CLAW_AGENT_TIMEOUT_SECONDS` clamp'ится через `max(1, ...)`
+- **9.9:** `_system/engine/agent_exec.py` исправлен для `stdin` mode; reviewer policy валидируется против `agents.yaml`; `reconcile_hooks.is_dead_letter()` больше не пишет в payload
+- **8.1:** добавлен `claw scheduler` для fair multi-project worker scheduling
+- **8.2:** добавлен richer `claw dashboard` + `openclaw status` extension (`pending_approvals`, `retry_backlog`, `recent_failures`, `ready_tasks`, `current_run`)
+- **8.3:** добавлены filesystem-backed approval requests: `claw ask-human` и `claw resolve-approval`
+- **8.4:** добавлен `claw orchestrate` с циклом ready-task select → enqueue → worker → review/approval decision → next task
+
 ## Следующие незавершённые задачи
 
-- **9.6:** concurrency / stress / failure-injection тесты (queue + worker + hooks)
-- **9.7:** harden shell-command trust boundary для hooks и executor overrides (`CLAW_HOOK_COMMAND`, `CLAW_AGENT_COMMAND*`): уйти от raw `bash -lc` где возможно, валидировать формат команды, явно задокументировать trusted-only env overrides
-- **9.8:** execution robustness fixes: safe JSON reads в `claw status`, idempotent/concurrency-safe `git_worktree` materialization, валидация `CLAW_AGENT_TIMEOUT_SECONDS` через `max(1, ...)`
-- **9.9:** cleanup latent runtime edge cases: починить `stdin` mode в `_system/engine/agent_exec.py`, валидировать reviewer против agents registry, сделать `is_dead_letter()` side-effect free
-- **8.2:** richer cross-project status view (ошибки, approvals, pending reviews)
-- **8.4:** continuous orchestration loop: task selector → implement → validate → review → decide → enqueue next task
+- selective docs polish для новых scheduler/orchestration flows
+- auto-review executor поверх уже существующих decision stubs
+- follow-up task materialization из `needs_follow_up` reviewer decisions
 
 **Закрыто в текущей сессии:**
 - **9.1:** queue/job contract versioning + migration story → `docs/CONTRACT_VERSIONING.md`
 - **9.2:** worker reliability maturity → retry/backoff + lease heartbeat + `dead_letter` wired into `cmd_worker`
+- **9.6–9.9:** runtime hardening + stress coverage → trusted command boundary, safe status JSON, worktree locks, timeout clamp, reviewer validation, side-effect free dead-letter checks
+- **8.1–8.4:** scheduler/orchestration layer → `scheduler`, `dashboard`, `ask-human`, `resolve-approval`, `orchestrate`
 - **10.1:** architecture doc → `docs/ARCHITECTURE.md`
 - **10.2:** parallel execution guide → `docs/PARALLEL_EXECUTION.md`
 - **10.3:** README realignment → `README.md`

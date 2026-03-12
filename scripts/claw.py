@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -12,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import yaml
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -28,9 +30,14 @@ from hooklib import dispatch_hook_file, iter_hook_files, trim_text  # noqa: E402
 
 CADENCE_STATE_FILE = "review_cadence.json"
 METRICS_SNAPSHOT_FILE = "metrics_snapshot.json"
+FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 DEFAULT_WORKER_LEASE_SECONDS = 600
 DEFAULT_RETRY_BACKOFF_BASE_SECONDS = 30
 DEFAULT_RETRY_BACKOFF_MAX_SECONDS = 300
+TASK_DONE_STATUSES = {"done", "completed", "accepted"}
+TASK_ACTIVE_STATUSES = {"in_progress", "running", "queued", "awaiting_review", "awaiting_approval"}
+TASK_BLOCKED_STATUSES = {"blocked", "cancelled"}
+PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
 def utc_now() -> str:
@@ -225,6 +232,410 @@ def iter_projects_root() -> list[Path]:
     return sorted(path for path in projects_root.iterdir() if path.is_dir() and not path.name.startswith("_"))
 
 
+def read_front_matter(path: Path) -> tuple[dict, str]:
+    text = path.read_text(encoding="utf-8")
+    match = FRONT_MATTER_RE.match(text)
+    if match is None:
+        return {}, text
+    loaded = yaml.safe_load(match.group(1)) or {}
+    front_matter = dict(loaded) if isinstance(loaded, dict) else {}
+    body = text[match.end():]
+    return front_matter, body
+
+
+def write_front_matter(path: Path, front_matter: dict, body: str) -> None:
+    rendered = "---\n" + yaml.safe_dump(front_matter, sort_keys=False, allow_unicode=False).strip() + "\n---\n"
+    if body and not body.startswith("\n"):
+        rendered += "\n"
+    rendered += body
+    path.write_text(rendered, encoding="utf-8")
+
+
+def update_task_status(task_path: Path, status: str) -> None:
+    front_matter, body = read_front_matter(task_path)
+    front_matter["status"] = status
+    write_front_matter(task_path, front_matter, body)
+
+
+def approvals_root(project_root: Path) -> Path:
+    return project_root / "state" / "approvals"
+
+
+def ensure_approval_dirs(project_root: Path) -> dict[str, Path]:
+    root = approvals_root(project_root)
+    directories = {
+        "pending": root / "pending",
+        "resolved": root / "resolved",
+    }
+    root.mkdir(parents=True, exist_ok=True)
+    for directory in directories.values():
+        directory.mkdir(parents=True, exist_ok=True)
+    return directories
+
+
+def approval_counts(project_root: Path) -> dict[str, int]:
+    directories = ensure_approval_dirs(project_root)
+    return {name: len(list(path.glob("*.json"))) for name, path in directories.items()}
+
+
+def load_approval_requests(project_root: Path, *, state: str = "pending") -> list[dict]:
+    directories = ensure_approval_dirs(project_root)
+    target_dir = directories[state]
+    requests: list[dict] = []
+    for path in sorted(target_dir.glob("*.json")):
+        payload, error = load_json_status(path)
+        if error is not None:
+            continue
+        payload["approval_file"] = path.relative_to(project_root).as_posix()
+        requests.append(payload)
+    return requests
+
+
+def create_approval_request(
+    project_root: Path,
+    *,
+    run_id: str,
+    task_id: str,
+    task_path: str,
+    source: str,
+    reason: str,
+    requested_action: str,
+) -> dict:
+    directories = ensure_approval_dirs(project_root)
+    for payload in load_approval_requests(project_root, state="pending"):
+        if (
+            payload.get("run_id") == run_id
+            and payload.get("source") == source
+            and payload.get("reason") == reason
+            and payload.get("requested_action") == requested_action
+        ):
+            return payload
+
+    approval_id = f"APPROVAL-{uuid4().hex[:10]}"
+    payload = {
+        "approval_id": approval_id,
+        "project": project_root.name,
+        "run_id": run_id,
+        "task_id": task_id,
+        "task_path": task_path,
+        "source": source,
+        "reason": reason,
+        "requested_action": requested_action,
+        "status": "pending",
+        "created_at": utc_now(),
+        "resolved_at": None,
+        "decision": None,
+        "notes": "",
+    }
+    write_json_atomic(directories["pending"] / f"{approval_id}.json", payload)
+    return payload
+
+
+def resolve_approval_request(project_root: Path, approval_id: str, *, decision: str, notes: str) -> dict | None:
+    directories = ensure_approval_dirs(project_root)
+    pending_path = directories["pending"] / f"{approval_id}.json"
+    if not pending_path.is_file():
+        return None
+
+    payload, error = load_json_status(pending_path)
+    if error is not None:
+        return None
+
+    payload["status"] = "resolved"
+    payload["decision"] = decision
+    payload["notes"] = notes
+    payload["resolved_at"] = utc_now()
+
+    task_rel_path = payload.get("task_path")
+    if isinstance(task_rel_path, str) and task_rel_path:
+        task_path = (project_root / task_rel_path).resolve()
+        if task_path.is_file():
+            if decision == "approved" and payload.get("requested_action") == "retry":
+                update_task_status(task_path, "todo")
+            elif decision == "approved" and payload.get("requested_action") == "accept":
+                update_task_status(task_path, "done")
+
+    target_path = directories["resolved"] / pending_path.name
+    write_json_atomic(target_path, payload)
+    pending_path.unlink()
+    return payload
+
+
+def parse_task_dependencies(front_matter: dict) -> list[str]:
+    raw = front_matter.get("dependencies", front_matter.get("depends_on", []))
+    if isinstance(raw, str):
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return []
+
+
+def task_priority_value(priority: str | None) -> int:
+    return PRIORITY_ORDER.get(str(priority or "").strip().lower(), len(PRIORITY_ORDER) + 1)
+
+
+def collect_active_task_ids(queue: FileQueue) -> set[str]:
+    active_ids: set[str] = set()
+    for state in ("pending", "running", "awaiting_approval"):
+        for payload in queue.list_jobs(state):
+            task_id = payload.get("task", {}).get("id")
+            if isinstance(task_id, str) and task_id:
+                active_ids.add(task_id)
+    return active_ids
+
+
+def collect_task_records(project_root: Path) -> list[dict]:
+    tasks_root = project_root / "tasks"
+    queue = FileQueue(queue_root_for_project(project_root))
+    active_task_ids = collect_active_task_ids(queue)
+    records: list[dict] = []
+
+    for task_path in sorted(tasks_root.glob("TASK-*.md")):
+        front_matter, _body = read_front_matter(task_path)
+        task_id = str(front_matter.get("id") or task_path.stem).strip()
+        status = str(front_matter.get("status") or "todo").strip().lower()
+        dependencies = parse_task_dependencies(front_matter)
+        records.append(
+            {
+                "task_id": task_id,
+                "title": str(front_matter.get("title") or "").strip(),
+                "task_path": task_path,
+                "task_path_rel": task_path.relative_to(project_root).as_posix(),
+                "status": status,
+                "priority": str(front_matter.get("priority") or "").strip().lower(),
+                "dependencies": dependencies,
+                "preferred_agent": str(front_matter.get("preferred_agent") or "auto").strip(),
+                "needs_review": bool(front_matter.get("needs_review", False)),
+                "active": task_id in active_task_ids,
+            }
+        )
+
+    done_ids = {record["task_id"] for record in records if record["status"] in TASK_DONE_STATUSES}
+    for record in records:
+        status = record["status"]
+        dependency_blockers = [item for item in record["dependencies"] if item not in done_ids]
+        is_ready = (
+            status not in TASK_DONE_STATUSES
+            and status not in TASK_ACTIVE_STATUSES
+            and status not in TASK_BLOCKED_STATUSES
+            and not record["active"]
+            and not dependency_blockers
+        )
+        record["dependency_blockers"] = dependency_blockers
+        record["ready"] = is_ready
+        try:
+            plan = plan_task_run(REPO_ROOT, record["task_path"])
+            record["selected_agent"] = plan.routing.selected_agent
+        except Exception:
+            record["selected_agent"] = record["preferred_agent"]
+
+    return records
+
+
+def select_ready_tasks(project_root: Path, *, limit: int = 3) -> list[dict]:
+    ready = [record for record in collect_task_records(project_root) if record["ready"]]
+    ready.sort(key=lambda record: (task_priority_value(record["priority"]), record["task_id"]))
+    return ready[:limit]
+
+
+def count_retry_backlog(project_root: Path) -> int:
+    queue = FileQueue(queue_root_for_project(project_root))
+    waiting = 0
+    now = datetime.now(timezone.utc)
+    for payload in queue.list_jobs("pending"):
+        next_retry_at = parse_iso_timestamp(payload.get("queue", {}).get("next_retry_at"))
+        if next_retry_at is not None and next_retry_at > now:
+            waiting += 1
+    return waiting
+
+
+def load_pending_review_decisions(project_root: Path, *, run_id: str | None = None) -> list[dict]:
+    decisions_dir = project_root / "reviews" / "decisions"
+    pending: list[dict] = []
+    if not decisions_dir.is_dir():
+        return pending
+
+    for path in sorted(decisions_dir.glob("*.json")):
+        payload, error = load_json_status(path)
+        if error is not None or payload.get("decision") != "pending":
+            continue
+        if run_id and payload.get("run_id") != run_id:
+            continue
+        pending.append(payload)
+    return pending
+
+
+def load_resolved_review_decision(project_root: Path, run_id: str) -> dict | None:
+    decisions_dir = project_root / "reviews" / "decisions"
+    if not decisions_dir.is_dir():
+        return None
+
+    resolved: list[dict] = []
+    for path in sorted(decisions_dir.glob("*.json")):
+        payload, error = load_json_status(path)
+        if error is not None or payload.get("run_id") != run_id:
+            continue
+        if payload.get("decision") in {"pending", None}:
+            continue
+        resolved.append(payload)
+
+    if not resolved:
+        return None
+    resolved.sort(key=lambda payload: str(payload.get("decided_at") or payload.get("review_id") or ""))
+    return resolved[-1]
+
+
+def recent_failure_records(project_root: Path, *, limit: int = 3) -> list[dict]:
+    queue = FileQueue(queue_root_for_project(project_root))
+    failures: list[dict] = []
+    for state in ("failed", "dead_letter"):
+        for payload in queue.list_jobs(state):
+            queue_payload = payload.get("queue", {})
+            failures.append(
+                {
+                    "job_id": payload.get("job_id"),
+                    "state": state,
+                    "task_id": payload.get("task", {}).get("id"),
+                    "error": trim_text(str(queue_payload.get("last_error") or ""), 200),
+                    "updated_at": queue_payload.get("updated_at"),
+                }
+            )
+    failures.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return failures[:limit]
+
+
+def current_running_job(project_root: Path) -> dict | None:
+    queue = FileQueue(queue_root_for_project(project_root))
+    running = queue.list_jobs("running")
+    if not running:
+        return None
+    payload = running[0]
+    return {
+        "job_id": payload.get("job_id"),
+        "task_id": payload.get("task", {}).get("id"),
+        "task_title": payload.get("task", {}).get("title"),
+        "worker_id": payload.get("queue", {}).get("worker_id"),
+        "attempt_count": payload.get("queue", {}).get("attempt_count"),
+    }
+
+
+def build_project_dashboard(project_root: Path, *, recent_limit: int = 5, ready_limit: int = 3) -> dict:
+    snapshot = refresh_metrics_snapshot(project_root, recent_limit=max(recent_limit, 20))
+    approvals = approval_counts(project_root)
+    ready_tasks = select_ready_tasks(project_root, limit=ready_limit)
+
+    return {
+        "project": project_root.name,
+        "queue": snapshot["queue"],
+        "pending_reviews": snapshot["reviews"]["pending_decisions"],
+        "pending_hooks": snapshot["hooks"]["pending"],
+        "failed_hooks": snapshot["hooks"]["failed"],
+        "pending_approvals": approvals["pending"],
+        "resolved_approvals": approvals["resolved"],
+        "retry_backlog": count_retry_backlog(project_root),
+        "current_run": current_running_job(project_root),
+        "recent_runs": snapshot["recent_runs"][:recent_limit],
+        "recent_failures": recent_failure_records(project_root, limit=ready_limit),
+        "ready_tasks": [
+            {
+                "task_id": task["task_id"],
+                "title": task["title"],
+                "priority": task["priority"],
+                "selected_agent": task.get("selected_agent"),
+                "task_path": task["task_path_rel"],
+            }
+            for task in ready_tasks
+        ],
+        "approvals": load_approval_requests(project_root, state="pending")[:ready_limit],
+        "metrics": {
+            "updated_at": snapshot["updated_at"],
+            "runs": snapshot["runs"],
+            "reviews": snapshot["reviews"],
+        },
+    }
+
+
+def parse_last_json_line(text: str) -> dict | None:
+    for line in reversed((text or "").splitlines()):
+        candidate = line.strip()
+        if not candidate:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def run_worker_once(project_root: Path, *, skip_review: bool = False) -> tuple[subprocess.CompletedProcess[str], dict | None]:
+    command = [sys.executable, str(REPO_ROOT / "scripts" / "claw.py"), "worker", str(project_root), "--once"]
+    if skip_review:
+        command.append("--skip-review")
+    completed = run_command(command, cwd=REPO_ROOT)
+    return completed, parse_last_json_line(completed.stdout)
+
+
+def enqueue_task_path(task_path: Path) -> tuple[Path, dict]:
+    run_dir = execute_run_task(REPO_ROOT, str(task_path), execute=False)
+    payload = enqueue_run(run_dir, state="pending")
+    refresh_metrics_snapshot(run_dir.parent.parent.parent)
+    return run_dir, payload
+
+
+def accept_run(project_root: Path, run_dir: Path) -> None:
+    meta, _error = load_json_status(run_dir / "meta.json")
+    task_rel_path = meta.get("task_path")
+    if isinstance(task_rel_path, str) and task_rel_path:
+        task_path = (project_root / task_rel_path).resolve()
+        if task_path.is_file():
+            update_task_status(task_path, "done")
+
+
+def evaluate_run_decision(project_root: Path, run_dir: Path, *, result_status: str) -> dict:
+    meta, _meta_error = load_json_status(run_dir / "meta.json")
+    run_id = str(meta.get("run_id") or run_dir.name)
+    task_id = str(meta.get("task_id") or "")
+    task_path = str(meta.get("task_path") or "")
+
+    if result_status != "success":
+        approval = create_approval_request(
+            project_root,
+            run_id=run_id,
+            task_id=task_id,
+            task_path=task_path,
+            source="runtime",
+            reason="run_failed",
+            requested_action="retry",
+        )
+        return {"decision": "ask_human", "approval_id": approval["approval_id"]}
+
+    pending_reviews = load_pending_review_decisions(project_root, run_id=run_id)
+    if pending_reviews:
+        return {"decision": "awaiting_review", "pending_reviews": len(pending_reviews)}
+
+    resolved_decision = load_resolved_review_decision(project_root, run_id)
+    if resolved_decision is not None:
+        decision = str(resolved_decision.get("decision") or "pending")
+        if decision in {"approved", "approved_with_notes", "waived"}:
+            accept_run(project_root, run_dir)
+            return {"decision": "accept"}
+        approval = create_approval_request(
+            project_root,
+            run_id=run_id,
+            task_id=task_id,
+            task_path=task_path,
+            source="review",
+            reason=decision,
+            requested_action="follow_up" if decision == "needs_follow_up" else "retry",
+        )
+        return {"decision": "ask_human", "approval_id": approval["approval_id"]}
+
+    accept_run(project_root, run_dir)
+    return {"decision": "accept"}
+
+
 def collect_run_results(project_root: Path) -> list[tuple[Path, dict]]:
     runs_root = project_root / "runs"
     results: list[tuple[Path, dict]] = []
@@ -307,6 +718,18 @@ def build_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dic
         "recent_runs": list(reversed(recent_runs[-recent_limit:])),
     }
     return snapshot
+
+
+def load_json_status(path: Path) -> tuple[dict, str | None]:
+    try:
+        payload = read_json(path)
+    except FileNotFoundError:
+        return {}, "missing"
+    except (json.JSONDecodeError, OSError) as exc:
+        return {}, str(exc)
+    if not isinstance(payload, dict):
+        return {}, "invalid_json_type"
+    return payload, None
 
 
 def refresh_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dict:
@@ -610,20 +1033,203 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     queue = FileQueue(queue_root_for_project(project_root))
     queue_state = queue.queue_state(args.run_id)
-    meta = read_json(run_dir / "meta.json")
-    result = read_json(run_dir / "result.json")
+    meta, meta_error = load_json_status(run_dir / "meta.json")
+    result, result_error = load_json_status(run_dir / "result.json")
     payload = {
         "run_id": args.run_id,
         "run_path": run_dir.relative_to(project_root).as_posix(),
         "queue_state": queue_state,
-        "run_status": meta.get("status"),
-        "result_status": result.get("status"),
+        "run_status": meta.get("status") or "unknown",
+        "result_status": result.get("status") or "unknown",
         "agent": result.get("agent") or meta.get("preferred_agent"),
         "project": meta.get("project"),
         "task_id": meta.get("task_id"),
     }
+    errors = {}
+    if meta_error is not None:
+        errors["meta"] = meta_error
+    if result_error is not None:
+        errors["result"] = result_error
+    if errors:
+        payload["errors"] = errors
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    if args.all:
+        project_roots = iter_projects_root()
+    elif args.project_root:
+        project_roots = [resolve_project_root(args.project_root)]
+    else:
+        project_roots = iter_projects_root()
+
+    projects = [build_project_dashboard(project_root, recent_limit=args.recent, ready_limit=args.ready_limit) for project_root in project_roots]
+    payload = {
+        "projects": projects,
+        "summary": {
+            "project_count": len(projects),
+            "pending_reviews": sum(project["pending_reviews"] for project in projects),
+            "pending_approvals": sum(project["pending_approvals"] for project in projects),
+            "pending_hooks": sum(project["pending_hooks"] for project in projects),
+            "failed_hooks": sum(project["failed_hooks"] for project in projects),
+            "retry_backlog": sum(project["retry_backlog"] for project in projects),
+        },
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_scheduler(args: argparse.Namespace) -> int:
+    if args.projects:
+        project_roots = [resolve_project_root(project_root) for project_root in args.projects]
+    else:
+        project_roots = iter_projects_root()
+
+    max_jobs = max(1, int(args.max_jobs))
+    processed_jobs: list[dict] = []
+
+    while len(processed_jobs) < max_jobs:
+        progress = False
+        for project_root in project_roots:
+            if len(processed_jobs) >= max_jobs:
+                break
+            counts = queue_counts(project_root)
+            if counts["pending"] == 0 and counts["running"] == 0:
+                continue
+
+            completed, worker_payload = run_worker_once(project_root, skip_review=args.skip_review)
+            if worker_payload is None or worker_payload.get("status") == "idle":
+                continue
+            processed_jobs.append(
+                {
+                    "project": project_root.name,
+                    "returncode": completed.returncode,
+                    "job": worker_payload,
+                }
+            )
+            progress = True
+
+        if args.once or not progress:
+            break
+
+    payload = {
+        "status": "processed" if processed_jobs else "idle",
+        "processed_jobs": processed_jobs,
+        "remaining_projects": [
+            project_root.name
+            for project_root in project_roots
+            if queue_counts(project_root)["pending"] > 0 or queue_counts(project_root)["running"] > 0
+        ],
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_ask_human(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    run_dir = find_run_dir(project_root, args.run_id)
+    if run_dir is None:
+        print(f"Run not found: {args.run_id}", file=sys.stderr)
+        return 1
+
+    meta, _error = load_json_status(run_dir / "meta.json")
+    approval = create_approval_request(
+        project_root,
+        run_id=args.run_id,
+        task_id=str(meta.get("task_id") or ""),
+        task_path=str(meta.get("task_path") or ""),
+        source=args.source,
+        reason=args.reason,
+        requested_action=args.action,
+    )
+    refresh_metrics_snapshot(project_root)
+    print(json.dumps(approval, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_resolve_approval(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    payload = resolve_approval_request(project_root, args.approval_id, decision=args.decision, notes=args.notes or "")
+    if payload is None:
+        print(json.dumps({"status": "not_found", "approval_id": args.approval_id}, ensure_ascii=False))
+        return 1
+    refresh_metrics_snapshot(project_root)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_orchestrate(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    max_steps = max(1, int(args.max_steps))
+    steps = 0
+    accepted_runs: list[str] = []
+    last_status = "idle"
+
+    while steps < max_steps:
+        dashboard = build_project_dashboard(project_root, recent_limit=args.recent, ready_limit=args.ready_limit)
+        if dashboard["pending_approvals"] > 0 or dashboard["queue"]["awaiting_approval"] > 0:
+            last_status = "awaiting_approval"
+            break
+        if dashboard["pending_reviews"] > 0:
+            last_status = "awaiting_review"
+            break
+
+        queue_snapshot = dashboard["queue"]
+        if queue_snapshot["pending"] == 0 and queue_snapshot["running"] == 0:
+            ready_tasks = select_ready_tasks(project_root, limit=1)
+            if not ready_tasks:
+                last_status = "idle"
+                break
+            next_task = ready_tasks[0]
+            update_task_status(next_task["task_path"], "in_progress")
+            enqueue_task_path(next_task["task_path"])
+
+        completed, worker_payload = run_worker_once(project_root, skip_review=args.skip_review)
+        if worker_payload is None or worker_payload.get("status") == "idle":
+            last_status = "idle"
+            break
+
+        run_path = worker_payload.get("run_path")
+        run_dir = (project_root / str(run_path)).resolve() if run_path else None
+        result_status = str(worker_payload.get("result_status") or "unknown")
+        steps += 1
+
+        if run_dir is None or not run_dir.is_dir():
+            last_status = "error"
+            break
+
+        decision = evaluate_run_decision(project_root, run_dir, result_status=result_status)
+        if decision["decision"] == "accept":
+            accepted_runs.append(run_dir.name)
+            last_status = "accepted"
+            continue
+        if decision["decision"] == "awaiting_review":
+            last_status = "awaiting_review"
+            break
+        if decision["decision"] == "ask_human":
+            last_status = "awaiting_approval"
+            break
+
+    payload = {
+        "status": last_status,
+        "project": project_root.name,
+        "steps": steps,
+        "accepted_runs": accepted_runs,
+        "pending_reviews": load_pending_review_decisions(project_root),
+        "pending_approvals": load_approval_requests(project_root, state="pending"),
+        "ready_tasks": [
+            {
+                "task_id": task["task_id"],
+                "title": task["title"],
+                "selected_agent": task.get("selected_agent"),
+                "task_path": task["task_path_rel"],
+            }
+            for task in select_ready_tasks(project_root, limit=args.ready_limit)
+        ],
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if last_status != "error" else 1
 
 
 def cmd_review_batch(args: argparse.Namespace) -> int:
@@ -783,6 +1389,7 @@ def cmd_openclaw_status(args: argparse.Namespace) -> int:
 
     max_recent = getattr(args, "recent", 5)
     snapshot = refresh_metrics_snapshot(project_root, recent_limit=max(max_recent, 20))
+    dashboard = build_project_dashboard(project_root, recent_limit=max_recent, ready_limit=3)
 
     payload = {
         "project": project_root.name,
@@ -791,6 +1398,11 @@ def cmd_openclaw_status(args: argparse.Namespace) -> int:
         "pending_reviews": snapshot["reviews"]["pending_decisions"],
         "pending_hooks": snapshot["hooks"]["pending"],
         "failed_hooks": snapshot["hooks"]["failed"],
+        "pending_approvals": dashboard["pending_approvals"],
+        "retry_backlog": dashboard["retry_backlog"],
+        "current_run": dashboard["current_run"],
+        "recent_failures": dashboard["recent_failures"],
+        "ready_tasks": dashboard["ready_tasks"],
         "metrics": {
             "updated_at": snapshot["updated_at"],
             "runs": snapshot["runs"],
@@ -1085,6 +1697,43 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("project_root")
     status.add_argument("run_id")
     status.set_defaults(func=cmd_status)
+
+    dashboard = subcommands.add_parser("dashboard", help="Show richer status for one or all projects")
+    dashboard.add_argument("project_root", nargs="?")
+    dashboard.add_argument("--all", action="store_true")
+    dashboard.add_argument("--recent", type=int, default=5)
+    dashboard.add_argument("--ready-limit", type=int, default=3)
+    dashboard.set_defaults(func=cmd_dashboard)
+
+    scheduler = subcommands.add_parser("scheduler", help="Run fair multi-project worker scheduling")
+    scheduler.add_argument("projects", nargs="*")
+    scheduler.add_argument("--once", action="store_true")
+    scheduler.add_argument("--max-jobs", type=int, default=1)
+    scheduler.add_argument("--skip-review", action="store_true")
+    scheduler.set_defaults(func=cmd_scheduler)
+
+    ask_human = subcommands.add_parser("ask-human", help="Create a pending human approval request for a run")
+    ask_human.add_argument("project_root")
+    ask_human.add_argument("run_id")
+    ask_human.add_argument("--reason", required=True)
+    ask_human.add_argument("--action", choices=("retry", "accept", "follow_up"), default="retry")
+    ask_human.add_argument("--source", choices=("runtime", "review", "manual"), default="manual")
+    ask_human.set_defaults(func=cmd_ask_human)
+
+    resolve_approval = subcommands.add_parser("resolve-approval", help="Resolve a pending approval request")
+    resolve_approval.add_argument("project_root")
+    resolve_approval.add_argument("approval_id")
+    resolve_approval.add_argument("--decision", choices=("approved", "rejected"), required=True)
+    resolve_approval.add_argument("--notes", default="")
+    resolve_approval.set_defaults(func=cmd_resolve_approval)
+
+    orchestrate = subcommands.add_parser("orchestrate", help="Run a task->queue->worker decision loop for one project")
+    orchestrate.add_argument("project_root")
+    orchestrate.add_argument("--max-steps", type=int, default=1)
+    orchestrate.add_argument("--skip-review", action="store_true")
+    orchestrate.add_argument("--recent", type=int, default=5)
+    orchestrate.add_argument("--ready-limit", type=int, default=3)
+    orchestrate.set_defaults(func=cmd_orchestrate)
 
     launch_plan = subcommands.add_parser("launch-plan", help="Preview execution plan for a task without running it")
     launch_plan.add_argument("task_path")

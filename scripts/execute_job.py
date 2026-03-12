@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -12,7 +13,12 @@ from pathlib import Path
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from hooklib import build_hook_payload, dispatch_hook_file, read_json, trim_text, utc_now, write_hook_payload, write_json
+from _system.engine.trusted_command import command_display, parse_trusted_argv
 
 
 @dataclass(frozen=True)
@@ -158,6 +164,27 @@ def workspace_base_path(git_root: Path) -> Path:
     return git_root.parent / f".{git_root.name}-worktrees"
 
 
+def acquire_lock(lock_path: Path, *, timeout_seconds: float = 30.0) -> int:
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    while True:
+        try:
+            return os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for workspace lock: {lock_path}")
+            time.sleep(0.05)
+
+
+def release_lock(lock_path: Path, lock_fd: int) -> None:
+    try:
+        os.close(lock_fd)
+    finally:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _sanitize_segment(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in value).strip("-") or "workspace"
 
@@ -178,19 +205,23 @@ def ensure_git_worktree(source_project_root: Path, run_dir: Path) -> WorkspaceCo
     base_dir.mkdir(parents=True, exist_ok=True)
 
     worktree_root = base_dir / worktree_name_for_run(source_project_root, run_dir, git_root)
-    if worktree_root.exists() and not (worktree_root / ".git").exists():
-        if any(worktree_root.iterdir()):
-            raise ValueError(f"Existing path is not a git worktree: {worktree_root}")
-    if not (worktree_root / ".git").exists():
-        completed = subprocess.run(
-            ["git", "-C", str(git_root), "worktree", "add", "--detach", str(worktree_root), "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode != 0:
-            stderr = (completed.stderr or completed.stdout or "").strip()
-            raise ValueError(f"Failed to create git worktree at {worktree_root}: {stderr}")
+    lock_path = base_dir / f".{worktree_root.name}.lock"
+    lock_fd = acquire_lock(lock_path)
+    try:
+        if worktree_root.exists() and not (worktree_root / ".git").exists():
+            shutil.rmtree(worktree_root)
+        if not (worktree_root / ".git").exists():
+            completed = subprocess.run(
+                ["git", "-C", str(git_root), "worktree", "add", "--detach", str(worktree_root), "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0 and not (worktree_root / ".git").exists():
+                stderr = (completed.stderr or completed.stdout or "").strip()
+                raise ValueError(f"Failed to create git worktree at {worktree_root}: {stderr}")
+    finally:
+        release_lock(lock_path, lock_fd)
 
     try:
         relative_project = source_project_root.relative_to(git_root)
@@ -219,27 +250,33 @@ def ensure_isolated_checkout(source_project_root: Path, run_dir: Path) -> Worksp
 
     checkout_name = worktree_name_for_run(source_project_root, run_dir, git_root)
     checkout_root = base_dir / f"checkout-{checkout_name}"
+    lock_path = base_dir / f".{checkout_root.name}.lock"
+    lock_fd = acquire_lock(lock_path)
+    try:
+        if checkout_root.exists() and not (checkout_root / ".git").exists():
+            shutil.rmtree(checkout_root)
+        if not checkout_root.exists():
+            completed = subprocess.run(
+                ["git", "clone", "--shared", "--no-checkout", str(git_root), str(checkout_root)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0 and not (checkout_root / ".git").exists():
+                stderr = (completed.stderr or completed.stdout or "").strip()
+                raise ValueError(f"Failed to create isolated checkout at {checkout_root}: {stderr}")
 
-    if not checkout_root.exists():
-        completed = subprocess.run(
-            ["git", "clone", "--shared", "--no-checkout", str(git_root), str(checkout_root)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode != 0:
-            stderr = (completed.stderr or completed.stdout or "").strip()
-            raise ValueError(f"Failed to create isolated checkout at {checkout_root}: {stderr}")
-
-        completed = subprocess.run(
-            ["git", "-C", str(checkout_root), "checkout", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode != 0:
-            stderr = (completed.stderr or completed.stdout or "").strip()
-            raise ValueError(f"Failed to checkout HEAD in isolated checkout at {checkout_root}: {stderr}")
+            completed = subprocess.run(
+                ["git", "-C", str(checkout_root), "checkout", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode != 0:
+                stderr = (completed.stderr or completed.stdout or "").strip()
+                raise ValueError(f"Failed to checkout HEAD in isolated checkout at {checkout_root}: {stderr}")
+    finally:
+        release_lock(lock_path, lock_fd)
 
     try:
         relative_project = source_project_root.relative_to(git_root)
@@ -312,7 +349,8 @@ def resolve_workspace(
 
 
 def build_command(agent: str, prompt: str, workspace: WorkspaceContext, registry: dict) -> tuple[list[str], str, int, str | None, Path]:
-    override = os.environ.get(f"CLAW_AGENT_COMMAND_{agent.upper()}") or os.environ.get("CLAW_AGENT_COMMAND")
+    override_env = f"CLAW_AGENT_COMMAND_{agent.upper()}"
+    override_raw = os.environ.get(override_env) or os.environ.get("CLAW_AGENT_COMMAND")
     agent_config = default_agent_config(agent)
     agent_config.update(registry.get(agent, {}))
     default_timeout = parse_timeout_seconds(agent_config.get("default_timeout_seconds"), 3600)
@@ -325,8 +363,12 @@ def build_command(agent: str, prompt: str, workspace: WorkspaceContext, registry
         workspace_root=workspace.workspace_root,
     )
 
-    if override:
-        return ["/bin/bash", "-lc", override], override, default_timeout, prompt, working_directory
+    if override_raw:
+        env_name = override_env if os.environ.get(override_env) else "CLAW_AGENT_COMMAND"
+        override = parse_trusted_argv(override_raw, env_name=env_name)
+        if override is None:
+            raise ValueError(f"{env_name} must be a trusted argv command")
+        return override, command_display(override), default_timeout, prompt, working_directory
 
     executable = str(agent_config.get("command", "")).strip()
     if not executable:
@@ -356,7 +398,7 @@ def build_command(agent: str, prompt: str, workspace: WorkspaceContext, registry
         prompt_input = prompt
         display_parts.append("<stdin>")
 
-    return command, " ".join(display_parts), default_timeout, prompt_input, working_directory
+    return command, command_display(display_parts), default_timeout, prompt_input, working_directory
 
 
 def render_report(
@@ -493,13 +535,7 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    timeout_seconds = default_timeout
-    timeout_override = os.environ.get("CLAW_AGENT_TIMEOUT_SECONDS")
-    if timeout_override:
-        try:
-            timeout_seconds = int(timeout_override)
-        except ValueError:
-            timeout_seconds = default_timeout
+    timeout_seconds = parse_timeout_seconds(os.environ.get("CLAW_AGENT_TIMEOUT_SECONDS"), default_timeout)
 
     created_at = meta.get("created_at") or result.get("created_at") or job.get("created_at") or utc_now()
     started_at = utc_now()

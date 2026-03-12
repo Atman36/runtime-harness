@@ -4,6 +4,7 @@ runs/
 projects/*/runs/
 projects/*/state/queue/*/*.json
 projects/*/state/hooks/*/*.json
+projects/*/state/approvals/*/*.json
 projects/*/state/review_cadence.json
 projects/*/state/metrics_snapshot.json
 

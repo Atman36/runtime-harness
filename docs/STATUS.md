@@ -5,7 +5,7 @@
 ---
 
 ## Текущая фаза
-**Этап 9 — Reliability & Observability**
+**Этап 8/9 — Scheduler + Reliability complete**
 
 ## Статус этапов
 
@@ -18,6 +18,8 @@
 | 5 | Reviewer system | ✅ done |
 | 6 | Runtime hardening before OpenClaw | ✅ done |
 | 7 | OpenClaw integration | ✅ done |
+| 8 | Multi-project scheduler | ✅ done |
+| 9 | Reliability & observability | ✅ done |
 
 ---
 
@@ -28,7 +30,7 @@
 - file-backed hooks (`state/hooks/{pending,sent,failed}`), `execute_job.py`, `dispatch_hooks.py`, `reconcile_hooks.py`, `hooklib.py`
 - slim file queue `_system/engine/file_queue.py`
 - runtime helpers → `_system/engine/runtime.py`
-- unified CLI `scripts/claw.py` (create-project, run, enqueue, worker, dispatch, reconcile, approve, reclaim, status, launch-plan)
+- unified CLI `scripts/claw.py` (create-project, run, enqueue, worker, dispatch, reconcile, approve, reclaim, status, dashboard, scheduler, ask-human, resolve-approval, orchestrate, launch-plan)
 - `job.json` хранит `run_path` для детерминированных ссылок на артефакты
 - `awaiting_approval` lifecycle + `approve` + `reclaim`
 - formal contracts `_system/contracts/` + `scripts/validate_artifacts.py`
@@ -55,18 +57,18 @@
 - **`claw.py worker` теперь продлевает lease, делает retry с exponential backoff и переводит job в `dead_letter` при исчерпании попыток**; покрыто `tests/worker_reliability_test.sh`
 - **Добавлены `docs/ARCHITECTURE.md`, `docs/CONTRACT_VERSIONING.md` и актуальный `README.md`**: архитектура, versioning/migration story и реальная модель системы теперь описаны явно
 - **Добавлен `docs/PARALLEL_EXECUTION.md`**: зафиксированы worktree isolation, edit scope discipline, merge rules и требования к непрерывному run→review→next-task циклу
+- **Hardening slice `9.6–9.9` закрыт**: trusted argv contract для env overrides, safe JSON fallback в `claw status`, lock-based `git_worktree` materialization, timeout clamp, reviewer registry validation, side-effect free `is_dead_letter()`
+- **Scheduler/orchestration slice `8.1–8.4` закрыт**: `claw scheduler`, `claw dashboard`, filesystem-backed `ask-human` approvals и `claw orchestrate`
 
 ## In Progress
 
-_(9.6 — concurrency / stress / failure-injection тесты)_
+_(docs sync for scheduler/orchestration flows)_
 
 ## Next
 
-1. **9.6** — Concurrency / stress / failure-injection тесты
-2. **9.7** — Harden shell-command trust boundary для hooks и executor overrides
-3. **9.8** — Execution robustness fixes (`claw status`, `git_worktree`, timeout clamp)
-4. **9.9** — Cleanup latent runtime edge cases (`stdin` mode, reviewer validation, dead-letter checks)
-5. **8.2 / 8.4** — Richer status view + continuous orchestration loop design
+1. Auto-review executor поверх существующих review decision stubs
+2. Follow-up task materialization из `needs_follow_up`
+3. Дописать docs/examples для scheduler/orchestrate approval loop
 
 ---
 
@@ -76,6 +78,9 @@ _(9.6 — concurrency / stress / failure-injection тесты)_
 - `run_path` как стабильная связь между queue item и run artifacts
 - opposite-model review by default (registry policy)
 - worker lifecycle project-scoped; multi-project scheduler — следующий порог
+- multi-project scheduling теперь живёт отдельной командой `claw scheduler`, а не внутри project worker
+- approval requests вынесены в `projects/<slug>/state/approvals/` как отдельный artifacts-first слой над queue
+- continuous loop принимает run без review только когда нет pending decision stubs и нет активных approval requests
 - OpenClaw — front door, не место хранения истины
 - runtime hardening идёт перед chat bridge, если execution contract ещё не доведён до end-to-end
 - docs/ и `projects/*/docs/` должны быть trackable; это проверяется `tests/docs_tracking_test.sh`
@@ -104,8 +109,15 @@ python scripts/validate_artifacts.py projects/demo-project/runs/<RUN>
 # Review batch
 python scripts/claw.py review-batch projects/demo-project
 
-# Queue status
-python scripts/claw.py status projects/demo-project
+# Rich project / cross-project status
+python scripts/claw.py dashboard projects/demo-project
+python scripts/claw.py dashboard --all
+
+# Fair multi-project scheduling
+python scripts/claw.py scheduler --once --max-jobs 2
+
+# Continuous orchestration
+python scripts/claw.py orchestrate projects/demo-project --max-steps 2
 
 # Worker (один цикл)
 python scripts/claw.py worker projects/demo-project
@@ -115,7 +127,7 @@ python scripts/claw.py worker projects/demo-project
 
 ## Текущие блокеры
 
-- `isolation=worktree` в orchestrator не изолирует агентов от основного рабочего дерева, если им передаётся абсолютный путь — агенты пишут напрямую в main directory. Нужно передавать путь к worktree, а не к main repo.
+- блокеров нет
 
 ---
 
@@ -140,3 +152,4 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | 9.2 worker reliability maturity | `_system/engine/file_queue.py`, `_system/contracts/queue_item.schema.json`, `scripts/claw.py`, `tests/worker_reliability_test.sh`, `tests/run_all.sh` | `bash tests/worker_reliability_test.sh`; `bash tests/run_all.sh` | ✅ worker renews lease, retries with backoff, dead-letters exhausted jobs; JSON output now exposes retry/heartbeat metadata | 9.6 stress/failure injection |
 | 2026-03-13 | 9.1 + 10.1 + 10.3 docs realignment after dual-agent run | `README.md`, `docs/ARCHITECTURE.md`, `docs/CONTRACT_VERSIONING.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `git show`; selective merge from parallel worktrees; `bash tests/run_all.sh` | ✅ architecture/versioning story documented; roadmap kept in sync without losing newer 9.7-9.9 items; dual-agent merge insights captured in docs | 10.2 parallel execution guide |
 | 2026-03-13 | 10.2 parallel execution guide + continuous loop requirements | `docs/PARALLEL_EXECUTION.md`, `README.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/run_all.sh` | ✅ worktree isolation, merge discipline, concurrency groups and requirements for autonomous run→review→next-task loop documented; backlog extended with 8.4 continuous orchestration loop | 9.6 stress/failure injection |
+| 2026-03-13 | 9.6–9.9 runtime hardening + 8.1–8.4 scheduler/orchestration | `scripts/claw.py`, `scripts/execute_job.py`, `scripts/hooklib.py`, `scripts/generate_review_batch.py`, `scripts/reconcile_hooks.py`, `_system/engine/trusted_command.py`, `_system/engine/agent_exec.py`, `tests/concurrency_stress_test.sh`, `tests/runtime_hardening_test.sh`, `tests/scheduler_dashboard_test.sh`, `tests/orchestration_loop_test.sh`, `tests/run_all.sh`, `.gitignore`, `docs/*.md`, `README.md` | `bash tests/runtime_hardening_test.sh`; `bash tests/concurrency_stress_test.sh`; `bash tests/scheduler_dashboard_test.sh`; `bash tests/orchestration_loop_test.sh`; `bash tests/run_all.sh` | ✅ trusted argv overrides, safe status/worktree/runtime fixes, fair multi-project scheduler, richer dashboard, ask-human approvals and continuous task loop implemented end-to-end | auto-review executor |

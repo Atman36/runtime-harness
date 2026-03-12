@@ -35,6 +35,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POLICY_PATH = REPO_ROOT / "_system" / "registry" / "reviewer_policy.yaml"
+AGENTS_REGISTRY_PATH = REPO_ROOT / "_system" / "registry" / "agents.yaml"
 
 IMMEDIATE_STATUS_TRIGGERS = {"failed"}
 IMMEDIATE_FLAG_TRIGGERS = {"risky_area", "uncertainty", "large_diff"}
@@ -44,6 +45,29 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def load_agents_registry(path: Path) -> set[str]:
+    if not path.is_file():
+        raise FileNotFoundError(f"agents.yaml not found: {path}")
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    agents = loaded.get("agents", {}) if isinstance(loaded, dict) else {}
+    if not isinstance(agents, dict):
+        raise ValueError("agents.yaml malformed: expected mapping under 'agents'")
+    return {str(name).strip() for name, config in agents.items() if str(name).strip() and isinstance(config, dict)}
+
+
+def validate_policy_agents(policy: dict, registered_agents: set[str]) -> None:
+    mapping = policy.get("default_mapping", {})
+    if not isinstance(mapping, dict):
+        raise ValueError("reviewer_policy.default_mapping must be a mapping")
+    for preferred_agent, reviewer in mapping.items():
+        preferred_name = str(preferred_agent).strip()
+        reviewer_name = str(reviewer).strip()
+        if preferred_name and preferred_name not in registered_agents:
+            raise ValueError(f"Unknown preferred agent in reviewer policy: {preferred_name}")
+        if reviewer_name and reviewer_name not in registered_agents:
+            raise ValueError(f"Unknown reviewer agent in reviewer policy: {reviewer_name}")
+
+
 def load_policy(path: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"reviewer_policy.yaml not found: {path}")
@@ -51,6 +75,7 @@ def load_policy(path: Path) -> dict:
     policy = loaded.get("reviewer_policy", {})
     if not isinstance(policy, dict):
         raise ValueError("reviewer_policy.yaml malformed: expected mapping under 'reviewer_policy'")
+    validate_policy_agents(policy, load_agents_registry(AGENTS_REGISTRY_PATH))
     return policy
 
 

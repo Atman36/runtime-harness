@@ -140,6 +140,32 @@ python3 scripts/generate_review_batch.py --dry-run projects/demo-project
 python3 scripts/claw.py status projects/demo-project RUN-0001
 ```
 
+Показать richer project / cross-project status:
+
+```bash
+python3 scripts/claw.py dashboard projects/demo-project
+python3 scripts/claw.py dashboard --all
+```
+
+Запустить fair multi-project scheduler:
+
+```bash
+python3 scripts/claw.py scheduler --once --max-jobs 2
+```
+
+Создать approval request и закрыть её:
+
+```bash
+python3 scripts/claw.py ask-human projects/demo-project RUN-0001 --reason "needs product decision"
+python3 scripts/claw.py resolve-approval projects/demo-project APPROVAL-1234567890 --decision approved
+```
+
+Запустить continuous orchestration loop:
+
+```bash
+python3 scripts/claw.py orchestrate projects/demo-project --max-steps 2
+```
+
 Доставить pending hooks:
 
 ```bash
@@ -207,10 +233,17 @@ Use case:
 - локальные заглушки
 - временная подмена транспорта/CLI
 
+Важно:
+- overrides считаются trusted-only
+- поддерживается либо JSON argv (`["python3","script.py"]`), либо plain argv string (`python3 script.py`)
+- shell-eval (`bash -c`, redirection, command substitution) сознательно отклоняется
+
 ### Hook delivery
 - `CLAW_HOOK_COMMAND`
 - `CLAW_HOOK_TIMEOUT_SECONDS`
 - `CLAW_HOOK_STALE_SECONDS`
+
+Для `CLAW_HOOK_COMMAND` действует тот же trusted argv contract, что и для agent overrides.
 
 ### Queue execution
 Специальных queue-env пока нет.

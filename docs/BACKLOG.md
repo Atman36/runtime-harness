@@ -46,14 +46,14 @@
 
 ## Epic 8 — Multi-project Scheduler
 **Приоритет:** P1
-**Статус:** 📋 backlog
+**Статус:** ✅ done
 
 | # | Задача | Зависит от | Phase | Параллельность |
 |---|--------|------------|-------|----------------|
-| 8.1 | Multi-project worker loop с fair scheduling | Этап 7 done | 8 | — |
-| 8.2 | Cross-project status view (ошибки, approvals, pending reviews) | 8.1 | 8 | после 8.1 |
-| 8.3 | Approval UX: `ask_human` как реальный сценарий (не только queue state) | 8.1 | 8 | параллельно 8.2 |
-| 8.4 | Continuous orchestration loop: task selector → implement → validate → review → decide → enqueue next task | 8.1, 8.2, 8.3, 9.6-9.9 | 8 | после стабилизации scheduler/runtime |
+| 8.1 | ✅ Multi-project worker loop с fair scheduling | Этап 7 done | 8 | done |
+| 8.2 | ✅ Cross-project status view (ошибки, approvals, pending reviews) | 8.1 | 8 | done |
+| 8.3 | ✅ Approval UX: `ask_human` как реальный сценарий (не только queue state) | 8.1 | 8 | done |
+| 8.4 | ✅ Continuous orchestration loop: task selector → implement → validate → review → decide → enqueue next task | 8.1, 8.2, 8.3, 9.6-9.9 | 8 | done |
 
 **Предлагаемые GitHub issue titles:**
 - `feat: multi-project worker loop with fair scheduling`
@@ -65,7 +65,7 @@
 
 ## Epic 9 — Reliability & Observability
 **Приоритет:** P1
-**Статус:** 📋 in progress
+**Статус:** ✅ done
 
 | # | Задача | Зависит от | Phase | Параллельность |
 |---|--------|------------|-------|----------------|
@@ -74,10 +74,10 @@
 | 9.3 | ✅ `claw review-batch` как unified CLI (не standalone только) | Этап 5 done | 9 | done |
 | 9.4 | ✅ Run/review metrics snapshot в state (для status/dashboard) | Этап 5 done | 9 | done |
 | 9.5 | ✅ Исправить `.gitignore`/индексацию для `docs/` и template docs parity | — | 9 | done |
-| 9.6 | Concurrency / stress / failure-injection тесты для queue + worker + hooks | 9.2 | 9 | после 9.2 |
-| 9.7 | Harden shell-command trust boundary для hooks и executor overrides (`CLAW_HOOK_COMMAND`, `CLAW_AGENT_COMMAND*`) | 9.2 | 9 | независимо |
-| 9.8 | Execution robustness fixes: safe JSON reads, idempotent `git_worktree`, clamp timeout override | 9.2 | 9 | независимо |
-| 9.9 | Cleanup latent runtime edge cases: `stdin` mode, reviewer registry validation, side-effect free dead-letter checks | 9.2 | 9 | независимо |
+| 9.6 | ✅ Concurrency / stress / failure-injection тесты для queue + worker + hooks | 9.2 | 9 | done |
+| 9.7 | ✅ Harden shell-command trust boundary для hooks и executor overrides (`CLAW_HOOK_COMMAND`, `CLAW_AGENT_COMMAND*`) | 9.2 | 9 | done |
+| 9.8 | ✅ Execution robustness fixes: safe JSON reads, idempotent `git_worktree`, clamp timeout override | 9.2 | 9 | done |
+| 9.9 | ✅ Cleanup latent runtime edge cases: `stdin` mode, reviewer registry validation, side-effect free dead-letter checks | 9.2 | 9 | done |
 
 **Предлагаемые GitHub issue titles:**
 - `feat: job contract versioning and schema migration`
@@ -89,7 +89,7 @@
 - `hardening: replace raw shell overrides with trusted argv contract`
 - `fix: make runtime edge cases deterministic under retries/worktrees`
 
-**Что можно параллелить:** 9.6, 9.7, 9.8 и 9.9 можно вести независимо после уже закрытых 9.1/9.2.
+**Что было распараллелено:** 9.6, 9.7, 9.8 и 9.9 закрыты общим hardening slice после 9.1/9.2; regression закреплён отдельными stress/runtime tests.
 
 **Уточнение по 9.2:** worker теперь реально использует `renew_lease`, `retry`, `dead_letter` и backoff metadata; поведение зафиксировано в `tests/worker_reliability_test.sh`.
 

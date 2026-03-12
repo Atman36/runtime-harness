@@ -335,7 +335,12 @@ Unified entrypoint: `python3 scripts/claw.py <command>`
 | `worker --once <project>` | Process one job then exit |
 | `approve <project> <run-id>` | Move awaiting_approval item to pending |
 | `reclaim <project>` | Return stale running items to pending |
-| `status <project>` | Print queue + hook summary |
+| `status <project> <run-id>` | Safe single-run status |
+| `dashboard [--all] [project]` | Rich status across queue/reviews/approvals/ready tasks |
+| `scheduler [projects...]` | Fair multi-project worker scheduler |
+| `ask-human <project> <run-id>` | Create pending approval request |
+| `resolve-approval <project> <approval-id>` | Resolve approval request |
+| `orchestrate <project>` | Ready-task selector → worker → decision loop |
 | `dispatch <project>` | Attempt delivery of pending hooks |
 | `reconcile <project>` | Retry failed + stale hooks |
 | `review-batch <project>` | Generate review batch for project |
