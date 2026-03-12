@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:claw:queue_item.schema.json",
+  "title": "Claw Queue Item",
+  "type": "object",
+  "required": ["job_id", "queue_version", "run_id", "run_path", "queue"],
+  "additionalProperties": true,
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "pattern": "^RUN-[0-9]{4,}$"
+    },
+    "queue_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^RUN-[0-9]{4,}$"
+    },
+    "run_path": {
+      "type": "string"
+    },
+    "project": {
+      "type": ["string", "null"]
+    },
+    "preferred_agent": {
+      "type": ["string", "null"]
+    },
+    "review_policy": {
+      "type": ["string", "null"]
+    },
+    "concurrency_key": {
+      "type": ["string", "null"]
+    },
+    "queue": {
+      "type": "object",
+      "required": ["state", "enqueued_at", "updated_at", "attempt_count", "max_attempts", "history"],
+      "additionalProperties": true,
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["pending", "running", "awaiting_approval", "done", "failed", "dead_letter"]
+        },
+        "enqueued_at": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "worker_id": {
+          "type": ["string", "null"]
+        },
+        "last_worker_id": {
+          "type": ["string", "null"]
+        },
+        "lease_id": {
+          "type": ["string", "null"]
+        },
+        "last_claimed_at": {
+          "type": ["string", "null"]
+        },
+        "lease_heartbeat_at": {
+          "type": ["string", "null"]
+        },
+        "lease_expires_at": {
+          "type": ["string", "null"]
+        },
+        "last_result_status": {
+          "type": ["string", "null"]
+        },
+        "last_exit_code": {
+          "type": ["integer", "null"]
+        },
+        "last_error": {
+          "type": ["string", "null"]
+        },
+        "completed_at": {
+          "type": ["string", "null"]
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["at", "event", "to"],
+            "additionalProperties": true,
+            "properties": {
+              "at": {"type": "string"},
+              "event": {"type": "string"},
+              "from": {"type": ["string", "null"]},
+              "to": {"type": "string"},
+              "worker_id": {"type": ["string", "null"]},
+              "attempt_count": {"type": ["integer", "null"]},
+              "lease_id": {"type": ["string", "null"]},
+              "exit_code": {"type": ["integer", "null"]},
+              "error": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    }
+  }
+}
