@@ -43,6 +43,19 @@
       "type": ["string", "null"],
       "description": "Trimmed stdout/stderr summary from the agent run."
     },
+    "validation": {
+      "type": "object",
+      "description": "Artifact validation snapshot recorded after report/result files are written.",
+      "required": ["valid", "errors"],
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "object"
+        }
+      }
+    },
     "hook": {
       "type": "object",
       "description": "Hook delivery snapshot after run completion."

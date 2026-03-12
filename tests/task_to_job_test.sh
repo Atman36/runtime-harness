@@ -43,6 +43,8 @@ cp -R "$repo_root/_system" "$workspace/_system"
 cp -R "$repo_root/projects" "$workspace/projects"
 mkdir -p "$workspace/scripts"
 cp "$repo_root/scripts/run_task.sh" "$workspace/scripts/run_task.sh"
+rm -rf "$workspace/projects/demo-project/runs" "$workspace/projects/demo-project/state/queue"
+mkdir -p "$workspace/projects/demo-project/runs" "$workspace/projects/demo-project/state/queue"/{pending,running,done,failed,awaiting_approval}
 
 task_path="$workspace/projects/demo-project/tasks/TASK-001.md"
 project_root="$workspace/projects/demo-project"
@@ -134,6 +136,8 @@ cp -R "$repo_root/_system" "$invalid_project_slug_workspace/_system"
 cp -R "$repo_root/projects" "$invalid_project_slug_workspace/projects"
 mkdir -p "$invalid_project_slug_workspace/scripts"
 cp "$repo_root/scripts/run_task.sh" "$invalid_project_slug_workspace/scripts/run_task.sh"
+rm -rf "$invalid_project_slug_workspace/projects/demo-project/runs" "$invalid_project_slug_workspace/projects/demo-project/state/queue"
+mkdir -p "$invalid_project_slug_workspace/projects/demo-project/runs" "$invalid_project_slug_workspace/projects/demo-project/state/queue"/{pending,running,done,failed,awaiting_approval}
 
 python3 - "$invalid_project_slug_workspace/projects/demo-project/state/project.yaml" <<'EOF'
 from pathlib import Path

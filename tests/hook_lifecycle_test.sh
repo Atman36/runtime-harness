@@ -51,9 +51,12 @@ cp -R "$repo_root/projects" "$workspace/projects"
 cp "$repo_root/scripts/run_task.sh" "$workspace/scripts/run_task.sh"
 cp "$repo_root/scripts/execute_job.sh" "$workspace/scripts/execute_job.sh"
 cp "$repo_root/scripts/execute_job.py" "$workspace/scripts/execute_job.py"
+cp "$repo_root/scripts/validate_artifacts.py" "$workspace/scripts/validate_artifacts.py"
 cp "$repo_root/scripts/dispatch_hooks.py" "$workspace/scripts/dispatch_hooks.py"
 cp "$repo_root/scripts/reconcile_hooks.py" "$workspace/scripts/reconcile_hooks.py"
 cp "$repo_root/scripts/hooklib.py" "$workspace/scripts/hooklib.py"
+rm -rf "$workspace/projects/demo-project/runs" "$workspace/projects/demo-project/reviews" "$workspace/projects/demo-project/state/hooks" "$workspace/projects/demo-project/state/queue"
+mkdir -p "$workspace/projects/demo-project/runs" "$workspace/projects/demo-project/reviews" "$workspace/projects/demo-project/state/hooks"/{pending,sent,failed} "$workspace/projects/demo-project/state/queue"/{pending,running,done,failed,awaiting_approval}
 
 cat > "$workspace/scripts/fake_success_agent.sh" <<'EOF'
 #!/usr/bin/env bash

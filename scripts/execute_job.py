@@ -164,6 +164,24 @@ def render_report(job: dict, status: str, started_at: str, finished_at: str, exi
     return "\n".join(lines)
 
 
+def run_post_artifact_validation(run_dir: Path) -> dict:
+    try:
+        from validate_artifacts import validate_run_dir
+
+        errors = validate_run_dir(run_dir)
+        return {
+            "valid": not any(artifact_errors for artifact_errors in errors.values()),
+            "errors": errors,
+        }
+    except Exception as exc:  # pragma: no cover - validation must not hide run result
+        return {
+            "valid": False,
+            "errors": {
+                "_exception": [str(exc)],
+            },
+        }
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("Usage: python3 scripts/execute_job.py <run-dir|job.json>", file=sys.stderr)
@@ -327,6 +345,10 @@ def main() -> int:
         working_directory=working_directory,
     )
     report_path.write_text(report_text, encoding="utf-8")
+
+    validation_result = run_post_artifact_validation(run_dir)
+    final_result["validation"] = validation_result
+    meta["validation"] = validation_result
 
     final_result["hook"] = {}
     meta["hook"] = {}

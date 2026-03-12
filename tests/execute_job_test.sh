@@ -44,7 +44,10 @@ cp -R "$repo_root/projects" "$workspace/projects"
 cp "$repo_root/scripts/run_task.sh" "$workspace/scripts/run_task.sh"
 cp "$repo_root/scripts/execute_job.sh" "$workspace/scripts/execute_job.sh"
 cp "$repo_root/scripts/execute_job.py" "$workspace/scripts/execute_job.py"
+cp "$repo_root/scripts/validate_artifacts.py" "$workspace/scripts/validate_artifacts.py"
 cp "$repo_root/scripts/hooklib.py" "$workspace/scripts/hooklib.py"
+rm -rf "$workspace/projects/demo-project/runs" "$workspace/projects/demo-project/state/queue"
+mkdir -p "$workspace/projects/demo-project/runs" "$workspace/projects/demo-project/state/queue"/{pending,running,done,failed,awaiting_approval}
 
 cat > "$workspace/scripts/fake_success_agent.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -106,6 +109,8 @@ assert_file "$run_one/stderr.log"
 assert_contains "$run_one/meta.json" '"status": "completed"'
 assert_contains "$run_one/result.json" '"status": "success"'
 assert_contains "$run_one/result.json" '"exit_code": 0'
+assert_contains "$run_one/result.json" '"validation": {'
+assert_contains "$run_one/result.json" '"valid": true'
 assert_contains "$run_one/stdout.log" 'FAKE SUCCESS'
 assert_contains "$run_one/report.md" '- Agent: codex'
 assert_contains "$run_one/report.md" '- Status: success'
@@ -124,6 +129,7 @@ assert_dir "$run_two"
 assert_contains "$run_two/meta.json" '"status": "failed"'
 assert_contains "$run_two/result.json" '"status": "failed"'
 assert_contains "$run_two/result.json" '"exit_code": 7'
+assert_contains "$run_two/result.json" '"validation": {'
 assert_contains "$run_two/stderr.log" 'FAKE FAILURE'
 assert_contains "$run_two/report.md" '- Status: failed'
 assert_contains "$run_two/report.md" '- Exit code: 7'

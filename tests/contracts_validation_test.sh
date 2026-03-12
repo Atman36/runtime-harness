@@ -166,7 +166,15 @@ cat > "$result_run/result.json" <<'EOF'
   "exit_code": 0,
   "duration_seconds": 240.5,
   "command": "codex exec <prompt>",
-  "summary": "Task completed successfully."
+  "summary": "Task completed successfully.",
+  "validation": {
+    "valid": true,
+    "errors": {
+      "job.json": [],
+      "result.json": [],
+      "meta.json": []
+    }
+  }
 }
 EOF
 assert_valid "valid result.json (success)" "$result_run/result.json"

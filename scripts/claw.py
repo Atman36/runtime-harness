@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 
 def repo_root() -> Path:
@@ -17,6 +20,91 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from _system.engine import FileQueue, QueueEmpty, enqueue_run, execute_run_task, find_run_dir, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
+from generate_review_batch import POLICY_PATH, classify_run, generate_batches, load_policy, load_run  # noqa: E402
+
+
+CADENCE_STATE_FILE = "review_cadence.json"
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def load_cadence_state(project_root: Path) -> dict:
+    path = project_root / "state" / CADENCE_STATE_FILE
+    default_state = {
+        "successful_since_last_batch": 0,
+        "last_batch_generated_at": None,
+    }
+    try:
+        payload = read_json(path)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return dict(default_state)
+
+    if not isinstance(payload, dict):
+        return dict(default_state)
+
+    try:
+        success_count = int(payload.get("successful_since_last_batch", 0))
+    except (TypeError, ValueError):
+        success_count = 0
+
+    last_batch_generated_at = payload.get("last_batch_generated_at")
+    if not isinstance(last_batch_generated_at, str):
+        last_batch_generated_at = None
+
+    return {
+        "successful_since_last_batch": max(0, success_count),
+        "last_batch_generated_at": last_batch_generated_at,
+    }
+
+
+def save_cadence_state(project_root: Path, state: dict) -> None:
+    path = project_root / "state" / CADENCE_STATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+    payload = {
+        "successful_since_last_batch": max(0, int(state.get("successful_since_last_batch", 0))),
+        "last_batch_generated_at": state.get("last_batch_generated_at"),
+    }
+
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def maybe_trigger_review(project_root: Path, run_dir: Path, result_status: str, policy: dict) -> list[dict]:
+    try:
+        run = load_run(run_dir, project_root)
+        if run is None:
+            return []
+
+        cadence_state = load_cadence_state(project_root)
+        trigger = classify_run(run)
+        batches: list[dict] = []
+
+        if trigger is not None:
+            batches = generate_batches(project_root, policy)
+        elif result_status == "success":
+            cadence_state["successful_since_last_batch"] += 1
+            cadence_batch_size = int(policy.get("cadence", {}).get("successful_runs_batch", 5))
+            if cadence_state["successful_since_last_batch"] >= cadence_batch_size:
+                batches = generate_batches(project_root, policy)
+
+        if any(batch.get("trigger_type") == "cadence" for batch in batches):
+            cadence_state["successful_since_last_batch"] = 0
+            cadence_state["last_batch_generated_at"] = utc_now()
+
+        save_cadence_state(project_root, cadence_state)
+        return batches
+    except Exception as exc:  # pragma: no cover - review generation must not fail worker loop
+        print(f"Review trigger error for {run_dir}: {exc}", file=sys.stderr)
+        return []
 
 
 def cmd_create_project(args: argparse.Namespace) -> int:
@@ -60,6 +148,13 @@ def cmd_worker(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     queue = FileQueue(queue_root_for_project(project_root))
     claimed_count = 0
+    review_policy = None
+
+    if not args.skip_review:
+        try:
+            review_policy = load_policy(POLICY_PATH)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"Review policy unavailable: {exc}", file=sys.stderr)
 
     while True:
         reclaimed = 0
@@ -77,12 +172,21 @@ def cmd_worker(args: argparse.Namespace) -> int:
         payload = queue.read_claimed(claimed)
         run_dir = (project_root / payload["run_path"]).resolve()
         completed = run_command(["python3", str(REPO_ROOT / "scripts" / "execute_job.py"), str(run_dir)], cwd=REPO_ROOT)
+        result_status = "failed"
+        try:
+            result_status = read_json(run_dir / "result.json").get("status") or result_status
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            result_status = "success" if completed.returncode == 0 else "failed"
+
         if completed.returncode == 0:
             queue.ack(claimed)
             status = "done"
         else:
             queue.fail(claimed)
             status = "failed"
+
+        if review_policy is not None:
+            maybe_trigger_review(project_root, run_dir, result_status, review_policy)
 
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
@@ -186,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     worker = subcommands.add_parser("worker", help="Claim queued jobs for one project")
     worker.add_argument("project_root")
     worker.add_argument("--once", action="store_true")
+    worker.add_argument("--skip-review", action="store_true")
     worker.add_argument("--stale-after-seconds", type=int)
     worker.set_defaults(func=cmd_worker)
 
