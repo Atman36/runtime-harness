@@ -59,9 +59,11 @@ _(9.1 — queue/job contract versioning + migration story)_
 
 ## Next
 
-1. Добавить queue/job contract versioning + migration story (9.1)
-2. Довести queue maturity: retry/backoff, poison threshold, DLQ, heartbeat (9.2)
-3. Добавить richer status view: последние ошибки, approvals, pending reviews (следом за 9.4/8.2)
+1. **9.1** — Queue/job contract versioning + migration story
+2. **9.2** — Wire retry/backoff + dead_letter + lease heartbeat в `cmd_worker` (file_queue.py APIs готовы, worker loop нет)
+3. **9.6** — Concurrency / stress / failure-injection тесты
+4. **8.2** — Richer status view: последние ошибки, approvals, pending reviews
+5. **10.1/10.2** — Architecture doc + parallel execution guide
 
 ---
 
@@ -130,3 +132,4 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | 9.3 unified `claw review-batch` CLI | `scripts/claw.py`, `tests/review_batch_cli_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/review_batch_cli_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/run_all.sh` | ✅ top-level `claw review-batch` добавлен; общий helper переиспользован без ломки OpenClaw JSON | 9.5 docs/template clean-worktree parity |
 | 2026-03-13 | 9.5 docs/template clean-worktree parity | `.gitignore`, `tests/docs_tracking_test.sh`, `projects/_template/docs/README.md`, `projects/demo-project/docs/README.md`, `docs/PRO_FRAMEWORK_ANALYSIS_PROMPT.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/docs_tracking_test.sh`; `bash tests/run_all.sh` | ✅ docs/ и project docs больше не скрываются `.gitignore`; parity проверяется тестом | 9.4 metrics snapshot |
 | 2026-03-13 | 9.4 metrics snapshot in state | `scripts/claw.py`, `tests/metrics_snapshot_test.sh`, `tests/openclaw_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/STATUS.md` | `bash tests/metrics_snapshot_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/run_all.sh` | ✅ `state/metrics_snapshot.json` сохраняет queue/hooks/runs/reviews summary; `openclaw status` переиспользует snapshot и отдаёт metrics | 9.1 contract versioning |
+| 2026-03-13 | triage внешнего code review и актуализация roadmap | `docs/PLAN.md`, `docs/STATUS.md` | `rg`; `sed`; `nl`; `bash tests/run_all.sh` | ✅ подтверждены hardening gaps по hook/override shell boundary, worktree concurrency и runtime edge cases; в план добавлены 9.7-9.9 | 9.1 contract versioning |

@@ -274,8 +274,20 @@ claw/
 
 ## Следующие незавершённые задачи
 
-- 9.1: queue/job contract versioning + migration story
-- 9.2: queue maturity (retry/backoff, poison threshold, DLQ, heartbeat)
+- **9.1:** queue/job contract versioning + migration story
+- **9.2:** wire retry/backoff + dead_letter + lease heartbeat в `cmd_worker` (`file_queue.py` APIs готовы: attempt_count, max_attempts, dead_letter, renew_lease, retry, transitions — worker loop их не вызывает)
+- **9.6:** concurrency / stress / failure-injection тесты (queue + worker + hooks)
+- **9.7:** harden shell-command trust boundary для hooks и executor overrides (`CLAW_HOOK_COMMAND`, `CLAW_AGENT_COMMAND*`): уйти от raw `bash -lc` где возможно, валидировать формат команды, явно задокументировать trusted-only env overrides
+- **9.8:** execution robustness fixes: safe JSON reads в `claw status`, idempotent/concurrency-safe `git_worktree` materialization, валидация `CLAW_AGENT_TIMEOUT_SECONDS` через `max(1, ...)`
+- **9.9:** cleanup latent runtime edge cases: починить `stdin` mode в `_system/engine/agent_exec.py`, валидировать reviewer против agents registry, сделать `is_dead_letter()` side-effect free
+- **10.1:** architecture doc (Run lifecycle, entity map, agent execution backends)
+- **10.2:** parallel execution guide (git_worktree isolation, edit scope, concurrency groups)
+- **10.3:** README realignment
+
+**Реализовано, но не отслеживалось в плане:**
+- `_system/engine/agent_exec.py` — agent execution abstraction (registry parse, cwd policy, workspace root, command rendering)
+- `scripts/run_task.py` — Python entrypoint для task→run (тонкий wrapper поверх planner)
+- `_system/contracts/queue_item.schema.json` — formal queue item schema
 
 ---
 
@@ -390,11 +402,14 @@ claw/
 ### Средний приоритет
 - ~~Ввести formal review decision artifacts: `review_decision.json`, `findings.json`, approvals, waivers, follow-up queue.~~ — **✅ сделано** (2026-03-13)
 - Довести queue maturity: retry/backoff policy, poison-job threshold, DLQ handling, lease renewal heartbeat в worker loop.
+- Harden shell-command trust boundary для hooks и executor overrides (`CLAW_HOOK_COMMAND`, `CLAW_AGENT_COMMAND*`): argv/registry contract вместо raw shell где возможно, trusted-only env override policy.
+- Исправить execution robustness gaps: safe JSON reads в `claw status`, concurrency-safe/idempotent `git_worktree` creation, clamp timeout override `CLAW_AGENT_TIMEOUT_SECONDS >= 1`.
 - ~~Формализовать hook delivery contract: idempotency, event versioning, retry semantics.~~ — **✅ сделано** (2026-03-13)
 - Добавить явный queue/job contract versioning и migration story для будущих изменений схем.
 - ~~Сделать `claw review-batch` как часть unified CLI вместо standalone entrypoint-only usage.~~ — **✅ сделано** (2026-03-13)
 - Добавить multi-project worker/reconciler loop с безопасным fair scheduling.
 - Обновить template/demo artifacts под `preferred_agent: auto`, execution defaults и routing coverage tests.
+- Убрать latent runtime inconsistencies: сломанный `stdin` mode в `_system/engine/agent_exec.py`, side-effect predicate в `reconcile_hooks.py`, отсутствие reviewer registry validation в `generate_review_batch.py`.
 - ~~Исправить `.gitignore` политику для `docs/`, чтобы проектная документация не терялась из индекса по умолчанию.~~ — **✅ сделано** (2026-03-13)
 
 ### Низкий приоритет, но полезно
