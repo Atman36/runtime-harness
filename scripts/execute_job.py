@@ -8,6 +8,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 from hooklib import build_hook_payload, dispatch_hook_file, read_json, trim_text, utc_now, write_hook_payload, write_json
 
 
@@ -34,43 +36,18 @@ def project_root_from_run_dir(run_dir: Path) -> Path:
 
 
 def parse_agents_registry(path: Path) -> dict:
-    agents = {}
-    in_agents_section = False
-    agents_indent = None
-    agent_indent = None
-    current_agent = None
-
     if not path.is_file():
-        return agents
+        return {}
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(loaded, dict):
+        return {}
 
-        indent = len(raw_line) - len(raw_line.lstrip(" "))
+    agents = loaded.get("agents") or {}
+    if not isinstance(agents, dict):
+        return {}
 
-        if not in_agents_section:
-            if stripped == "agents:":
-                in_agents_section = True
-                agents_indent = indent
-            continue
-
-        if indent <= agents_indent:
-            break
-
-        if stripped.endswith(":") and ":" not in stripped[:-1]:
-            if agent_indent is None or indent == agent_indent:
-                current_agent = stripped[:-1]
-                agent_indent = indent
-                agents[current_agent] = {}
-            continue
-
-        if current_agent and agent_indent is not None and indent > agent_indent and ":" in stripped:
-            key, value = stripped.split(":", 1)
-            agents[current_agent][key.strip()] = value.strip().strip('"').strip("'")
-
-    return agents
+    return {agent_name: dict(config) for agent_name, config in agents.items() if isinstance(config, dict)}
 
 
 def default_agent_config(agent: str) -> dict:

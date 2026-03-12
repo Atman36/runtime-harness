@@ -134,11 +134,14 @@ agents:
     # valid YAML with deeper agent indentation than the original parser expected
     codex:
       label: Codex
-      command: agent-stub
+      command: agent-stub # inline comment should not become part of the command
       args: exec --mode stdin --flag registry
       prompt_mode: stdin
       cwd: project_root
       default_timeout_seconds: 12
+      tags:
+        - primary
+        - sandboxed
     claude:
       label: Claude
       command: agent-stub
@@ -149,6 +152,17 @@ agents:
 EOF
 
 bash "$workspace/scripts/run_task.sh" "$task_path"
+
+WORKSPACE="$workspace" PYTHONPATH="$workspace/scripts" python3 - <<'PY'
+import os
+from pathlib import Path
+
+from execute_job import parse_agents_registry
+
+registry = parse_agents_registry(Path(os.environ["WORKSPACE"]) / "_system" / "registry" / "agents.yaml")
+assert registry["codex"]["command"] == "agent-stub", registry
+assert registry["codex"]["tags"] == ["primary", "sandboxed"], registry
+PY
 
 PATH="$workspace/bin:$PATH" \
 AGENT_ARGS_PATH="$workspace/agent-args.txt" \
