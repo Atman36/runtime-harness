@@ -25,6 +25,7 @@ from hooklib import dispatch_hook_file, iter_hook_files, trim_text  # noqa: E402
 
 
 CADENCE_STATE_FILE = "review_cadence.json"
+METRICS_SNAPSHOT_FILE = "metrics_snapshot.json"
 
 
 def utc_now() -> str:
@@ -96,6 +97,19 @@ def save_cadence_state(project_root: Path, state: dict) -> None:
             temp_path.unlink()
 
 
+def write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
 def hook_counts(project_root: Path) -> dict[str, int]:
     hooks_root = project_root / "state" / "hooks"
     counts: dict[str, int] = {}
@@ -126,6 +140,124 @@ def summarize_hook_outcomes(outcomes: list[dict]) -> dict[str, int]:
         if label in ("sent", "failed", "skipped"):
             summary[label] += 1
     return summary
+
+
+def iter_projects_root() -> list[Path]:
+    projects_root = REPO_ROOT / "projects"
+    if not projects_root.is_dir():
+        raise FileNotFoundError(f"Projects directory not found: {projects_root}")
+    return sorted(path for path in projects_root.iterdir() if path.is_dir() and not path.name.startswith("_"))
+
+
+def collect_run_results(project_root: Path) -> list[tuple[Path, dict]]:
+    runs_root = project_root / "runs"
+    results: list[tuple[Path, dict]] = []
+    if not runs_root.is_dir():
+        return results
+
+    for date_dir in sorted(runs_root.iterdir()):
+        if not date_dir.is_dir():
+            continue
+        for run_dir in sorted(date_dir.iterdir()):
+            if not run_dir.is_dir() or not run_dir.name.startswith("RUN-"):
+                continue
+            result_path = run_dir / "result.json"
+            if not result_path.is_file():
+                continue
+            try:
+                results.append((result_path, read_json(result_path)))
+            except (json.JSONDecodeError, OSError):
+                continue
+    return results
+
+
+def count_pending_review_decisions(project_root: Path) -> int:
+    decisions_dir = project_root / "reviews" / "decisions"
+    pending_reviews = 0
+    if not decisions_dir.is_dir():
+        return pending_reviews
+
+    for stub_path in decisions_dir.glob("*.json"):
+        try:
+            stub = read_json(stub_path)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if stub.get("decision") == "pending":
+            pending_reviews += 1
+    return pending_reviews
+
+
+def build_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dict:
+    queue_snapshot = queue_counts(project_root)
+    hook_snapshot = hook_counts(project_root)
+    reviewed_batches = len(list((project_root / "reviews").glob("REVIEW-*.json")))
+    result_files = collect_run_results(project_root)
+
+    run_statuses = {
+        "pending": 0,
+        "running": 0,
+        "success": 0,
+        "failed": 0,
+        "unknown": 0,
+    }
+    recent_runs: list[dict] = []
+
+    for result_path, result in result_files:
+        status = str(result.get("status") or "unknown")
+        run_statuses[status if status in run_statuses else "unknown"] += 1
+        run_id = result.get("run_id") or result_path.parent.name
+        finished_at = result.get("finished_at") or result.get("completed_at") or result.get("created_at")
+        recent_runs.append({
+            "run_id": run_id,
+            "status": status,
+            "agent": result.get("agent", ""),
+            "finished_at": finished_at,
+        })
+
+    snapshot = {
+        "snapshot_version": 1,
+        "project": project_root.name,
+        "updated_at": utc_now(),
+        "queue": queue_snapshot,
+        "hooks": hook_snapshot,
+        "runs": {
+            "total": len(result_files),
+            "by_status": run_statuses,
+        },
+        "reviews": {
+            "batch_count": reviewed_batches,
+            "pending_decisions": count_pending_review_decisions(project_root),
+        },
+        "recent_runs": list(reversed(recent_runs[-recent_limit:])),
+    }
+    return snapshot
+
+
+def refresh_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dict:
+    snapshot = build_metrics_snapshot(project_root, recent_limit=recent_limit)
+    write_json_atomic(project_root / "state" / METRICS_SNAPSHOT_FILE, snapshot)
+    return snapshot
+
+
+def generate_review_batches_with_policy(project_root: Path, *, dry_run: bool, capture_stdout: bool = False) -> list[dict]:
+    try:
+        policy = load_policy(POLICY_PATH)
+    except (FileNotFoundError, ValueError) as exc:
+        raise RuntimeError(f"Failed to load reviewer policy: {exc}") from exc
+
+    if capture_stdout:
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            batches = generate_batches(project_root, policy, dry_run=dry_run)
+        log_output = buffer.getvalue().strip()
+        if log_output:
+            print(log_output, file=sys.stderr)
+        return batches
+
+    return generate_batches(project_root, policy, dry_run=dry_run)
 
 
 def build_callback_payload(payload: dict) -> dict:
@@ -220,9 +352,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         raise SystemExit("--awaiting-approval requires --enqueue")
 
     run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=args.execute)
+    project_root = run_dir.parent.parent.parent
     if args.enqueue:
         queue_state = "awaiting_approval" if args.awaiting_approval else "pending"
         payload = enqueue_run(run_dir, state=queue_state)
+        refresh_metrics_snapshot(project_root)
         print(
             json.dumps(
                 {"status": "queued", "job_id": payload["job_id"], "run_path": payload["run_path"], "queue_state": queue_state},
@@ -230,6 +364,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             )
         )
         return 0
+    refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "created", "run_dir": str(run_dir)}, ensure_ascii=False))
     return 0
 
@@ -238,6 +373,7 @@ def cmd_enqueue(args: argparse.Namespace) -> int:
     queue_state = "awaiting_approval" if args.awaiting_approval else "pending"
     run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=False)
     payload = enqueue_run(run_dir, state=queue_state)
+    refresh_metrics_snapshot(run_dir.parent.parent.parent)
     print(json.dumps({"status": "queued", "job_id": payload["job_id"], "run_path": payload["run_path"], "queue_state": queue_state}, ensure_ascii=False))
     return 0
 
@@ -286,6 +422,8 @@ def cmd_worker(args: argparse.Namespace) -> int:
         if review_policy is not None:
             maybe_trigger_review(project_root, run_dir, result_status, review_policy)
 
+        refresh_metrics_snapshot(project_root)
+
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
         print(
@@ -308,6 +446,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
 def cmd_dispatch(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     completed = run_command(["python3", str(REPO_ROOT / "scripts" / "dispatch_hooks.py"), str(project_root)], cwd=REPO_ROOT)
+    refresh_metrics_snapshot(project_root)
     sys.stdout.write(completed.stdout)
     sys.stderr.write(completed.stderr)
     return completed.returncode
@@ -316,6 +455,7 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
 def cmd_reconcile(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     completed = run_command(["python3", str(REPO_ROOT / "scripts" / "reconcile_hooks.py"), str(project_root)], cwd=REPO_ROOT)
+    refresh_metrics_snapshot(project_root)
     sys.stdout.write(completed.stdout)
     sys.stderr.write(completed.stderr)
     return completed.returncode
@@ -327,6 +467,7 @@ def cmd_approve(args: argparse.Namespace) -> int:
     if not queue.approve(args.run_id):
         print(json.dumps({"status": "not_found", "job_id": args.run_id}, ensure_ascii=False))
         return 1
+    refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "approved", "job_id": args.run_id, "queue_state": "pending"}, ensure_ascii=False))
     return 0
 
@@ -335,6 +476,7 @@ def cmd_reclaim(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     queue = FileQueue(queue_root_for_project(project_root))
     reclaimed = queue.reclaim_stale_running(args.stale_after_seconds)
+    refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "reclaimed", "reclaimed": reclaimed, "queue_state": "pending"}, ensure_ascii=False))
     return 0
 
@@ -361,6 +503,48 @@ def cmd_status(args: argparse.Namespace) -> int:
         "task_id": meta.get("task_id"),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_review_batch(args: argparse.Namespace) -> int:
+    if args.all:
+        try:
+            projects = iter_projects_root()
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
+        if not projects:
+            print("No projects found.")
+            return 0
+
+        try:
+            for project_root in projects:
+                print(f"Project: {project_root.name}")
+                generate_review_batches_with_policy(project_root, dry_run=args.dry_run)
+                refresh_metrics_snapshot(project_root)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        return 0
+
+    if not args.project_root:
+        print("usage: claw review-batch [--dry-run] [--all] PROJECT_ROOT", file=sys.stderr)
+        return 2
+
+    try:
+        project_root = resolve_project_root(args.project_root)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    try:
+        print(f"Project: {project_root.name}")
+        generate_review_batches_with_policy(project_root, dry_run=args.dry_run)
+        refresh_metrics_snapshot(project_root)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     return 0
 
 
@@ -477,64 +661,21 @@ def cmd_openclaw_status(args: argparse.Namespace) -> int:
         _openclaw_error(str(exc), "NOT_FOUND")
         return 1
 
-    queue_snapshot = queue_counts(project_root)
-
-    # Recent runs: collect result.json from runs/ sorted by path (RUN number)
-    runs_root = project_root / "runs"
-    result_files: list[Path] = []
-    if runs_root.is_dir():
-        for date_dir in sorted(runs_root.iterdir()):
-            if not date_dir.is_dir():
-                continue
-            for run_dir in sorted(date_dir.iterdir()):
-                if run_dir.is_dir() and run_dir.name.startswith("RUN-"):
-                    result_path = run_dir / "result.json"
-                    if result_path.is_file():
-                        result_files.append(result_path)
-
     max_recent = getattr(args, "recent", 5)
-    recent_result_files = result_files[-max_recent:]
-
-    recent_runs = []
-    for result_path in reversed(recent_result_files):
-        try:
-            result = read_json(result_path)
-        except (json.JSONDecodeError, OSError):
-            continue
-        run_id = result.get("run_id") or result_path.parent.name
-        finished_at = result.get("finished_at") or result.get("completed_at") or result.get("created_at")
-        recent_runs.append({
-            "run_id": run_id,
-            "status": result.get("status", "unknown"),
-            "agent": result.get("agent", ""),
-            "finished_at": finished_at,
-        })
-
-    # pending_reviews: count from review_cadence.json or reviews dir
-    pending_reviews = 0
-    cadence_path = project_root / "state" / CADENCE_STATE_FILE
-    reviews_dir = project_root / "reviews"
-    decisions_dir = reviews_dir / "decisions"
-    if decisions_dir.is_dir():
-        for stub_path in decisions_dir.glob("*.json"):
-            try:
-                stub = read_json(stub_path)
-                if stub.get("decision") == "pending":
-                    pending_reviews += 1
-            except (json.JSONDecodeError, OSError):
-                pass
-
-    # Hook counts
-    hooks_root = project_root / "state" / "hooks"
-    hook_snapshot = hook_counts(project_root)
+    snapshot = refresh_metrics_snapshot(project_root, recent_limit=max(max_recent, 20))
 
     payload = {
         "project": project_root.name,
-        "queue": queue_snapshot,
-        "recent_runs": recent_runs,
-        "pending_reviews": pending_reviews,
-        "pending_hooks": hook_snapshot["pending"],
-        "failed_hooks": hook_snapshot["failed"],
+        "queue": snapshot["queue"],
+        "recent_runs": snapshot["recent_runs"][:max_recent],
+        "pending_reviews": snapshot["reviews"]["pending_decisions"],
+        "pending_hooks": snapshot["hooks"]["pending"],
+        "failed_hooks": snapshot["hooks"]["failed"],
+        "metrics": {
+            "updated_at": snapshot["updated_at"],
+            "runs": snapshot["runs"],
+            "reviews": snapshot["reviews"],
+        },
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
@@ -596,6 +737,7 @@ def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
         "workspace_mode": workspace_mode,
         "preview": preview,
     }
+    refresh_metrics_snapshot(project_root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -610,21 +752,10 @@ def cmd_openclaw_review_batch(args: argparse.Namespace) -> int:
     dry_run: bool = getattr(args, "dry_run", False)
 
     try:
-        from generate_review_batch import POLICY_PATH as _POLICY_PATH, generate_batches as _generate_batches, load_policy as _load_policy
-        policy = _load_policy(_POLICY_PATH)
-    except (FileNotFoundError, ValueError) as exc:
-        _openclaw_error(f"Failed to load reviewer policy: {exc}", "POLICY_ERROR")
+        batches = generate_review_batches_with_policy(project_root, dry_run=dry_run, capture_stdout=True)
+    except RuntimeError as exc:
+        _openclaw_error(str(exc), "POLICY_ERROR")
         return 1
-
-    try:
-        import io
-        _buf = io.StringIO()
-        import contextlib
-        with contextlib.redirect_stdout(_buf):
-            batches = _generate_batches(project_root, policy, dry_run=dry_run)
-        _log = _buf.getvalue()
-        if _log.strip():
-            print(_log.rstrip(), file=sys.stderr)
     except Exception as exc:
         _openclaw_error(f"Review batch generation failed: {exc}", "BATCH_FAILED")
         return 1
@@ -643,6 +774,7 @@ def cmd_openclaw_review_batch(args: argparse.Namespace) -> int:
         "candidates": candidates,
         "dry_run": dry_run,
     }
+    refresh_metrics_snapshot(project_root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -774,6 +906,7 @@ def cmd_openclaw_wake(args: argparse.Namespace) -> int:
         "dispatch": summarize_hook_outcomes(dispatch_outcomes),
         "reconcile": summarize_hook_outcomes(reconcile_outcomes),
     }
+    refresh_metrics_snapshot(project_root)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -832,6 +965,12 @@ def build_parser() -> argparse.ArgumentParser:
     launch_plan = subcommands.add_parser("launch-plan", help="Preview execution plan for a task without running it")
     launch_plan.add_argument("task_path")
     launch_plan.set_defaults(func=cmd_launch_plan)
+
+    review_batch = subcommands.add_parser("review-batch", help="Generate review batch artifacts for one project or all projects")
+    review_batch.add_argument("project_root", nargs="?")
+    review_batch.add_argument("--all", action="store_true", help="Process all projects in the repo")
+    review_batch.add_argument("--dry-run", action="store_true", help="Print what would be written without creating files")
+    review_batch.set_defaults(func=cmd_review_batch)
 
     # ── openclaw ──────────────────────────────────────────────────────────────
     openclaw = subcommands.add_parser("openclaw", help="OpenClaw agent-facing project management commands")

@@ -69,9 +69,9 @@
 |---|--------|------------|-------|----------------|
 | 9.1 | Queue/job contract versioning + migration story | Этап 2 done | 9 | независимо |
 | 9.2 | Retry/backoff policy + poison-job threshold + DLQ handling + lease heartbeat в worker loop | Этап 2 done | 9 | независимо |
-| 9.3 | `claw review-batch` как unified CLI (не standalone только) | Этап 5 done | 9 | независимо |
-| 9.4 | Run/review metrics snapshot в state (для status/dashboard) | Этап 5 done | 9 | независимо |
-| 9.5 | Исправить `.gitignore`/индексацию для `docs/` и template docs parity | — | 9 | независимо |
+| 9.3 | ✅ `claw review-batch` как unified CLI (не standalone только) | Этап 5 done | 9 | done |
+| 9.4 | ✅ Run/review metrics snapshot в state (для status/dashboard) | Этап 5 done | 9 | done |
+| 9.5 | ✅ Исправить `.gitignore`/индексацию для `docs/` и template docs parity | — | 9 | done |
 
 **Предлагаемые GitHub issue titles:**
 - `feat: job contract versioning and schema migration`

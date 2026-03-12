@@ -274,8 +274,8 @@ claw/
 
 ## Следующие незавершённые задачи
 
-- 9.3: unified `claw review-batch` CLI (параллельно)
-- 9.5: clean-worktree parity для `docs/` и template docs
+- 9.1: queue/job contract versioning + migration story
+- 9.2: queue maturity (retry/backoff, poison threshold, DLQ, heartbeat)
 
 ---
 
@@ -392,13 +392,13 @@ claw/
 - Довести queue maturity: retry/backoff policy, poison-job threshold, DLQ handling, lease renewal heartbeat в worker loop.
 - ~~Формализовать hook delivery contract: idempotency, event versioning, retry semantics.~~ — **✅ сделано** (2026-03-13)
 - Добавить явный queue/job contract versioning и migration story для будущих изменений схем.
-- Сделать `claw review-batch` как часть unified CLI вместо standalone entrypoint-only usage.
+- ~~Сделать `claw review-batch` как часть unified CLI вместо standalone entrypoint-only usage.~~ — **✅ сделано** (2026-03-13)
 - Добавить multi-project worker/reconciler loop с безопасным fair scheduling.
 - Обновить template/demo artifacts под `preferred_agent: auto`, execution defaults и routing coverage tests.
-- Исправить `.gitignore` политику для `docs/`, чтобы проектная документация не терялась из индекса по умолчанию.
+- ~~Исправить `.gitignore` политику для `docs/`, чтобы проектная документация не терялась из индекса по умолчанию.~~ — **✅ сделано** (2026-03-13)
 
 ### Низкий приоритет, но полезно
-- Сохранить summary/metrics по runs и review batches в отдельный state snapshot для status/dashboard сценариев.
+- ~~Сохранить summary/metrics по runs и review batches в отдельный state snapshot для status/dashboard сценариев.~~ — **✅ сделано** (2026-03-13)
 - Добавить richer status view: последние ошибки, awaiting approval jobs, pending hooks, pending reviews.
 - Уточнить policy для `ask_human` и approval UX, чтобы `awaiting_approval` стало частью реального сценария, а не только queue state.
 
@@ -410,8 +410,8 @@ claw/
 3. ~~Добавить `claw launch-plan`~~ — **✅ сделано**
 4. Переключить `scripts/execute_job.py` на `job.execution.workspace_mode` и материализацию workspace backend'ов
 5. Обновить demo/template project так, чтобы routing проверялся через `preferred_agent: auto`
-6. Добавить unified `claw review-batch`
-7. Закрыть clean-worktree parity для `docs/` и template docs artifacts
+6. ~~Добавить unified `claw review-batch`~~ — **✅ сделано**
+7. ~~Закрыть clean-worktree parity для `docs/` и template docs artifacts~~ — **✅ сделано**
 8. После стабилизации runtime вернуться к OpenClaw bridge
 
 ---

@@ -4,9 +4,6 @@ projects/*/state/queue/*/*.json
 projects/*/state/hooks/*/*.json
 projects/*/state/review_cadence.json
 **/__pycache__/
-.DS_Store
-docs/
-**/docs/
 README.md
 README-*.md
 *_REPORT.md
@@ -15,3 +12,12 @@ CLAUDE.md
 CONTINUITY.md
 TASKS.md
 SESSION*.md
+
+# Project docs are source artifacts and must remain trackable.
+!docs/
+!docs/**
+!projects/*/docs/
+!projects/*/docs/**
+
+.DS_Store
+**/.DS_Store

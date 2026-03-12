@@ -50,16 +50,18 @@
 - stdout агрегатора перехвачен в stderr внутри `cmd_openclaw_review_batch` — JSON остаётся чистым
 - **`claw openclaw callback`** читает hook payload из stdin и возвращает completion summary для чата
 - **`claw openclaw wake`** прогоняет pending hooks и retry для failed hooks, возвращая JSON-сводку для cron/event bridge
+- **`.gitignore` policy для docs исправлена**: `docs/` и `projects/*/docs/` больше не теряются из clean worktree; добавлен guard test `docs_tracking_test.sh`
+- **Добавлен `state/metrics_snapshot.json`**: queue/hooks/runs/reviews summary теперь сохраняется в state и переиспользуется в `claw openclaw status`
 
 ## In Progress
 
-_(9.3 — unified `claw review-batch` CLI)_
+_(9.1 — queue/job contract versioning + migration story)_
 
 ## Next
 
-1. Добавить `claw review-batch` как unified CLI (9.3)
-2. Закрыть clean-worktree parity для `docs/` и template docs (9.5)
-3. Добавить run/review metrics snapshot в state для status/dashboard (9.4)
+1. Добавить queue/job contract versioning + migration story (9.1)
+2. Довести queue maturity: retry/backoff, poison threshold, DLQ, heartbeat (9.2)
+3. Добавить richer status view: последние ошибки, approvals, pending reviews (следом за 9.4/8.2)
 
 ---
 
@@ -71,7 +73,7 @@ _(9.3 — unified `claw review-batch` CLI)_
 - worker lifecycle project-scoped; multi-project scheduler — следующий порог
 - OpenClaw — front door, не место хранения истины
 - runtime hardening идёт перед chat bridge, если execution contract ещё не доведён до end-to-end
-- docs/ должны быть в git индексе (проблема .gitignore — открытая)
+- docs/ и `projects/*/docs/` должны быть trackable; это проверяется `tests/docs_tracking_test.sh`
 
 ## Assumptions in force
 
@@ -94,7 +96,7 @@ python3 scripts/claw.py launch-plan projects/demo-project/tasks/TASK-001.md
 python scripts/validate_artifacts.py projects/demo-project/runs/<RUN>
 
 # Review batch
-python scripts/generate_review_batch.py projects/demo-project
+python scripts/claw.py review-batch projects/demo-project
 
 # Queue status
 python scripts/claw.py status projects/demo-project
@@ -107,7 +109,6 @@ python scripts/claw.py worker projects/demo-project
 
 ## Текущие блокеры
 
-- clean-worktree parity для `docs/` и `projects/_template/docs/README.md` ещё не формализована (задача 9.5).
 - `isolation=worktree` в orchestrator не изолирует агентов от основного рабочего дерева, если им передаётся абсолютный путь — агенты пишут напрямую в main directory. Нужно передавать путь к worktree, а не к main repo.
 
 ---
@@ -126,3 +127,6 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | Epic 6 closure: 6.2+6.4 (Codex) + 6.5+6.6 (Claude) параллельно | `execute_job.py`, task files, `hooklib.py`, `reconcile_hooks.py`, `generate_review_batch.py`, `_system/contracts/` | `bash tests/run_all.sh` | ✅ all pass; `shared_project` bug caught + fixed by orchestrator | OpenClaw bridge (Этап 7) |
 | 2026-03-13 | OpenClaw 7.1: `claw openclaw status/enqueue/review-batch/summary` | `scripts/claw.py`, `tests/openclaw_test.sh`, `tests/run_all.sh` | `bash tests/run_all.sh` | ✅ 10/10; stdout→stderr fix for review-batch | 7.2 callback + 7.3 cron |
 | 2026-03-13 | OpenClaw 7.2+7.3: callback summary + wake bridge | `scripts/claw.py`, `tests/openclaw_test.sh`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/openclaw_test.sh`; `bash tests/run_all.sh` | ✅ callback JSON из hook payload и `wake` bridge для cron/event reconcile добавлены | 9.3 unified review-batch CLI |
+| 2026-03-13 | 9.3 unified `claw review-batch` CLI | `scripts/claw.py`, `tests/review_batch_cli_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/review_batch_cli_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/run_all.sh` | ✅ top-level `claw review-batch` добавлен; общий helper переиспользован без ломки OpenClaw JSON | 9.5 docs/template clean-worktree parity |
+| 2026-03-13 | 9.5 docs/template clean-worktree parity | `.gitignore`, `tests/docs_tracking_test.sh`, `projects/_template/docs/README.md`, `projects/demo-project/docs/README.md`, `docs/PRO_FRAMEWORK_ANALYSIS_PROMPT.md`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/docs_tracking_test.sh`; `bash tests/run_all.sh` | ✅ docs/ и project docs больше не скрываются `.gitignore`; parity проверяется тестом | 9.4 metrics snapshot |
+| 2026-03-13 | 9.4 metrics snapshot in state | `scripts/claw.py`, `tests/metrics_snapshot_test.sh`, `tests/openclaw_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/STATUS.md` | `bash tests/metrics_snapshot_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/run_all.sh` | ✅ `state/metrics_snapshot.json` сохраняет queue/hooks/runs/reviews summary; `openclaw status` переиспользует snapshot и отдаёт metrics | 9.1 contract versioning |
