@@ -5,7 +5,7 @@
 ---
 
 ## Текущая фаза
-**v2 autonomy slice complete**
+**post-v2 note-driven delegation in progress**
 
 ## Статус этапов
 
@@ -66,11 +66,13 @@
 
 ## In Progress
 
-_(нет)_
+- `11.1 workflow graph artifact` — делегирован Codex, в main не принят: агент на первой попытке дошёл только до shell-теста без реализации, на второй попытке застрял в repeated read/planning loop без diff
+- `11.2 event snapshot + replay` — делегирован Claude, в main не принят: первая попытка не дала видимого diff, вторая оставила только partial event-log skeleton (`append_event` wiring + `event_log.py`) без CLI/test/commit
 
 ## Next
 
-_(нет — roadmap tasks закрыты)_
+- перепоставить `11.1` более жёстким implementation prompt или выполнить через меньший task slice
+- перепоставить `11.2` с отдельным acceptance gate: сначала `events.jsonl` + `replay-events`, потом snapshot enrichment/live feed
 
 ---
 
@@ -87,6 +89,9 @@ _(нет — roadmap tasks закрыты)_
 - runtime hardening идёт перед chat bridge, если execution contract ещё не доведён до end-to-end
 - docs/ и `projects/*/docs/` должны быть trackable; это проверяется `tests/docs_tracking_test.sh`
 - planning/docs changes из параллельных worktree нужно мерджить выборочно против live roadmap, а не слепым cherry-pick
+- для nested-agent режима длинный prompt резко повышает latency до первого полезного diff; narrow DoD и явный file scope обязательны
+- `codex exec` в этом окружении шумит служебными skill/analytics сообщениями и даёт слабый signal-to-noise ratio для live supervision
+- `claude -p` в этом окружении почти не даёт промежуточной телеметрии; контроль приходится вести по `git status`/`git diff`, а не по stdout
 
 ## Assumptions in force
 
@@ -158,3 +163,4 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | Верификация закрытия эпиков 9.6–9.9, 8.1–8.4 и анализ оставшихся дыр в orchestrate loop | `scripts/claw.py` (`cmd_orchestrate`, `evaluate_run_decision`), `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/run_all.sh`; code audit `cmd_orchestrate` + decision engine | ✅ все тесты зелёные; confirmed: follow_up_task не материализуется, failure budget отсутствует — зафиксированы как следующие задачи | follow-up task auto-enqueue |
 | 2026-03-13 | v2 autonomy closure: auto-review executor + follow-up materialization + failure budget | `scripts/claw.py`, `tests/orchestration_autonomy_test.sh`, `tests/review_runtime_integration_test.sh`, `tests/worker_reliability_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md` | `bash tests/orchestration_autonomy_test.sh`; `bash tests/orchestration_loop_test.sh`; `bash tests/review_runtime_integration_test.sh`; `bash tests/worker_reliability_test.sh`; `bash tests/run_all.sh` | ✅ reviewer agent auto-starts from worker, `needs_follow_up` creates and enqueues new tasks, failure budget persists across orchestrate invocations, retry approval drops stale queued retries | — |
 | 2026-03-13 | Документация project control surface и проверка runtime-механик | `README.md`, `docs/ARCHITECTURE.md`, `docs/EXECUTION_FLOW.md`, `docs/contracts.md`, `docs/CONTRACT_VERSIONING.md`, `docs/STATUS.md`, `projects/demo-project/docs/WORKFLOW.md` | `python3 scripts/claw.py task-snapshot projects/demo-project`; `python3 scripts/claw.py task-lint projects/demo-project`; `python3 scripts/validate_artifacts.py --workflow projects/demo-project`; `bash tests/run_all.sh` | ✅ подтверждены и задокументированы workflow contract, task graph snapshot/lint и structured diagnostics; demo-project contract валиден | — |
+| 2026-03-13 | note-driven dual-agent delegation for 11.1/11.2 | `docs/PLAN.md`, `docs/BACKLOG.md`, `docs/STATUS.md`, agent worktrees `codex/graph-artifact*`, `codex/event-replay*` | `git worktree add`; `codex exec ...`; `claude -p ...`; `git status`; `git diff` | ⚠️ задачи поставлены и проверены, но в main ничего не принято: Codex дал test-only partial without implementation/commit; Claude дал partial event-log skeleton without CLI/test/commit | перепоставить 11.1 и 11.2 меньшими slices |

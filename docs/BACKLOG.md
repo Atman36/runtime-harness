@@ -152,3 +152,18 @@ E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8
 - follow-up task auto-enqueue из `needs_follow_up` reviewer decisions
 - failure budget в orchestrate loop (N consecutive fails → stop)
 - auto-review executor (reviewer стартует автоматически после run)
+
+---
+
+## Epic 11 — Note-Driven Extensions
+**Приоритет:** P2
+**Статус:** 🟡 in progress
+
+Источник: `.local/dify-ideas.md`, `.local/symphony-ideas.md`
+
+| # | Задача | Зависит от | Phase | Параллельность |
+|---|--------|------------|-------|----------------|
+| 11.1 | Добавить переносимый `workflow graph artifact` (`nodes + edges`) как file-backed contract | v2 done | 11 | можно делать отдельно |
+| 11.2 | Добавить file-backed `event snapshot + replay` для live run state | 11.1 | 11 | после graph contract |
+
+**Замечание по порядку:** live status transport (`status --live`, SSE/feed) не начинать до появления стабильного event artifact/snapshot слоя.

@@ -465,6 +465,19 @@ claw/
 
 Следующие изменения теперь относятся уже к post-v2 расширениям, а не к незавершённому базовому execution loop.
 
+### Post-v2 slice из note review (2026-03-13)
+
+- **11.1 `workflow graph artifact`**
+  - цель: добавить переносимый graph contract как file artifact рядом с текущими task snapshots
+  - минимум: `nodes + edges`, stable schema/version, portable JSON artifact, golden/reference coverage
+  - не включать UI/canvas semantics
+- **11.2 `event snapshot + replay`**
+  - цель: заложить file-backed базу для live run status
+  - минимум: append-only run events artifact, snapshot builder, replay API/helper для `openclaw`
+  - не включать network transport/SSE до появления стабильного event layer
+
+Рекомендуемый порядок: `11.1` → `11.2` → `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
+
 ---
 
 ## Критерий успеха v1 — ✅ достигнут (commit `172bf5b`)
