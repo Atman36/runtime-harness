@@ -142,7 +142,7 @@ When running Claude in a chat session, the engine can:
 - Accept task submissions from chat (`claw openclaw enqueue`)
 - Inspect richer runtime state (`claw openclaw status`)
 - Send completion summaries back (`claw openclaw callback`)
-- Reconcile missed hooks via cron or event trigger (`claw openclaw wake`)
+- Wake chat from completion hooks via `openclaw system event` bridge and reconcile callbacks via `claw openclaw wake`
 
 All `openclaw` commands emit clean JSON on stdout.
 

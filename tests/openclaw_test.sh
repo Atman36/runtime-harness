@@ -94,6 +94,21 @@ cat > "$destination"
 EOF
 chmod +x "$workspace/scripts/capture_hook.sh"
 
+cat > "$workspace/scripts/capture_system_event.py" <<'EOF'
+#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+destination = Path(os.environ["EVENT_CAPTURE_PATH"])
+payload = {
+    "argv": sys.argv[1:],
+}
+destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+EOF
+chmod +x "$workspace/scripts/capture_system_event.py"
+
 # ── Test 1: openclaw status ────────────────────────────────────────────────────
 
 status_out="$tmp_root/status.json"
@@ -257,7 +272,77 @@ PY
 
 echo "  ok: test5 — openclaw callback returns chat-friendly completion payload"
 
-# ── Test 6: openclaw wake ────────────────────────────────────────────────────
+# ── Test 6: completion hook emits OpenClaw system event bridge ──────────────
+
+bridge_enqueue_out="$tmp_root/enqueue-bridge.json"
+claw openclaw enqueue "$project_root" "$task_path" > "$bridge_enqueue_out"
+bridge_run_id="$(python3 -c "import json; print(json.loads(open('$bridge_enqueue_out').read())['run_id'])")"
+bridge_hook_path="$project_root/state/hooks/pending/${today}--${bridge_run_id}.json"
+bridge_event_out="$tmp_root/system-event.json"
+
+EVENT_CAPTURE_PATH="$bridge_event_out" \
+CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND='["python3","'"$workspace"'/scripts/capture_system_event.py"]' \
+CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
+  python3 "$workspace/scripts/execute_job.py" "$project_root/runs/$today/$bridge_run_id" >/dev/null
+
+assert_file "$bridge_hook_path"
+assert_file "$bridge_event_out"
+
+python3 - "$bridge_event_out" "$project_root" "$bridge_run_id" <<'PY'
+import json
+import pathlib
+import sys
+
+data = json.loads(open(sys.argv[1]).read())
+project_root = pathlib.Path(sys.argv[2]).resolve()
+run_id = sys.argv[3]
+argv = data["argv"]
+assert "--mode" in argv, argv
+assert argv[argv.index("--mode") + 1] == "now", argv
+assert "--text" in argv, argv
+text = argv[argv.index("--text") + 1]
+assert run_id in text, text
+assert f"openclaw wake {project_root} --mode event" in text, text
+PY
+
+echo "  ok: test6 — pending completion hook emits OpenClaw system event wake bridge"
+
+# ── Test 7: openclaw wake built-in callback bridge ───────────────────────────
+
+wake_event_out="$tmp_root/wake-event.json"
+claw openclaw wake "$project_root" --mode event > "$wake_event_out"
+
+assert_file "$wake_event_out"
+assert_json_field "$wake_event_out" "mode"
+assert_json_field "$wake_event_out" "callbacks"
+
+python3 - "$wake_event_out" "$project_root/state/hooks/sent/${today}--${bridge_run_id}.json" "$bridge_run_id" <<'PY'
+import json
+import pathlib
+import sys
+
+data = json.loads(open(sys.argv[1]).read())
+sent_hook = pathlib.Path(sys.argv[2])
+run_id = sys.argv[3]
+assert data["mode"] == "event", data
+assert isinstance(data["callbacks"], list) and len(data["callbacks"]) >= 1, data
+callback = next(item for item in data["callbacks"] if item["run_id"] == run_id)
+assert callback["event"] == "run.completed", callback
+assert callback["status"] == "success", callback
+assert run_id in callback["chat_text"], callback
+assert sent_hook.is_file(), sent_hook
+PY
+
+echo "  ok: test7 — openclaw wake converts pending hook into callback payload and marks it sent"
+
+# ── Test 8: openclaw wake with hook command ──────────────────────────────────
+
+wake_enqueue_out="$tmp_root/enqueue-wake.json"
+claw openclaw enqueue "$project_root" "$task_path" > "$wake_enqueue_out"
+wake_run_id="$(python3 -c "import json; print(json.loads(open('$wake_enqueue_out').read())['run_id'])")"
+
+CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
+  python3 "$workspace/scripts/execute_job.py" "$project_root/runs/$today/$wake_run_id" >/dev/null
 
 wake_out="$tmp_root/wake.json"
 HOOK_CAPTURE_PATH="$tmp_root/wake-hook.json" \
@@ -271,17 +356,19 @@ assert_json_field "$wake_out" "schedule"
 assert_json_field "$wake_out" "dispatch"
 assert_json_field "$wake_out" "reconcile"
 
-python3 - "$wake_out" "$project_root/state/hooks/sent/${today}--${run_id}.json" <<'PY'
+python3 - "$wake_out" "$project_root/state/hooks/sent/${today}--${wake_run_id}.json" "$wake_run_id" <<'PY'
 import json, pathlib, sys
 data = json.loads(open(sys.argv[1]).read())
 sent_hook = pathlib.Path(sys.argv[2])
+run_id = sys.argv[3]
 assert data["mode"] == "cron", data
 assert data["schedule"]["interval_seconds"] == 900, data
 assert data["dispatch"]["attempted"] >= 1, data
 assert data["dispatch"]["sent"] >= 1, data
+assert any(item["run_id"] == run_id for item in data["callbacks"]), data
 assert sent_hook.is_file(), sent_hook
 PY
 
-echo "  ok: test6 — openclaw wake dispatches pending hooks and reports cron metadata"
+echo "  ok: test8 — openclaw wake dispatches pending hooks and reports callback metadata"
 
 echo "openclaw test: ok"

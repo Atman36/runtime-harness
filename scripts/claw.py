@@ -29,8 +29,9 @@ from _system.engine import FileQueue, QueueEmpty, build_agent_command, enqueue_r
 from _system.engine.error_codes import build_error_envelope  # noqa: E402
 from _system.engine.workflow_contract import contract_summary, load_workflow_contract  # noqa: E402
 from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
+from _system.engine.decomposer import decompose_epic as _decompose_epic  # noqa: E402
 from generate_review_batch import POLICY_PATH, classify_run, generate_batches, load_policy, load_run  # noqa: E402
-from hooklib import dispatch_hook_file, iter_hook_files, trim_text  # noqa: E402
+from hooklib import build_callback_payload, deliver_hook_via_callback_bridge, dispatch_hook_file, hook_command, iter_hook_files, trim_text  # noqa: E402
 
 
 CADENCE_STATE_FILE = "review_cadence.json"
@@ -1135,54 +1136,6 @@ def generate_review_batches_with_policy(project_root: Path, *, dry_run: bool, ca
         return batches
 
     return generate_batches(project_root, policy, dry_run=dry_run)
-
-
-def build_callback_payload(payload: dict) -> dict:
-    artifacts = payload.get("artifacts") or {}
-    timestamps = payload.get("timestamps") or {}
-    run_status = payload.get("run_status") or "unknown"
-    summary_text = trim_text(payload.get("summary", ""), 800)
-    report_path = artifacts.get("report_path", "")
-    run_id = payload.get("run_id", "")
-    task_id = payload.get("task_id", "")
-    project = payload.get("project", "")
-    agent = payload.get("preferred_agent", "")
-    task_title = payload.get("task_title", "")
-    duration_seconds = duration_between(timestamps.get("started_at"), timestamps.get("finished_at"))
-
-    segments = [
-        project or "unknown-project",
-        task_id or run_id or "unknown-run",
-        run_status,
-    ]
-    chat_text = " | ".join(segments)
-    if agent:
-        chat_text += f" | agent={agent}"
-    if task_title:
-        chat_text += f" | {task_title}"
-    if summary_text:
-        chat_text += f" | {summary_text}"
-    if report_path:
-        chat_text += f" | report={report_path}"
-
-    return {
-        "event": payload.get("event") or payload.get("event_type") or "run.completed",
-        "signal": "completion",
-        "hook_id": payload.get("hook_id", ""),
-        "idempotency_key": payload.get("idempotency_key", ""),
-        "project": project,
-        "run_id": run_id,
-        "task_id": task_id,
-        "task_title": task_title,
-        "status": run_status,
-        "agent": agent,
-        "summary": summary_text,
-        "report_path": report_path,
-        "duration_seconds": duration_seconds,
-        "created_at": payload.get("created_at"),
-        "finished_at": timestamps.get("finished_at"),
-        "chat_text": chat_text,
-    }
 
 
 def maybe_trigger_review(project_root: Path, run_dir: Path, result_status: str, policy: dict) -> list[dict]:
@@ -2296,16 +2249,29 @@ def cmd_openclaw_wake(args: argparse.Namespace) -> int:
     pending_hook_paths = iter_hook_files(project_root, "pending")
     failed_hook_paths = iter_hook_files(project_root, "failed")
     before_hooks = hook_counts(project_root)
+    use_callback_bridge = hook_command() is None
 
-    dispatch_outcomes = [dispatch_hook_file(hook_path) for hook_path in pending_hook_paths]
+    dispatch_outcomes = [
+        deliver_hook_via_callback_bridge(hook_path) if use_callback_bridge else dispatch_hook_file(hook_path)
+        for hook_path in pending_hook_paths
+    ]
     reconcile_outcomes = []
     for hook_path in failed_hook_paths:
         if hook_path.exists():
-            reconcile_outcomes.append(dispatch_hook_file(hook_path))
+            outcome = deliver_hook_via_callback_bridge(hook_path) if use_callback_bridge else dispatch_hook_file(hook_path)
+            reconcile_outcomes.append(outcome)
 
     after_hooks = hook_counts(project_root)
     all_outcomes = dispatch_outcomes + reconcile_outcomes
     has_dispatch_failure = any(o.get("status") == "failed" for o in all_outcomes)
+    callbacks = []
+    for outcome in all_outcomes:
+        if outcome.get("status") != "sent":
+            continue
+        callback_payload = outcome.get("callback")
+        if callback_payload is None:
+            callback_payload = build_callback_payload(read_json(outcome["path"]))
+        callbacks.append(callback_payload)
     payload = {
         "project": project_root.name,
         "mode": args.mode,
@@ -2319,12 +2285,39 @@ def cmd_openclaw_wake(args: argparse.Namespace) -> int:
             "before": before_hooks,
             "after": after_hooks,
         },
+        "callbacks": callbacks,
         "dispatch": summarize_hook_outcomes(dispatch_outcomes),
         "reconcile": summarize_hook_outcomes(reconcile_outcomes),
     }
     refresh_metrics_snapshot(project_root)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def cmd_decompose_epic(args: argparse.Namespace) -> int:
+    """Decompose an epic/roadmap file into TASK + SPEC pairs via LLM."""
+    try:
+        project_root = resolve_project_root(args.project)
+    except FileNotFoundError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+
+    input_path = Path(args.input)
+    if not input_path.is_file():
+        print(json.dumps({"error": f"Input file not found: {input_path}"}), file=sys.stderr)
+        return 1
+
+    input_text = input_path.read_text(encoding="utf-8")
+    dry_run = not getattr(args, "write", False)
+
+    try:
+        result = _decompose_epic(project_root, input_text, dry_run=dry_run)
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") in ("created", "dry_run") else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2445,6 +2438,22 @@ def build_parser() -> argparse.ArgumentParser:
     review_batch.add_argument("--all", action="store_true", help="Process all projects in the repo")
     review_batch.add_argument("--dry-run", action="store_true", help="Print what would be written without creating files")
     review_batch.set_defaults(func=cmd_review_batch)
+
+    decompose_epic = subcommands.add_parser(
+        "decompose-epic",
+        help="Decompose an epic/roadmap into TASK + SPEC file pairs via LLM",
+    )
+    decompose_epic.add_argument("--project", required=True, help="Project slug or path")
+    decompose_epic.add_argument("--input", required=True, help="Path to roadmap/epic markdown file")
+    decompose_epic.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Preview tasks without writing files (default behavior unless --write is passed)",
+    )
+    decompose_epic.add_argument(
+        "--write", action="store_true", default=False,
+        help="Actually write TASK + SPEC files (required to materialize)",
+    )
+    decompose_epic.set_defaults(func=cmd_decompose_epic)
 
     # ── openclaw ──────────────────────────────────────────────────────────────
     openclaw = subcommands.add_parser("openclaw", help="OpenClaw agent-facing project management commands")

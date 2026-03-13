@@ -19,6 +19,7 @@ HOOK_VERSION = 1
 HOOK_STATUSES = ("pending", "sent", "failed")
 DEFAULT_STALE_SECONDS = 300
 DEFAULT_HOOK_TIMEOUT_SECONDS = 30
+DEFAULT_OPENCLAW_SYSTEM_EVENT_TIMEOUT_SECONDS = 10
 
 
 def utc_now() -> str:
@@ -69,6 +70,14 @@ def trim_text(text: str, limit: int = 1200) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
+
+
+def duration_between(started_at: str | None, finished_at: str | None) -> float | None:
+    start = parse_timestamp(started_at)
+    finish = parse_timestamp(finished_at)
+    if start is None or finish is None:
+        return None
+    return round((finish - start).total_seconds(), 1)
 
 
 def project_root_from_hook_path(hook_path: Path) -> Path:
@@ -196,6 +205,101 @@ def hook_timeout_seconds_from_env() -> int:
         return DEFAULT_HOOK_TIMEOUT_SECONDS
 
 
+def openclaw_system_event_command() -> str | None:
+    command = os.environ.get("CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND", "").strip()
+    return command or None
+
+
+def openclaw_system_event_timeout_seconds_from_env() -> int:
+    raw_value = os.environ.get("CLAW_OPENCLAW_SYSTEM_EVENT_TIMEOUT_SECONDS", "").strip()
+    if not raw_value:
+        return DEFAULT_OPENCLAW_SYSTEM_EVENT_TIMEOUT_SECONDS
+    try:
+        return max(1, int(raw_value))
+    except ValueError:
+        return DEFAULT_OPENCLAW_SYSTEM_EVENT_TIMEOUT_SECONDS
+
+
+def build_callback_payload(payload: dict) -> dict:
+    artifacts = payload.get("artifacts") or {}
+    timestamps = payload.get("timestamps") or {}
+    run_status = payload.get("run_status") or "unknown"
+    summary_text = trim_text(payload.get("summary", ""), 800)
+    report_path = artifacts.get("report_path", "")
+    run_id = payload.get("run_id", "")
+    task_id = payload.get("task_id", "")
+    project = payload.get("project", "")
+    agent = payload.get("preferred_agent", "")
+    task_title = payload.get("task_title", "")
+    duration_seconds = duration_between(timestamps.get("started_at"), timestamps.get("finished_at"))
+
+    segments = [
+        project or "unknown-project",
+        task_id or run_id or "unknown-run",
+        run_status,
+    ]
+    chat_text = " | ".join(segments)
+    if agent:
+        chat_text += f" | agent={agent}"
+    if task_title:
+        chat_text += f" | {task_title}"
+    if summary_text:
+        chat_text += f" | {summary_text}"
+    if report_path:
+        chat_text += f" | report={report_path}"
+
+    return {
+        "event": payload.get("event") or payload.get("event_type") or "run.completed",
+        "signal": "completion",
+        "hook_id": payload.get("hook_id", ""),
+        "idempotency_key": payload.get("idempotency_key", ""),
+        "project": project,
+        "run_id": run_id,
+        "task_id": task_id,
+        "task_title": task_title,
+        "status": run_status,
+        "agent": agent,
+        "summary": summary_text,
+        "report_path": report_path,
+        "duration_seconds": duration_seconds,
+        "created_at": payload.get("created_at"),
+        "finished_at": timestamps.get("finished_at"),
+        "chat_text": chat_text,
+    }
+
+
+def build_openclaw_wake_text(project_root: Path, payload: dict) -> str:
+    claw_path = (REPO_ROOT / "scripts" / "claw.py").resolve()
+    run_id = payload.get("run_id", "")
+    hook_id = payload.get("hook_id", "")
+    project_name = payload.get("project") or project_root.name
+    event_name = payload.get("event") or payload.get("event_type") or "run.completed"
+    return (
+        f"Claw hook ready for {project_name}: {event_name} "
+        f"(run={run_id or 'unknown'}, hook={hook_id or 'unknown'}). "
+        f"Run: python3 {claw_path} openclaw wake {project_root} --mode event"
+    )
+
+
+def emit_openclaw_system_event(project_root: Path, payload: dict) -> None:
+    raw_command = openclaw_system_event_command()
+    if not raw_command:
+        return
+
+    timeout_seconds = openclaw_system_event_timeout_seconds_from_env()
+    argv = parse_trusted_argv(raw_command, env_name="CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND")
+    if argv is None:
+        return
+    argv = [*argv, "--text", build_openclaw_wake_text(project_root, payload), "--mode", "now"]
+    subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+
+
 def normalize_process_output(value: str | bytes | None) -> str:
     if value is None:
         return ""
@@ -236,6 +340,10 @@ def dispatch_hook_file(hook_path: Path) -> dict:
         delivery["status"] = current_status
         delivery["last_error"] = ""
         target_path = write_hook_payload(project_root, payload, current_status)
+        try:
+            emit_openclaw_system_event(project_root, payload)
+        except (ValueError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            print(f"Warning: failed to emit OpenClaw system event for hook {hook_id}: {exc}", file=sys.stderr)
         return {
             "hook_id": hook_id,
             "status": current_status,
@@ -322,6 +430,63 @@ def dispatch_hook_file(hook_path: Path) -> dict:
         "path": target_path,
         "outcome": "failed",
         "exit_code": exit_code,
+    }
+
+
+def deliver_hook_via_callback_bridge(hook_path: Path) -> dict:
+    payload = read_json(hook_path)
+    project_root = project_root_from_hook_path(hook_path)
+    current_status = hook_path.parent.name
+    hook_id = payload.get("hook_id") or hook_path.stem
+    now = utc_now()
+
+    payload["hook_id"] = hook_id
+    payload.setdefault("delivery_attempt_log", [])
+    if isinstance(payload.get("delivery_attempts"), list):
+        payload["delivery_attempt_log"] = payload.pop("delivery_attempts")
+        payload["delivery_attempts"] = 0
+    payload.setdefault("delivery_attempts", 0)
+    payload.setdefault("max_delivery_attempts", 3)
+    delivery = payload.setdefault(
+        "delivery",
+        {
+            "status": current_status,
+            "attempt_count": 0,
+            "last_attempt_at": None,
+            "sent_at": None,
+            "last_error": "",
+        },
+    )
+
+    callback_payload = build_callback_payload(payload)
+    attempt_count = int(delivery.get("attempt_count", 0)) + 1
+    attempt = {
+        "attempt": attempt_count,
+        "attempted_at": now,
+        "command": "openclaw-callback-bridge",
+        "timeout_seconds": 0,
+        "exit_code": 0,
+        "stdout": trim_text(json.dumps(callback_payload, ensure_ascii=False)),
+        "stderr": "",
+        "outcome": "sent",
+    }
+
+    delivery["attempt_count"] = attempt_count
+    delivery["last_attempt_at"] = now
+    delivery["status"] = "sent"
+    delivery["sent_at"] = now
+    delivery["last_error"] = ""
+    payload["delivery_attempts"] = int(payload.get("delivery_attempts", 0)) + 1
+    payload["delivery_attempt_log"].append(attempt)
+    payload.pop("dead_letter", None)
+    target_path = write_hook_payload(project_root, payload, "sent")
+    return {
+        "hook_id": hook_id,
+        "status": "sent",
+        "path": target_path,
+        "outcome": "sent",
+        "exit_code": 0,
+        "callback": callback_payload,
     }
 
 

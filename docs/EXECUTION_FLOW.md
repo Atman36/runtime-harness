@@ -259,8 +259,11 @@ Use case:
 - `CLAW_HOOK_COMMAND`
 - `CLAW_HOOK_TIMEOUT_SECONDS`
 - `CLAW_HOOK_STALE_SECONDS`
+- `CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND`
+- `CLAW_OPENCLAW_SYSTEM_EVENT_TIMEOUT_SECONDS`
 
 Для `CLAW_HOOK_COMMAND` действует тот же trusted argv contract, что и для agent overrides.
+`CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND` использует тот же trusted argv contract и ожидает argv-prefix для `openclaw system event`; сам bridge добавляет `--text ... --mode now`.
 
 ### Queue execution
 Специальных queue-env пока нет.
@@ -465,14 +468,9 @@ projects/<slug>/state/hooks/
 
 ---
 
-## Что ещё не реализовано
+## OpenClaw bridge
 
-Пока не сделано:
-- OpenClaw wake/system-event bridge
-- multi-project worker / scheduler
-
-Текущее состояние стоит воспринимать как:
-- уже рабочий локальный orchestration foundation
-- уже не просто shell scripts
-- уже с dry-run planner preview перед запуском
-- ещё не полный orchestration engine v1
+Сейчас реализовано:
+- completion hook без `CLAW_HOOK_COMMAND` может поднять `openclaw system event` через `CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND`
+- `claw openclaw wake` может сам превратить pending/failed hook в callback payload для чата и атомарно перевести hook в `sent`
+- hook-файл остаётся source of truth; system event только будит OpenClaw, а callback строится из payload на диске
