@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1360,6 +1361,81 @@ def cmd_create_project(args: argparse.Namespace) -> int:
     return completed.returncode
 
 
+def cmd_import_project(args: argparse.Namespace) -> int:
+    slug = args.slug
+    source_path = Path(args.path).expanduser().resolve()
+
+    if not re.match(r"^[a-z0-9][a-z0-9-]*$", slug):
+        print(
+            json.dumps({"error": "Invalid slug. Use lowercase letters, digits, hyphens only."}),
+            file=sys.stderr,
+        )
+        return 1
+
+    project_root = REPO_ROOT / "projects" / slug
+    if project_root.exists():
+        print(
+            json.dumps({"error": f"Project '{slug}' already exists at {project_root}"}),
+            file=sys.stderr,
+        )
+        return 1
+
+    excluded_dirs = {
+        ".git",
+        ".github",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".tox",
+        "dist",
+        "build",
+    }
+    if source_path.is_dir():
+        edit_scope = sorted(
+            entry.name
+            for entry in source_path.iterdir()
+            if entry.is_dir() and entry.name not in excluded_dirs and not entry.name.startswith(".")
+        )
+    else:
+        edit_scope = []
+
+    template_root = REPO_ROOT / "projects" / "_template"
+    shutil.copytree(str(template_root), str(project_root))
+
+    project_yaml = {
+        "slug": slug,
+        "source_path": str(source_path),
+        "created_at": utc_now(),
+    }
+    state_dir = project_root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "project.yaml").write_text(
+        yaml.safe_dump(project_yaml, default_flow_style=False, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    workflow_path = project_root / "docs" / "WORKFLOW.md"
+    workflow_content = workflow_path.read_text(encoding="utf-8").replace("{{PROJECT_SLUG}}", slug)
+    if edit_scope:
+        scope_yaml_lines = "\n".join(f"    - {directory}" for directory in edit_scope)
+        workflow_content = workflow_content.replace(
+            "  edit_scope: []",
+            "  edit_scope:\n" + scope_yaml_lines,
+        )
+    workflow_path.write_text(workflow_content, encoding="utf-8")
+
+    payload = {
+        "status": "created",
+        "slug": slug,
+        "project_root": str(project_root),
+        "source_path": str(source_path),
+        "edit_scope": edit_scope,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     if args.awaiting_approval and not args.enqueue:
         raise SystemExit("--awaiting-approval requires --enqueue")
@@ -2259,6 +2335,14 @@ def build_parser() -> argparse.ArgumentParser:
     create_project.add_argument("project_slug")
     create_project.add_argument("destination_root", nargs="?")
     create_project.set_defaults(func=cmd_create_project)
+
+    import_project = subcommands.add_parser(
+        "import-project",
+        help="Bootstrap a new project from an existing external repository",
+    )
+    import_project.add_argument("--slug", required=True, help="Project slug (lowercase, hyphens)")
+    import_project.add_argument("--path", required=True, help="Path to the external repository")
+    import_project.set_defaults(func=cmd_import_project)
 
     run = subcommands.add_parser("run", help="Create a run from a task")
     run.add_argument("task_path")
