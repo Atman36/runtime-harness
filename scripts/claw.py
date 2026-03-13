@@ -573,17 +573,32 @@ def collect_task_records(project_root: Path) -> list[dict]:
         task_id = str(front_matter.get("id") or task_path.stem).strip()
         status = str(front_matter.get("status") or "todo").strip().lower()
         dependencies = parse_task_dependencies(front_matter)
+        spec_ref = str(front_matter.get("spec") or "").strip()
+        spec_path = None
+        spec_path_rel = None
+        if spec_ref:
+            candidate = (task_path.parent / spec_ref).resolve()
+            if candidate.is_file():
+                spec_path = candidate
+                try:
+                    spec_path_rel = candidate.relative_to(project_root).as_posix()
+                except ValueError:
+                    spec_path_rel = str(candidate)
         records.append(
             {
                 "task_id": task_id,
                 "title": str(front_matter.get("title") or "").strip(),
                 "task_path": task_path,
                 "task_path_rel": task_path.relative_to(project_root).as_posix(),
+                "spec": spec_ref,
+                "spec_path": spec_path,
+                "spec_path_rel": spec_path_rel,
                 "status": status,
                 "priority": str(front_matter.get("priority") or "").strip().lower(),
                 "dependencies": dependencies,
                 "preferred_agent": str(front_matter.get("preferred_agent") or "auto").strip(),
                 "needs_review": bool(front_matter.get("needs_review", False)),
+                "shared_files": front_matter.get("shared_files", False),
                 "active": task_id in active_task_ids,
             }
         )
@@ -615,10 +630,76 @@ def collect_task_records(project_root: Path) -> list[dict]:
     return records
 
 
+def _task_declares_shared_files(record: dict) -> bool:
+    shared_files = record.get("shared_files")
+    return bool(shared_files)
+
+
+def _task_spec_files(record: dict) -> set[str]:
+    spec_path = record.get("spec_path")
+    if not isinstance(spec_path, Path) or not spec_path.is_file():
+        return set()
+    spec_text = spec_path.read_text(encoding="utf-8", errors="replace")
+    return set(re.findall(r"`([a-z_][a-zA-Z0-9_/.-]+\.[a-z]+)`", spec_text))
+
+
+def _tasks_overlap_files(record: dict, other_record: dict, task_files: dict[str, set[str]]) -> set[str]:
+    if _task_declares_shared_files(record) or _task_declares_shared_files(other_record):
+        return set()
+    return task_files.get(record["task_id"], set()) & task_files.get(other_record["task_id"], set())
+
+
+def check_file_overlap(records: list[dict]) -> list[dict]:
+    """Check for file-overlap between tasks that don't declare shared_files."""
+    relevant_records = [record for record in records if record.get("status") not in TASK_DONE_STATUSES]
+    task_files = {record["task_id"]: _task_spec_files(record) for record in relevant_records}
+    issues: list[dict] = []
+
+    for index, record in enumerate(relevant_records):
+        for other_record in relevant_records[index + 1:]:
+            overlap = _tasks_overlap_files(record, other_record, task_files)
+            if not overlap:
+                continue
+            issues.append(
+                {
+                    "code": "file_overlap",
+                    "task_id": record["task_id"],
+                    "other_task_id": other_record["task_id"],
+                    "severity": "warning",
+                    "message": (
+                        f"Tasks {record['task_id']} and {other_record['task_id']} both reference files: "
+                        + ", ".join(sorted(overlap))
+                        + " - do not run in parallel"
+                    ),
+                }
+            )
+
+    return issues
+
+
 def select_ready_tasks(project_root: Path, *, limit: int = 3) -> list[dict]:
-    ready = [record for record in collect_task_records(project_root) if record["ready"]]
+    records = collect_task_records(project_root)
+    task_files = {record["task_id"]: _task_spec_files(record) for record in records}
+    occupied_records = [
+        record
+        for record in records
+        if record.get("status") in TASK_ACTIVE_STATUSES or bool(record.get("active"))
+    ]
+    ready = [record for record in records if record["ready"]]
     ready.sort(key=lambda record: (task_priority_value(record["priority"]), record["task_id"]))
-    return ready[:limit]
+    selected: list[dict] = []
+    reserved = list(occupied_records)
+
+    for record in ready:
+        has_overlap = any(_tasks_overlap_files(record, other_record, task_files) for other_record in reserved)
+        if has_overlap:
+            continue
+        selected.append(record)
+        reserved.append(record)
+        if len(selected) >= limit:
+            break
+
+    return selected
 
 
 def count_retry_backlog(project_root: Path) -> int:
@@ -1973,6 +2054,29 @@ def cmd_task_lint(args: argparse.Namespace) -> int:
     return 1 if issues else 0
 
 
+def cmd_task_graph_lint(args: argparse.Namespace) -> int:
+    """Extended task graph lint: cycles, unknown deps, parse errors, and file-overlap warnings."""
+    project_root = resolve_project_root(args.project_root)
+    records = collect_task_records(project_root)
+    issues = lint_task_graph(project_root)
+    issues.extend(check_file_overlap(records))
+    blocking_count = sum(
+        1
+        for issue in issues
+        if issue.get("severity", "fail") == "fail" or issue.get("code") in ("task_graph_cycle", "unknown_dependency")
+    )
+    warning_count = sum(1 for issue in issues if issue.get("severity") == "warning")
+    payload = {
+        "project": project_root.name,
+        "issue_count": len(issues),
+        "blocking_count": blocking_count,
+        "warning_count": warning_count,
+        "issues": issues,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 1 if blocking_count else 0
+
+
 def cmd_orchestrate(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     max_steps = max(1, int(args.max_steps))
@@ -1985,12 +2089,12 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
     # Load workflow contract (optional — missing contract is not an error)
     workflow_contract = load_workflow_contract(project_root)
 
-    # Refresh task snapshot and abort if a dependency cycle is detected
+    # Refresh task snapshot and abort on blocking task graph issues.
     refresh_task_snapshot(project_root)
     graph_issues = lint_task_graph(project_root)
-    cycle_issues = [i for i in graph_issues if i["code"] == "task_graph_cycle"]
-    if cycle_issues:
-        _openclaw_error(cycle_issues[0]["message"], "task_graph_cycle")
+    blocking_issues = [i for i in graph_issues if i["code"] in ("task_graph_cycle", "unknown_dependency")]
+    if blocking_issues:
+        _openclaw_error(blocking_issues[0]["message"], blocking_issues[0]["code"])
         return 1
 
     while steps < max_steps:
@@ -2873,6 +2977,13 @@ def build_parser() -> argparse.ArgumentParser:
     task_lint = subcommands.add_parser("task-lint", help="Lint the task dependency graph for cycles and invalid refs")
     task_lint.add_argument("project_root")
     task_lint.set_defaults(func=cmd_task_lint)
+
+    task_graph_lint = subcommands.add_parser(
+        "task-graph-lint",
+        help="Extended task graph lint: cycles, unknown deps, and file-overlap",
+    )
+    task_graph_lint.add_argument("project_root")
+    task_graph_lint.set_defaults(func=cmd_task_graph_lint)
 
     launch_plan = subcommands.add_parser("launch-plan", help="Preview execution plan for a task without running it")
     launch_plan.add_argument("task_path")

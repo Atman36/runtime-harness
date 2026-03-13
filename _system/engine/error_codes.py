@@ -28,6 +28,11 @@ REASON_CODES: dict[str, dict[str, str]] = {
         "likely_cause": "Two or more tasks have circular depends_on references",
         "next_action": "Run `claw task-lint` to identify the cycle; edit task front matter to break it",
     },
+    "unknown_dependency": {
+        "description": "A task references a dependency that does not exist",
+        "likely_cause": "A task front matter dependency points to a missing or misspelled task id",
+        "next_action": "Run `claw task-lint` or `claw task-graph-lint`; then fix the dependency reference",
+    },
     "task_parse_failed": {
         "description": "A task file could not be parsed",
         "likely_cause": "Malformed YAML front matter or missing required fields",
