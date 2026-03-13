@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from _system.engine import FileQueue, QueueEmpty, build_agent_command, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
 from _system.engine.error_codes import build_error_envelope  # noqa: E402
+from _system.engine.guardrails import run_guardrails  # noqa: E402
 from _system.engine.workflow_contract import contract_summary, load_workflow_contract  # noqa: E402
 from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
 from _system.engine.decomposer import decompose_epic as _decompose_epic  # noqa: E402
@@ -1962,6 +1963,44 @@ def cmd_launch_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_guardrail_project(project_argument: str) -> Path:
+    project_root = REPO_ROOT / "projects" / project_argument
+    if project_root.is_dir() and (project_root / "state" / "project.yaml").is_file():
+        return project_root.resolve()
+    return resolve_project_root(project_argument)
+
+
+def cmd_guardrail_check(args: argparse.Namespace) -> int:
+    diff_path = Path(args.diff_path).expanduser().resolve()
+    if not diff_path.is_file():
+        print(json.dumps({"error": f"Diff file not found: {diff_path}"}), file=sys.stderr)
+        return 1
+
+    try:
+        project_root = _resolve_guardrail_project(args.project)
+    except FileNotFoundError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+
+    diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
+    workflow_contract = load_workflow_contract(project_root)
+    edit_scope = list(workflow_contract.scope.edit_scope)
+    allowed_slugs = sorted(
+        entry.name
+        for entry in (REPO_ROOT / "projects").iterdir()
+        if entry.is_dir()
+    )
+
+    result = run_guardrails(
+        diff_text=diff_text,
+        allowed_project_slugs=allowed_slugs,
+        edit_scope=edit_scope,
+        project_root_name=project_root.name,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["passed"] else 1
+
+
 # ── openclaw subcommands ──────────────────────────────────────────────────────
 
 
@@ -2432,6 +2471,11 @@ def build_parser() -> argparse.ArgumentParser:
     launch_plan = subcommands.add_parser("launch-plan", help="Preview execution plan for a task without running it")
     launch_plan.add_argument("task_path")
     launch_plan.set_defaults(func=cmd_launch_plan)
+
+    guardrail_check = subcommands.add_parser("guardrail-check", help="Run standalone structural guardrails against a diff file")
+    guardrail_check.add_argument("--project", required=True, help="Project slug or path used to load edit_scope")
+    guardrail_check.add_argument("--diff-path", required=True, help="Path to a unified diff file")
+    guardrail_check.set_defaults(func=cmd_guardrail_check)
 
     review_batch = subcommands.add_parser("review-batch", help="Generate review batch artifacts for one project or all projects")
     review_batch.add_argument("project_root", nargs="?")

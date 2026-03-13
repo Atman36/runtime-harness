@@ -1,7 +1,7 @@
 ---
 id: TASK-005
 title: "Structural guardrails against agent drift"
-status: todo
+status: done
 spec: ../specs/SPEC-005.md
 preferred_agent: codex
 review_policy: standard

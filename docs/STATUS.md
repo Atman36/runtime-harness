@@ -64,6 +64,7 @@
 - **Failure budget закрыт**: `state/orchestration_state.json` хранит consecutive failures между вызовами `orchestrate`, а retry approval очищает stale queued retry
 - **Project control surface зафиксирован в документации**: описаны `docs/WORKFLOW.md`, `state/tasks_snapshot.json`, `claw task-lint` и structured `reason_code` diagnostics; demo-project получил валидный workflow contract
 - **OpenClaw completion bridge закрыт поверх file-backed hooks**: `CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND` будит чат через `openclaw system event`, а `claw openclaw wake` умеет сам материализовать callback payload и переводить hook в `sent`
+- **`claw guardrail-check` добавлен как standalone drift gate**: `_system/engine/guardrails.py` ловит unauthorized `projects/<slug>/`, assert weakening и `edit_scope` violations по diff-файлу; `tests/guardrails_test.sh` держит crafted negative cases
 
 ## In Progress
 
@@ -94,6 +95,7 @@
 - `codex exec` в этом окружении шумит служебными skill/analytics сообщениями и даёт слабый signal-to-noise ratio для live supervision
 - `claude -p` в этом окружении почти не даёт промежуточной телеметрии; контроль приходится вести по `git status`/`git diff`, а не по stdout
 - reviewer cadence должен оставаться policy-driven: если агент меняет risk/review semantics, он обязан менять `reviewer_policy.yaml` и runtime tests вместе, иначе worker и backfill CLI начинают расходиться
+- standalone guardrail зависит от актуального `scope.edit_scope` в `docs/WORKFLOW.md`; если task расширяет файловую поверхность, а контракт не обновлён до запуска, агент получит ложный `edit_scope_violation` на корректный diff
 
 ## Assumptions in force
 
@@ -170,3 +172,4 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | TASK-004 `claw import-project` | `scripts/claw.py`, `tests/import_project_test.sh`, `tests/run_all.sh`, `projects/_claw-dev/tasks/TASK-004.md`, `docs/STATUS.md` | `bash tests/import_project_test.sh`; `bash tests/run_all.sh` | ✅ добавлен `claw import-project`: scaffold из `_template`, `state/project.yaml`, `WORKFLOW.md` с discovered `edit_scope`, duplicate slug reject | `TASK-005` |
 | 2026-03-13 | OpenClaw system-event bridge for completion hooks | `scripts/hooklib.py`, `scripts/claw.py`, `tests/openclaw_test.sh`, `docs/EXECUTION_FLOW.md`, `README.md`, `docs/STATUS.md` | `bash tests/openclaw_test.sh`; `bash tests/hook_lifecycle_test.sh`; `bash tests/run_all.sh` | ✅ pending completion hooks can wake OpenClaw via `system event`; `openclaw wake` can emit callback payloads directly from hook files and mark them sent | next event snapshot slice |
 | 2026-03-13 | reviewer cadence policy wiring after OpenClaw bridge | `scripts/generate_review_batch.py`, `scripts/claw.py`, `tests/reviewer_policy_runtime_test.sh`, `tests/runtime_hardening_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/STATUS.md` | `bash tests/reviewer_policy_runtime_test.sh`; `bash tests/runtime_hardening_test.sh`; `bash tests/review_batch_test.sh`; `bash tests/review_batch_cli_test.sh`; `bash tests/review_runtime_integration_test.sh`; `bash tests/run_all.sh` | ✅ immediate triggers and cadence threshold now come from `reviewer_policy.yaml`; invalid reviewer cadence config fails fast; worker and batch CLI stay aligned | `TASK-005` |
+| 2026-03-13 | TASK-005 standalone guardrail-check | `_system/engine/guardrails.py`, `scripts/claw.py`, `tests/guardrails_test.sh`, `tests/run_all.sh`, `projects/_claw-dev/tasks/TASK-005.md`, `docs/PLAN.md`, `docs/STATUS.md` | `bash tests/guardrails_test.sh`; `bash tests/import_project_test.sh`; `bash tests/run_all.sh` | ✅ added diff-driven `claw guardrail-check` for unauthorized scaffold, assert weakening and edit-scope drift; noted that stale `WORKFLOW.md` scope creates false positives before review | next event snapshot slice |
