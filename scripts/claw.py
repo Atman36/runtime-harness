@@ -2084,9 +2084,48 @@ def cmd_task_graph_lint(args: argparse.Namespace) -> int:
     return 1 if blocking_count else 0
 
 
+def get_epic_tasks(project_root: Path, epic_tag: str | None) -> list[dict]:
+    """Return task records filtered by epic tag.
+
+    If epic_tag is None or empty, returns all tasks.
+    """
+    records = collect_task_records(project_root)
+    if not epic_tag:
+        return records
+
+    filtered = []
+    for r in records:
+        task_path = Path(r.get("task_path", ""))
+        if not task_path.is_file():
+            continue
+        try:
+            text = task_path.read_text(encoding="utf-8")
+            fm_match = re.match(r'\A---\n(.*?)\n---\n?', text, re.DOTALL)
+            if fm_match:
+                fm = yaml.safe_load(fm_match.group(1))
+                if isinstance(fm, dict):
+                    task_epic = str(fm.get("epic", ""))
+                    if task_epic == str(epic_tag):
+                        filtered.append(r)
+        except Exception:
+            continue
+    return filtered
+
+
+def _epic_completion_summary(project_root: Path, epic_tag: str) -> dict:
+    tasks = get_epic_tasks(project_root, epic_tag)
+    total = len(tasks)
+    done = sum(1 for t in tasks if t.get("status") in ("done", "accepted"))
+    return {"total": total, "done": done, "complete": done == total and total > 0}
+
+
 def cmd_orchestrate(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     max_steps = max(1, int(args.max_steps))
+    scope = getattr(args, "scope", None)
+    epic_scope: str | None = None
+    if scope and scope.startswith("epic:"):
+        epic_scope = scope[len("epic:"):]
     failure_budget = max(1, int(args.failure_budget))
     steps = 0
     accepted_runs: list[str] = []
@@ -2105,6 +2144,14 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         return 1
 
     while steps < max_steps:
+        # Check epic scope completion
+        if epic_scope:
+            scope_tasks = get_epic_tasks(project_root, epic_scope)
+            scope_done = all(t.get("status") in ("done", "accepted") for t in scope_tasks)
+            if scope_tasks and scope_done:
+                last_status = "scope_complete"
+                break
+
         dashboard = build_project_dashboard(project_root, recent_limit=args.recent, ready_limit=args.ready_limit)
         if dashboard["pending_approvals"] > 0 or dashboard["queue"]["awaiting_approval"] > 0:
             last_status = "awaiting_approval"
@@ -2179,6 +2226,7 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "awaiting_review": "review_pending",
         "failure_budget_exhausted": "failure_budget_exhausted",
         "contract_violation": "contract_violation",
+        "scope_complete": None,
         "error": "ERROR",
         "accepted": None,
     }
@@ -2189,6 +2237,14 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "steps": steps,
         "accepted_runs": accepted_runs,
         "orchestration": budget_state,
+        "scope": scope,
+        "scope_completion": (
+            {
+                "epic": epic_scope,
+                **_epic_completion_summary(project_root, epic_scope),
+            }
+            if epic_scope else None
+        ),
         "pending_reviews": load_pending_review_decisions(project_root),
         "pending_approvals": load_approval_requests(project_root, state="pending"),
         "ready_tasks": [
@@ -2937,6 +2993,70 @@ def cmd_decompose_epic(args: argparse.Namespace) -> int:
     return 0 if result.get("status") in ("created", "dry_run") else 1
 
 
+def cmd_epic_status(args: argparse.Namespace) -> int:
+    """Show completion status for a specific epic or all epics."""
+    try:
+        project_root = resolve_project_root(args.project_root)
+    except FileNotFoundError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+
+    epic_tag = getattr(args, "epic", None)
+    records = collect_task_records(project_root)
+
+    # Group by epic
+    epic_groups: dict[str, list[dict]] = {}
+    for r in records:
+        task_path = Path(r.get("task_path", ""))
+        task_epic = "untagged"
+        if task_path.is_file():
+            try:
+                text = task_path.read_text(encoding="utf-8")
+                fm_match = re.match(r'\A---\n(.*?)\n---\n?', text, re.DOTALL)
+                if fm_match:
+                    fm = yaml.safe_load(fm_match.group(1))
+                    if isinstance(fm, dict) and fm.get("epic"):
+                        task_epic = str(fm["epic"])
+            except Exception:
+                pass
+        epic_groups.setdefault(task_epic, []).append(r)
+
+    def _epic_summary(tasks: list[dict]) -> dict:
+        total = len(tasks)
+        done = sum(1 for t in tasks if t.get("status") in ("done", "accepted"))
+        blocked = sum(1 for t in tasks if t.get("dependency_blockers"))
+        pending = total - done - blocked
+        pct = round(done / total * 100) if total > 0 else 0
+        return {
+            "total": total,
+            "done": done,
+            "blocked": blocked,
+            "pending": pending,
+            "completion_pct": pct,
+            "complete": done == total,
+        }
+
+    if epic_tag:
+        tasks = epic_groups.get(str(epic_tag), [])
+        payload = {
+            "project": project_root.name,
+            "epic": epic_tag,
+            **_epic_summary(tasks),
+            "tasks": [{"task_id": t["task_id"], "status": t["status"]} for t in tasks],
+        }
+    else:
+        epics_out = {}
+        for tag, tasks in sorted(epic_groups.items()):
+            epics_out[tag] = _epic_summary(tasks)
+        payload = {
+            "project": project_root.name,
+            "epics": epics_out,
+        }
+
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="claw")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -3036,7 +3156,17 @@ def build_parser() -> argparse.ArgumentParser:
     orchestrate.add_argument("--skip-review", action="store_true")
     orchestrate.add_argument("--recent", type=int, default=5)
     orchestrate.add_argument("--ready-limit", type=int, default=3)
+    orchestrate.add_argument("--scope", default=None,
+                              help="Stop when scope is complete (e.g. 'epic:12')")
     orchestrate.set_defaults(func=cmd_orchestrate)
+
+    epic_status = subcommands.add_parser(
+        "epic-status",
+        help="Show completion status for tasks grouped by epic tag"
+    )
+    epic_status.add_argument("project_root", help="Project root path or slug")
+    epic_status.add_argument("--epic", default=None, help="Filter to specific epic tag (e.g. '12')")
+    epic_status.set_defaults(func=cmd_epic_status)
 
     task_snapshot = subcommands.add_parser("task-snapshot", help="Generate and write task graph snapshot")
     task_snapshot.add_argument("project_root")
