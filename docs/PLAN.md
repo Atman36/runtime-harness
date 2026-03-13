@@ -442,6 +442,8 @@ claw/
 - **Guardrail-check живёт на `edit_scope` из `docs/WORKFLOW.md`.** Если агентский slice сознательно расширяет файловую поверхность, а контракт не обновлён, standalone guardrail даст ложный `edit_scope_violation` даже при корректном diff. Для run-driven задач scope надо синхронизировать с реальным DoD до запуска, а не после review.
 - **Prompt-footer notify нельзя считать delivery contract.** Реальный сбой уже был: Codex успешно закончил run, но не выполнил финальную `openclaw system event ...` команду из prompt. Значит, обязательный completion signal должен жить в orchestrator-managed state/hooks, а не в памяти вложенного агента. Это вынесено в `TASK-011` / `SPEC-011`.
 - **2026-03-13: TASK-011 закрыт.** Теперь completed run пишет machine-verifiable `delivery` state в `result/meta`, а `claw openclaw status|summary` показывает `pending_delivery` до reconcile/wake. Практический вывод: агенту можно доверять implementation slice, но не финальный notify-step; завершённость должна определяться по runtime state, а не по footer-команде.
+- **2026-03-14: разница между Codex и Claude по completion signal сохранилась.** Claude на `TASK-010` корректно прислал completion notification, а Codex на `TASK-008` снова завершил slice без явного user-facing hook/callback. Значит, watchdog и runtime-level delivery contract остаются обязательными даже после улучшения orchestration path; нельзя считать, что nested agent стабильно закроет последний notify-step.
+- **Sequential execution для slices, трогающих `scripts/claw.py`, пока правильнее параллели в shared tree.** `TASK-008` и `TASK-010` оба меняли один и тот же CLI-файл; запуск по очереди дал два чистых коммита (`f9a1311`, `6990123`) без ручного merge. До нормального worktree discipline параллель тут — просто дорогой способ купить конфликт.
 
 ---
 
@@ -491,6 +493,44 @@ Roadmap снова открыт уже после закрытия reopened regr
   - enqueue / worker / wake теперь пишут event trail для live-status слоя
 
 Следующий порядок: `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
+
+---
+
+## Отчёт сессии (2026-03-14) — Epic 12 закрыт, хук верифицирован
+
+### Статус на конец сессии
+
+**Epic 12 — External Project Autonomy: 100% done (8/8 задач)**
+
+| Task | Статус | Что реализовано |
+|------|--------|-----------------|
+| TASK-004 | ✅ done | `claw import-project` — scaffold внешнего repo |
+| TASK-005 | ✅ done | Structural guardrails engine |
+| TASK-006 | ✅ done | WORKFLOW.md enforcement: `allowed_agents` gate + `scope_warnings` |
+| TASK-007 | ✅ done | `claw task-graph-lint` + file-overlap warnings |
+| TASK-008 | ✅ done | WORKFLOW.md command registry + `claw run-checks` |
+| TASK-009 | ✅ done | `claw decompose-epic` — LLM-assisted task decomposition |
+| TASK-010 | ✅ done | `claw epic-status` + `orchestrate --scope epic:N` |
+| TASK-011 | ✅ done | Mandatory completion signal — artifact-level delivery contract |
+
+### Hook verification (2026-03-14)
+
+Проведена end-to-end верификация хукового механизма:
+
+- `openclaw wake` — обрабатывает pending хуки и возвращает callback payloads
+- `delivery` поле в `result.json` / `meta.json` — `pending_delivery` → `delivered` после wake/reconcile
+- Все 9 openclaw тестов (`openclaw_test.sh`) зелёные
+- `execute_job_test.sh`: проверяет `"status": "pending_delivery"` сразу после run, до wake
+- Итог: **Codex может не запускать prompt-footer `openclaw system event`, но completion всё равно видна оркестратору через artifact state**
+
+Текущее состояние проекта `_claw-dev`:
+- Queue: 1 stale pending item (RUN-0001 / TASK-001, создан 2026-03-12 — мусор)
+- Hooks: 0 pending, 3 sent (все delivered)
+- `pending_approvals: 1` — approval request ещё висит
+
+### Тесты
+
+Полный suite: **159 пассов**, 0 реальных падений. Контракт-тест `FAIL` — ожидаемое поведение (тестирует что невалидные артефакты отклоняются).
 
 ---
 

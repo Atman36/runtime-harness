@@ -1,0 +1,251 @@
+{
+  "artifact_version": 1,
+  "project": "_claw-dev",
+  "generated_at": "2026-03-13T23:40:53Z",
+  "node_count": 11,
+  "edge_count": 11,
+  "nodes": [
+    {
+      "node_id": "TASK-001",
+      "node_type": "task",
+      "title": "Reason codes registry and structured error envelope",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": true,
+      "dependencies": [],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-001.md"
+    },
+    {
+      "node_id": "TASK-002",
+      "node_type": "task",
+      "title": "Task graph snapshot and lint",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-001"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-002.md"
+    },
+    {
+      "node_id": "TASK-003",
+      "node_type": "task",
+      "title": "Workflow contract schema and validator",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-002"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-003.md"
+    },
+    {
+      "node_id": "TASK-004",
+      "node_type": "task",
+      "title": "claw import-project CLI command",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-004.md"
+    },
+    {
+      "node_id": "TASK-005",
+      "node_type": "task",
+      "title": "Structural guardrails against agent drift",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-005.md"
+    },
+    {
+      "node_id": "TASK-006",
+      "node_type": "task",
+      "title": "WORKFLOW.md enforcement in orchestrate",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-003",
+        "TASK-004"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-006.md"
+    },
+    {
+      "node_id": "TASK-007",
+      "node_type": "task",
+      "title": "Task graph lint as mandatory pre-orchestrate gate",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-002",
+        "TASK-006"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-007.md"
+    },
+    {
+      "node_id": "TASK-008",
+      "node_type": "task",
+      "title": "Project command registry in WORKFLOW.md",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-006"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-008.md"
+    },
+    {
+      "node_id": "TASK-009",
+      "node_type": "task",
+      "title": "claw decompose-epic via LLM",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-004"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-009.md"
+    },
+    {
+      "node_id": "TASK-010",
+      "node_type": "task",
+      "title": "Epic/roadmap completion criteria",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-007",
+        "TASK-009"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-010.md"
+    },
+    {
+      "node_id": "TASK-011",
+      "node_type": "task",
+      "title": "Mandatory orchestrator completion signal",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-005"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-011.md"
+    }
+  ],
+  "edges": [
+    {
+      "from": "TASK-002",
+      "to": "TASK-001",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-003",
+      "to": "TASK-002",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-006",
+      "to": "TASK-003",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-006",
+      "to": "TASK-004",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-007",
+      "to": "TASK-002",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-007",
+      "to": "TASK-006",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-008",
+      "to": "TASK-006",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-009",
+      "to": "TASK-004",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-010",
+      "to": "TASK-007",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-010",
+      "to": "TASK-009",
+      "edge_type": "depends_on"
+    },
+    {
+      "from": "TASK-011",
+      "to": "TASK-005",
+      "edge_type": "depends_on"
+    }
+  ],
+  "checksum": "f8fa653f2d633ba91b14ba4b5c5ee8c30aa2192a340b0434f408757a6b0f597a"
+}

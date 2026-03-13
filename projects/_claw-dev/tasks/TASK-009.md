@@ -1,7 +1,7 @@
 ---
 id: TASK-009
 title: "claw decompose-epic via LLM"
-status: todo
+status: done
 spec: ../specs/SPEC-009.md
 preferred_agent: claude
 review_policy: standard

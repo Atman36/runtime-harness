@@ -1,203 +1,202 @@
-# runtime harness
+# claw
 
-> Filesystem-first orchestration layer for running agent tasks with Codex and Claude.
+> Filesystem-first orchestration shell for agent-driven project execution.
 
----
+`claw` управляет проектами, задачами, спеками и агентными запусками через
+дисковые артефакты. Здесь нет демона, БД и скрытого runtime state: файлы в
+`projects/<slug>/` и `_system/` являются source of truth.
 
-Every task run produces immutable artifacts on disk. There is no daemon, no database, no hidden in-memory state. The filesystem *is* the system.
+## Что здесь главное
 
-## Features
+Сейчас система в основном строится вокруг четырёх ролей:
 
-- **Task + spec workflow** — structured YAML front matter, project scaffolding, canonical templates
-- **File-backed queue** — atomic state transitions (`pending → running → done / failed → dead_letter`)
-- **Worker loop** — lease heartbeat, exponential backoff, retry exhaustion → `dead_letter`
-- **Fair scheduler** — `claw scheduler` rotates across projects instead of draining one queue forever
-- **Agent routing** — rules-based dispatch to Codex or Claude; `launch-plan` for dry-run preview
-- **Workflow contract** — optional `docs/WORKFLOW.md` defines approval gates, retry budget, timeouts, and allowed edit scope
-- **Task graph snapshot** — `state/tasks_snapshot.json` captures task structure with checksum; `task-lint` checks invalid dependencies and cycles
-- **Structured diagnostics** — JSON-facing commands return stable `reason_code` values plus `likely_cause` / `next_action`
-- **Richer status** — `claw dashboard` / `openclaw status` expose approvals, pending reviews, retry backlog, ready tasks, recent failures
-- **Approval UX** — filesystem-backed `ask-human` requests with explicit resolve step
-- **Continuous loop** — `claw orchestrate` can pick the next ready task, execute it, apply review/approval gates, then continue
-- **Hooks & callbacks** — idempotent delivery, retry on failure, `reconcile` for missed events
-- **Review cadence** — automatic review batch generation on cadence or on risky/failed runs
-- **OpenClaw bridge** — submit tasks and receive completion summaries from a chat session
-- **Schema validation** — JSON Schema contracts for all artifact types; `validate_artifacts.py`
+- **OpenClaw** — chat/operator entrypoint. Из чата ставит задачи в очередь, запрашивает статус и получает callback-результаты.
+- **claw** — оркестратор и CLI. Создаёт run artifacts, маршрутизирует задачу, запускает worker loop, гоняет проверки, review и delivery hooks.
+- **Codex** — основной implementation-агент для понятных инженерных задач, фиксов, glue-кода и локальных изменений с чётким DoD.
+- **Claude** — агент для decomposition, ambiguous specs, архитектурных решений, review и orchestration-heavy slices.
 
-## Quick start
+Базовый принцип один: **filesystem is the system**. Любое решение, переход
+состояния, hook, review batch или статус задачи должен быть виден на диске.
 
-```bash
-# 1. Create a project
-python3 scripts/claw.py create-project my-project
+## Основной Workflow
 
-# 2. Preview the execution decision (dry run)
-python3 scripts/claw.py launch-plan projects/my-project/tasks/TASK-001.md
-
-# 3. Run a task directly
-python3 scripts/claw.py run --execute projects/my-project/tasks/TASK-001.md
-
-# 4. Or queue it and run the worker
-python3 scripts/claw.py run --enqueue projects/my-project/tasks/TASK-001.md
-python3 scripts/claw.py worker projects/my-project --once
-
-# 5. Check richer status
-python3 scripts/claw.py dashboard projects/my-project
-
-# 6. Schedule multiple projects fairly
-python3 scripts/claw.py scheduler --once --max-jobs 2
-
-# 7. Ask for human approval / resolve it
-python3 scripts/claw.py ask-human projects/my-project RUN-0001 --reason "needs product call"
-python3 scripts/claw.py resolve-approval projects/my-project APPROVAL-1234567890 --decision approved
-
-# 8. Run the continuous project loop
-python3 scripts/claw.py orchestrate projects/my-project --max-steps 2
-
-# 9. Generate a review batch
-python3 scripts/claw.py review-batch projects/my-project
-
-# 10. Validate run artifacts
-python3 scripts/validate_artifacts.py --project projects/my-project
+```text
+OpenClaw / operator
+        │
+        ▼
+claw import-project / decompose-epic / create task+spec
+        │
+        ▼
+claw launch-plan / workflow-validate / task-graph-lint
+        │
+        ▼
+claw run | enqueue | orchestrate
+        │
+        ▼
+Codex or Claude execution
+        │
+        ▼
+runs/YYYY-MM-DD/RUN-XXXX/ + queue/ + hooks/ + reviews/
+        │
+        ▼
+run-checks / validation / review-batch / openclaw wake
 ```
 
-## Architecture
+### Как это обычно используется
 
-```
-Project shell          Engine                  OpenClaw bridge
-─────────────          ──────                  ───────────────
-tasks/ specs/ docs/    file queue              claw openclaw status
-runs/ reviews/         worker loop             claw openclaw enqueue
-_system/registry/      task planner            claw openclaw callback
-_system/contracts/     agent_exec.py           claw openclaw wake
-                       hooks/reconcile
-```
+1. **Подключить проект.**
+   - Новый scaffold: `python3 scripts/claw.py create-project my-project`
+   - Внешний repo: `python3 scripts/claw.py import-project --slug my-project --path /abs/path/to/repo`
+2. **Разложить работу.**
+   - Руками через `tasks/` + `specs/`
+   - Или через `python3 scripts/claw.py decompose-epic --project projects/my-project --input roadmap.md`
+3. **Проверить, что оркестратор примет задачу.**
+   - `python3 scripts/claw.py launch-plan projects/my-project/tasks/TASK-001.md`
+   - `python3 scripts/claw.py workflow-validate projects/my-project`
+   - `python3 scripts/claw.py task-graph-lint projects/my-project`
+4. **Запустить исполнение.**
+   - Один run: `python3 scripts/claw.py run --execute ...`
+   - Через очередь: `python3 scripts/claw.py run --enqueue ...` + `python3 scripts/claw.py worker projects/my-project --once`
+   - Непрерывный цикл: `python3 scripts/claw.py orchestrate projects/my-project --max-steps 3`
+5. **Проверить результат и доставку.**
+   - `python3 scripts/claw.py run-checks projects/my-project --type test`
+   - `python3 scripts/validate_artifacts.py --project projects/my-project`
+   - `python3 scripts/claw.py review-batch projects/my-project`
+   - `python3 scripts/claw.py openclaw wake projects/my-project`
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full system narrative.
+## Что умеет `claw`
+
+- Task/spec workflow с canonical templates и YAML front matter
+- File-backed queue с atomic transitions: `pending -> running -> done|failed|dead_letter`
+- Worker loop с lease heartbeat, backoff и retry exhaustion
+- `launch-plan` для dry-run routing и execution preview
+- Project workflow contract в `docs/WORKFLOW.md`
+- `task-snapshot`, `task-lint`, `task-graph-lint`, `workflow-graph`
+- `run-checks` и registry проектных команд `test|lint|build|smoke`
+- `decompose-epic` и `epic-status` для epic-driven orchestration
+- OpenClaw JSON bridge: `status`, `enqueue`, `summary`, `callback`, `wake`, `replay-events`
+- Review cadence и decision stubs для opposite-model review
+- Formal schema validation для run artifacts и workflow contracts
+
+## Как выбирается агент
+
+| Claude | Codex |
+|---|---|
+| Декомпозиция эпиков и требований | Реализация по чёткой спецификации |
+| Неоднозначные спеки, UX, architecture | Багфиксы, тесты, shell/python glue |
+| Review проблемных run'ов и risky slices | Локальные кодовые изменения с понятным DoD |
+
+Если в задаче указан `preferred_agent: auto`, выбор делает routing policy из
+`_system/registry/routing_rules.yaml`.
 
 ## Run artifacts
 
-Every execution creates an immutable run directory:
+Каждый запуск создаёт неизменяемый каталог:
 
-```
+```text
 projects/my-project/runs/YYYY-MM-DD/RUN-0001/
-├── job.json        # full execution contract (immutable after creation)
-├── meta.json       # execution status + validation snapshot
-├── result.json     # machine-readable outcome
-├── prompt.txt      # rendered agent prompt
-├── task.md         # task snapshot at run time
-├── spec.md         # spec snapshot at run time
+├── job.json
+├── meta.json
+├── result.json
+├── prompt.txt
+├── task.md
+├── spec.md
 ├── stdout.log
 ├── stderr.log
 └── report.md
 ```
 
-## Queue lifecycle
+Смежное mutable state живёт рядом:
 
+```text
+projects/my-project/state/
+├── queue/
+├── hooks/
+├── approvals/
+├── metrics_snapshot.json
+├── review_cadence.json
+├── tasks_snapshot.json
+└── workflow_graph.json
 ```
-pending → running → done
-                 ↘ failed → (retry w/ backoff) → pending
-                                               → dead_letter
 
-awaiting_approval → (approve) → pending
-```
+## OpenClaw bridge
 
-Queue items live in `projects/<slug>/state/queue/<state>/`.
+`openclaw` нужен как внешний операторский слой поверх `claw`. Он не владеет
+состоянием сам, а читает/двигает файловые артефакты оркестратора.
 
-## Project control surface
+- `python3 scripts/claw.py openclaw status projects/my-project`
+- `python3 scripts/claw.py openclaw enqueue projects/my-project/tasks/TASK-001.md`
+- `python3 scripts/claw.py openclaw summary projects/my-project RUN-0001`
+- `python3 scripts/claw.py openclaw wake projects/my-project`
 
-Project-level execution policy lives in `projects/<slug>/docs/WORKFLOW.md`.
-It is human-readable, schema-checked, and loaded by the orchestrator as an
-overlay on top of registry defaults.
+Completion signal не завязан на prompt footer. Даже если nested agent не
+отправил финальный notify, completed run остаётся видимым через `delivery`
+state в `result.json` / `meta.json` и hook-файлы.
+
+## Быстрый набор команд
 
 ```bash
-# Validate the project workflow contract
-python3 scripts/validate_artifacts.py --workflow projects/my-project
+# Create/import project
+python3 scripts/claw.py create-project my-project
+python3 scripts/claw.py import-project --slug my-project --path /abs/path/to/repo
 
-# Refresh the structural task graph snapshot
-python3 scripts/claw.py task-snapshot projects/my-project
+# Plan and validate
+python3 scripts/claw.py launch-plan projects/my-project/tasks/TASK-001.md
+python3 scripts/claw.py workflow-validate projects/my-project
+python3 scripts/claw.py task-graph-lint projects/my-project
 
-# Lint task dependencies and detect cycles
-python3 scripts/claw.py task-lint projects/my-project
+# Execute
+python3 scripts/claw.py run --execute projects/my-project/tasks/TASK-001.md
+python3 scripts/claw.py run --enqueue projects/my-project/tasks/TASK-001.md
+python3 scripts/claw.py worker projects/my-project --once
+python3 scripts/claw.py orchestrate projects/my-project --scope epic:12 --max-steps 3
+
+# Inspect and validate
+python3 scripts/claw.py dashboard projects/my-project
+python3 scripts/claw.py epic-status projects/my-project --epic 12
+python3 scripts/claw.py run-checks projects/my-project --type test
+python3 scripts/claw.py review-batch projects/my-project
+python3 scripts/validate_artifacts.py --project projects/my-project
 ```
 
-The task snapshot is written to `projects/<slug>/state/tasks_snapshot.json`
-with a stable checksum so status, selection, and diagnostics can rely on a
-cheap derived artifact instead of reparsing every task ad hoc.
+## Структура репозитория
 
-## Agent routing
-
-| Use Claude when | Use Codex when |
-|---|---|
-| Design / UX / flow | Clear implementation spec |
-| Ambiguous or exploratory spec | Bug fixes / refactoring |
-| Architecture decisions | Shell/Python glue code |
-| Reviewing Codex output | Local code changes with clear DoD |
-
-Set `preferred_agent: auto` in task front matter to let routing rules decide.
-
-## OpenClaw
-
-When running Claude in a chat session, the engine can:
-
-- Accept task submissions from chat (`claw openclaw enqueue`)
-- Inspect richer runtime state (`claw openclaw status`)
-- Send completion summaries back (`claw openclaw callback`)
-- Wake chat from completion hooks via `openclaw system event` bridge and reconcile callbacks via `claw openclaw wake`
-
-Prompt-footer notify is advisory only. Mandatory completion delivery is tracked by runtime `delivery` state plus file-backed hooks, so a finished run without wake/delivery remains visible as `pending_delivery`.
-
-All `openclaw` commands emit clean JSON on stdout.
-
-## Testing
-
-```bash
-# Full test suite
-bash tests/run_all.sh
-
-# Individual suites
-bash tests/contracts_validation_test.sh
-bash tests/queue_lifecycle_test.sh
-bash tests/openclaw_test.sh
-bash tests/worker_reliability_test.sh
-bash tests/runtime_hardening_test.sh
-bash tests/scheduler_dashboard_test.sh
-bash tests/orchestration_loop_test.sh
-```
-
-## Project layout
-
-```
-runtime-harness/
+```text
+claw/
 ├── _system/
 │   ├── registry/          # agents.yaml, routing_rules.yaml, reviewer_policy.yaml
-│   ├── templates/         # task, spec, project templates
-│   ├── contracts/         # JSON Schema for all artifact types
-│   └── engine/            # file_queue.py, task_planner.py, agent_exec.py, runtime.py
+│   ├── templates/         # task/spec/project templates
+│   ├── contracts/         # JSON Schema contracts
+│   └── engine/            # queue, planner, runtime, guardrails, decomposer
 ├── projects/
-│   ├── _template/         # canonical project scaffold
+│   ├── _template/
 │   └── <slug>/
-│       ├── docs/          # includes WORKFLOW.md project policy surface
-│       ├── specs/ tasks/ runs/ reviews/
-│       └── state/         # queue/, hooks/, approvals/, review_cadence.json, metrics_snapshot.json, tasks_snapshot.json
-├── scripts/               # claw.py, build_run.py, execute_job.py, validate_artifacts.py
-└── tests/                 # run_all.sh + per-feature test scripts
+│       ├── docs/
+│       ├── specs/
+│       ├── tasks/
+│       ├── runs/
+│       ├── reviews/
+│       └── state/
+├── scripts/
+└── tests/
 ```
 
-## Requirements
+## Документация
+
+| Doc | Зачем читать |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Слои системы, сущности, lifecycle run и queue |
+| [`docs/EXECUTION_FLOW.md`](docs/EXECUTION_FLOW.md) | Командный путь `task/spec -> run -> hook -> review` |
+| [`docs/contracts.md`](docs/contracts.md) | Schema contracts и validator tooling |
+| [`docs/CONTRACT_VERSIONING.md`](docs/CONTRACT_VERSIONING.md) | Versioning и migration story для артефактов |
+| [`docs/PARALLEL_EXECUTION.md`](docs/PARALLEL_EXECUTION.md) | Worktree isolation и правила параллельного исполнения |
+| [`docs/AUTONOMY_GAPS_PLAN.md`](docs/AUTONOMY_GAPS_PLAN.md) | Исторический план закрытия autonomy gaps; читать как record, не как текущий статус |
+
+## Требования
 
 - Python 3.9+
 - Bash
-- `codex` and/or `claude` CLI available in `PATH`
-
-## Documentation
-
-| Doc | Purpose |
-|---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System layers, entities, run lifecycle, agent backends |
-| [`docs/CONTRACT_VERSIONING.md`](docs/CONTRACT_VERSIONING.md) | Schema versioning and migration strategy |
-| [`docs/PARALLEL_EXECUTION.md`](docs/PARALLEL_EXECUTION.md) | Worktree isolation, merge discipline, concurrency groups, continuous loop requirements |
-| [`docs/contracts.md`](docs/contracts.md) | Artifact schemas and validation tooling |
-| [`docs/EXECUTION_FLOW.md`](docs/EXECUTION_FLOW.md) | End-to-end run and queue flow with command reference |
+- `codex` и/или `claude` CLI в `PATH`
 
 ## License
 

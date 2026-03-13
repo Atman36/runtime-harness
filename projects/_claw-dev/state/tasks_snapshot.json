@@ -1,0 +1,171 @@
+{
+  "snapshot_version": 1,
+  "project": "_claw-dev",
+  "updated_at": "2026-03-13T23:40:53Z",
+  "task_count": 11,
+  "tasks": [
+    {
+      "task_id": "TASK-001",
+      "title": "Reason codes registry and structured error envelope",
+      "status": "done",
+      "priority": "high",
+      "dependencies": [],
+      "dependency_blockers": [],
+      "preferred_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": true,
+      "task_path": "tasks/TASK-001.md"
+    },
+    {
+      "task_id": "TASK-002",
+      "title": "Task graph snapshot and lint",
+      "status": "done",
+      "priority": "high",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "dependency_blockers": [],
+      "preferred_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-002.md"
+    },
+    {
+      "task_id": "TASK-003",
+      "title": "Workflow contract schema and validator",
+      "status": "done",
+      "priority": "medium",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "dependency_blockers": [],
+      "preferred_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-003.md"
+    },
+    {
+      "task_id": "TASK-004",
+      "title": "claw import-project CLI command",
+      "status": "done",
+      "priority": "high",
+      "dependencies": [],
+      "dependency_blockers": [],
+      "preferred_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-004.md"
+    },
+    {
+      "task_id": "TASK-005",
+      "title": "Structural guardrails against agent drift",
+      "status": "done",
+      "priority": "high",
+      "dependencies": [],
+      "dependency_blockers": [],
+      "preferred_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-005.md"
+    },
+    {
+      "task_id": "TASK-006",
+      "title": "WORKFLOW.md enforcement in orchestrate",
+      "status": "done",
+      "priority": "medium",
+      "dependencies": [
+        "TASK-003",
+        "TASK-004"
+      ],
+      "dependency_blockers": [],
+      "preferred_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-006.md"
+    },
+    {
+      "task_id": "TASK-007",
+      "title": "Task graph lint as mandatory pre-orchestrate gate",
+      "status": "done",
+      "priority": "medium",
+      "dependencies": [
+        "TASK-002",
+        "TASK-006"
+      ],
+      "dependency_blockers": [],
+      "preferred_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-007.md"
+    },
+    {
+      "task_id": "TASK-008",
+      "title": "Project command registry in WORKFLOW.md",
+      "status": "done",
+      "priority": "medium",
+      "dependencies": [
+        "TASK-006"
+      ],
+      "dependency_blockers": [],
+      "preferred_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-008.md"
+    },
+    {
+      "task_id": "TASK-009",
+      "title": "claw decompose-epic via LLM",
+      "status": "done",
+      "priority": "medium",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "dependency_blockers": [],
+      "preferred_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-009.md"
+    },
+    {
+      "task_id": "TASK-010",
+      "title": "Epic/roadmap completion criteria",
+      "status": "done",
+      "priority": "medium",
+      "dependencies": [
+        "TASK-007",
+        "TASK-009"
+      ],
+      "dependency_blockers": [],
+      "preferred_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-010.md"
+    },
+    {
+      "task_id": "TASK-011",
+      "title": "Mandatory orchestrator completion signal",
+      "status": "done",
+      "priority": "high",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "dependency_blockers": [],
+      "preferred_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-011.md"
+    }
+  ],
+  "checksum": "380c039fce76c2c8369b699cd02dc90174ef0360921a89ea5eb75dcbd6ce4dcd"
+}

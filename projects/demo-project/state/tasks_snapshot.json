@@ -1,0 +1,48 @@
+{
+  "snapshot_version": 1,
+  "project": "demo-project",
+  "updated_at": "2026-03-12T22:28:37Z",
+  "task_count": 3,
+  "tasks": [
+    {
+      "task_id": "TASK-001",
+      "title": "Create the first task-to-job run",
+      "status": "todo",
+      "priority": "high",
+      "dependencies": [],
+      "dependency_blockers": [],
+      "preferred_agent": "auto",
+      "needs_review": false,
+      "ready": true,
+      "active": false,
+      "task_path": "tasks/TASK-001.md"
+    },
+    {
+      "task_id": "TASK-002",
+      "title": "Fix RUN-XXXX race condition in run_task.sh",
+      "status": "todo",
+      "priority": "high",
+      "dependencies": [],
+      "dependency_blockers": [],
+      "preferred_agent": "codex",
+      "needs_review": false,
+      "ready": true,
+      "active": false,
+      "task_path": "tasks/TASK-002.md"
+    },
+    {
+      "task_id": "TASK-003",
+      "title": "Design: auto-integrate validation and review batch into runtime",
+      "status": "todo",
+      "priority": "high",
+      "dependencies": [],
+      "dependency_blockers": [],
+      "preferred_agent": "claude",
+      "needs_review": false,
+      "ready": true,
+      "active": false,
+      "task_path": "tasks/TASK-003.md"
+    }
+  ],
+  "checksum": "8129dddb9af11761e70ae459ffbdc9898e708fb24bb12c6c085366da6d65cfc7"
+}

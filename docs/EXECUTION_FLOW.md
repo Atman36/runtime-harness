@@ -1,17 +1,20 @@
 # EXECUTION FLOW — run, queue, hooks, reconcile
 
-Дата: 2026-03-12
-Статус: working / current behavior after engine + review slice
+Дата: 2026-03-14
+Статус: authoritative / current behavior after Epic 12 and OpenClaw delivery hardening
 
 ## Зачем нужен этот документ
 
 `claw` уже умеет:
+- импортировать внешний проект через `claw import-project`
+- разложить roadmap в dry-run plan через `claw decompose-epic`
 - собирать `task/spec -> job`
 - показывать dry-run execution decision через `claw launch-plan`
 - запускать агента напрямую
 - ставить run в filesystem queue
 - строить `state/tasks_snapshot.json` как derived artifact task graph
 - проверять `depends_on` на битые ссылки и циклы через `claw task-lint`
+- делать stricter pre-orchestrate gate через `claw task-graph-lint`
 - читать project workflow contract из `docs/WORKFLOW.md`
 - забирать queued job worker'ом
 - сохранять `result/report/logs`
@@ -19,6 +22,8 @@
 - создавать completion hook на диске
 - доставлять hook сразу или повторять через reconcile
 - автоматически запускать review batch generation по cadence и immediate triggers
+- выполнять project-registered checks через `claw run-checks`
+- считать прогресс по epic через `claw epic-status` и `claw orchestrate --scope epic:N`
 - возвращать structured diagnostics для JSON-facing команд через `reason_code`, `likely_cause`, `next_action`
 
 Этот файл фиксирует текущий контракт, чтобы последующие изменения не возвращали систему в ad-hoc shell.
