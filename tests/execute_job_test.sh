@@ -97,6 +97,7 @@ run_day_root="$project_root/runs/$today"
 run_one="$run_day_root/RUN-0001"
 run_two="$run_day_root/RUN-0002"
 run_three="$run_day_root/RUN-0003"
+hook_one_pending="$project_root/state/hooks/pending/${today}--RUN-0001.json"
 
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
   bash "$workspace/scripts/run_task.sh" --execute "$task_path"
@@ -112,10 +113,16 @@ assert_contains "$run_one/result.json" '"status": "success"'
 assert_contains "$run_one/result.json" '"exit_code": 0'
 assert_contains "$run_one/result.json" '"validation": {'
 assert_contains "$run_one/result.json" '"valid": true'
+assert_contains "$run_one/result.json" '"delivery": {'
+assert_contains "$run_one/result.json" '"status": "pending_delivery"'
+assert_contains "$run_one/result.json" '"hook_status": "pending"'
+assert_contains "$run_one/meta.json" '"delivery": {'
+assert_contains "$run_one/meta.json" '"status": "pending_delivery"'
 assert_contains "$run_one/stdout.log" 'FAKE SUCCESS'
 assert_contains "$run_one/report.md" '- Agent: codex'
 assert_contains "$run_one/report.md" '- Status: success'
 assert_contains "$run_one/report.md" 'FAKE SUCCESS'
+assert_file "$hook_one_pending"
 
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_fail_agent.sh" \
   bash "$workspace/scripts/run_task.sh" "$task_path"

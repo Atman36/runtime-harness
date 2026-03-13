@@ -144,6 +144,8 @@ When running Claude in a chat session, the engine can:
 - Send completion summaries back (`claw openclaw callback`)
 - Wake chat from completion hooks via `openclaw system event` bridge and reconcile callbacks via `claw openclaw wake`
 
+Prompt-footer notify is advisory only. Mandatory completion delivery is tracked by runtime `delivery` state plus file-backed hooks, so a finished run without wake/delivery remains visible as `pending_delivery`.
+
 All `openclaw` commands emit clean JSON on stdout.
 
 ## Testing

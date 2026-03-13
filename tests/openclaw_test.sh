@@ -272,7 +272,45 @@ PY
 
 echo "  ok: test5 — openclaw callback returns chat-friendly completion payload"
 
-# ── Test 6: completion hook emits OpenClaw system event bridge ──────────────
+# ── Test 6: missing footer notify is surfaced as pending delivery ───────────
+
+summary_pending_out="$tmp_root/summary-pending.json"
+claw openclaw summary "$project_root" "$run_id" > "$summary_pending_out"
+
+assert_file "$summary_pending_out"
+
+python3 - "$summary_pending_out" "$run_id" <<'PY'
+import json
+import sys
+
+data = json.loads(open(sys.argv[1]).read())
+run_id = sys.argv[2]
+delivery = data["delivery"]
+assert data["run_id"] == run_id, data
+assert delivery["required"] is True, delivery
+assert delivery["status"] == "pending_delivery", delivery
+assert delivery["hook_written"] is True, delivery
+assert delivery["hook_status"] == "pending", delivery
+assert delivery["hook_id"].endswith(run_id), delivery
+PY
+
+status_pending_out="$tmp_root/status-pending.json"
+claw openclaw status "$project_root" > "$status_pending_out"
+
+python3 - "$status_pending_out" "$run_id" <<'PY'
+import json
+import sys
+
+data = json.loads(open(sys.argv[1]).read())
+run_id = sys.argv[2]
+delivery = data["delivery"]
+assert delivery["pending"] >= 1, delivery
+assert any(item["run_id"] == run_id and item["status"] == "pending_delivery" for item in delivery["runs"]), delivery
+PY
+
+echo "  ok: test6 — successful run without footer notify is visible as pending delivery"
+
+# ── Test 7: completion hook emits OpenClaw system event bridge ──────────────
 
 bridge_enqueue_out="$tmp_root/enqueue-bridge.json"
 claw openclaw enqueue "$project_root" "$task_path" > "$bridge_enqueue_out"
@@ -305,9 +343,9 @@ assert run_id in text, text
 assert f"openclaw wake {project_root} --mode event" in text, text
 PY
 
-echo "  ok: test6 — pending completion hook emits OpenClaw system event wake bridge"
+echo "  ok: test7 — pending completion hook emits OpenClaw system event wake bridge"
 
-# ── Test 7: openclaw wake built-in callback bridge ───────────────────────────
+# ── Test 8: openclaw wake built-in callback bridge ───────────────────────────
 
 wake_event_out="$tmp_root/wake-event.json"
 claw openclaw wake "$project_root" --mode event > "$wake_event_out"
@@ -333,9 +371,39 @@ assert run_id in callback["chat_text"], callback
 assert sent_hook.is_file(), sent_hook
 PY
 
-echo "  ok: test7 — openclaw wake converts pending hook into callback payload and marks it sent"
+summary_delivered_out="$tmp_root/summary-delivered.json"
+claw openclaw summary "$project_root" "$bridge_run_id" > "$summary_delivered_out"
 
-# ── Test 8: openclaw wake with hook command ──────────────────────────────────
+python3 - "$summary_delivered_out" "$bridge_run_id" <<'PY'
+import json
+import sys
+
+data = json.loads(open(sys.argv[1]).read())
+run_id = sys.argv[2]
+delivery = data["delivery"]
+assert data["run_id"] == run_id, data
+assert delivery["status"] == "delivered", delivery
+assert delivery["hook_status"] == "sent", delivery
+assert delivery["delivered_at"], delivery
+PY
+
+status_delivered_out="$tmp_root/status-delivered.json"
+claw openclaw status "$project_root" > "$status_delivered_out"
+
+python3 - "$status_delivered_out" "$bridge_run_id" <<'PY'
+import json
+import sys
+
+data = json.loads(open(sys.argv[1]).read())
+run_id = sys.argv[2]
+delivery = data["delivery"]
+assert delivery["delivered"] >= 1, delivery
+assert any(item["run_id"] == run_id and item["status"] == "delivered" for item in delivery["runs"]), delivery
+PY
+
+echo "  ok: test8 — openclaw wake converts pending hook into callback payload and marks delivery sent"
+
+# ── Test 9: openclaw wake with hook command ──────────────────────────────────
 
 wake_enqueue_out="$tmp_root/enqueue-wake.json"
 claw openclaw enqueue "$project_root" "$task_path" > "$wake_enqueue_out"
@@ -369,6 +437,6 @@ assert any(item["run_id"] == run_id for item in data["callbacks"]), data
 assert sent_hook.is_file(), sent_hook
 PY
 
-echo "  ok: test8 — openclaw wake dispatches pending hooks and reports callback metadata"
+echo "  ok: test9 — openclaw wake dispatches pending hooks and reports callback metadata"
 
 echo "openclaw test: ok"

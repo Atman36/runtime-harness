@@ -17,7 +17,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from hooklib import build_hook_payload, dispatch_hook_file, read_json, trim_text, utc_now, write_hook_payload, write_json
+from hooklib import (
+    build_delivery_snapshot,
+    build_hook_payload,
+    build_hook_snapshot,
+    dispatch_hook_file,
+    read_json,
+    trim_text,
+    utc_now,
+    write_hook_payload,
+    write_json,
+)
 from _system.engine.trusted_command import command_display, parse_trusted_argv
 
 
@@ -659,19 +669,29 @@ def main() -> int:
 
     final_result["hook"] = {}
     meta["hook"] = {}
+    final_result["delivery"] = {}
+    meta["delivery"] = {}
 
     try:
         hook_payload = build_hook_payload(run_dir, source_project_root, job, meta, final_result)
         hook_path = write_hook_payload(source_project_root, hook_payload, "pending")
         hook_delivery = dispatch_hook_file(hook_path)
-        hook_rel_path = hook_delivery["path"].relative_to(source_project_root).as_posix()
-        hook_snapshot = {
-            "hook_id": hook_delivery["hook_id"],
-            "delivery_status": hook_delivery["status"],
-            "path": hook_rel_path,
-        }
+        delivered_hook_path = hook_delivery["path"]
+        delivered_hook_payload = read_json(delivered_hook_path)
+        hook_snapshot = build_hook_snapshot(source_project_root, delivered_hook_path, delivered_hook_payload)
+        delivery_snapshot = build_delivery_snapshot(
+            source_project_root,
+            run_id=final_result["run_id"],
+            run_date=meta.get("run_date"),
+            result=final_result,
+            meta=meta,
+            hook_path=delivered_hook_path,
+            hook_payload=delivered_hook_payload,
+        )
         final_result["hook"] = hook_snapshot
         meta["hook"] = hook_snapshot
+        final_result["delivery"] = delivery_snapshot
+        meta["delivery"] = delivery_snapshot
     except Exception as exc:  # pragma: no cover - delivery must not hide run result
         final_result["hook"] = {
             "delivery_status": "error",
@@ -681,6 +701,14 @@ def main() -> int:
             "delivery_status": "error",
             "error": str(exc),
         }
+        final_result["delivery"] = {
+            "required": True,
+            "status": "missing",
+            "hook_written": False,
+            "hook_status": "error",
+            "last_error": str(exc),
+        }
+        meta["delivery"] = dict(final_result["delivery"])
 
     write_json(result_path, final_result)
     write_json(meta_path, meta)

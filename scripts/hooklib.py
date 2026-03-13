@@ -20,6 +20,11 @@ HOOK_STATUSES = ("pending", "sent", "failed")
 DEFAULT_STALE_SECONDS = 300
 DEFAULT_HOOK_TIMEOUT_SECONDS = 30
 DEFAULT_OPENCLAW_SYSTEM_EVENT_TIMEOUT_SECONDS = 10
+DELIVERY_STATUS_BY_HOOK_STATE = {
+    "pending": "pending_delivery",
+    "sent": "delivered",
+    "failed": "failed",
+}
 
 
 def utc_now() -> str:
@@ -119,6 +124,26 @@ def locate_hook(project_root: Path, hook_id: str) -> Path | None:
     return None
 
 
+def locate_hook_for_run(project_root: Path, run_id: str, run_date: str | None = None, hook_id: str | None = None) -> Path | None:
+    resolved_hook_id = (hook_id or "").strip()
+    if resolved_hook_id:
+        return locate_hook(project_root, resolved_hook_id)
+
+    resolved_run_id = (run_id or "").strip()
+    if not resolved_run_id:
+        return None
+
+    resolved_run_date = (run_date or "").strip()
+    if resolved_run_date:
+        return locate_hook(project_root, hook_id_for_run(resolved_run_id, resolved_run_date))
+
+    for status in HOOK_STATUSES:
+        matches = sorted((hook_root(project_root) / status).glob(f"*--{resolved_run_id}.json"))
+        if matches:
+            return matches[0]
+    return None
+
+
 def write_hook_payload(project_root: Path, payload: dict, status: str) -> Path:
     hook_id = payload.get("hook_id")
     if not hook_id:
@@ -136,6 +161,129 @@ def write_hook_payload(project_root: Path, payload: dict, status: str) -> Path:
             candidate.unlink()
 
     return target_path
+
+
+def completion_delivery_required(*, result: dict | None = None, meta: dict | None = None) -> bool:
+    result_status = str((result or {}).get("status") or "").strip().lower()
+    meta_status = str((meta or {}).get("status") or "").strip().lower()
+    return result_status in {"success", "failed"} or meta_status in {"completed", "failed"}
+
+
+def build_delivery_snapshot(
+    project_root: Path,
+    *,
+    run_id: str,
+    run_date: str | None,
+    result: dict | None = None,
+    meta: dict | None = None,
+    hook_path: Path | None = None,
+    hook_payload: dict | None = None,
+) -> dict:
+    required = completion_delivery_required(result=result, meta=meta)
+    resolved_hook_path = hook_path
+    payload = dict(hook_payload or {})
+
+    if resolved_hook_path is None:
+        hook_hint = str((meta or {}).get("hook", {}).get("hook_id") or (result or {}).get("hook", {}).get("hook_id") or "").strip()
+        resolved_hook_path = locate_hook_for_run(project_root, run_id, run_date, hook_hint)
+    if resolved_hook_path is not None and not payload:
+        payload = read_json(resolved_hook_path)
+
+    hook_id = str(
+        payload.get("hook_id")
+        or (meta or {}).get("hook", {}).get("hook_id")
+        or (result or {}).get("hook", {}).get("hook_id")
+        or (hook_id_for_run(run_id, run_date) if run_id and run_date else "")
+    ).strip()
+    delivery = payload.get("delivery") or {}
+    hook_state = resolved_hook_path.parent.name if resolved_hook_path is not None else ""
+    if not hook_state:
+        hook_state = str(delivery.get("status") or "").strip()
+    delivered_at = delivery.get("sent_at")
+    last_error = str(delivery.get("last_error") or "").strip()
+    attempt_count = delivery.get("attempt_count")
+    updated_at = delivery.get("last_attempt_at") or delivered_at or payload.get("created_at")
+    try:
+        normalized_attempt_count = max(0, int(attempt_count or 0))
+    except (TypeError, ValueError):
+        normalized_attempt_count = 0
+
+    if not required:
+        status = "not_ready"
+    elif resolved_hook_path is None:
+        status = "missing"
+    else:
+        status = DELIVERY_STATUS_BY_HOOK_STATE.get(hook_state, "missing")
+
+    hook_path_rel = None
+    if resolved_hook_path is not None:
+        try:
+            hook_path_rel = resolved_hook_path.relative_to(project_root).as_posix()
+        except ValueError:
+            hook_path_rel = str(resolved_hook_path)
+
+    return {
+        "required": required,
+        "status": status,
+        "hook_id": hook_id,
+        "hook_written": resolved_hook_path is not None,
+        "hook_status": hook_state or ("missing" if required else "not_ready"),
+        "hook_path": hook_path_rel,
+        "callback_available": required,
+        "attempt_count": normalized_attempt_count if resolved_hook_path is not None else 0,
+        "delivered_at": delivered_at,
+        "last_error": last_error,
+        "updated_at": updated_at,
+    }
+
+
+def build_hook_snapshot(project_root: Path, hook_path: Path, payload: dict | None = None) -> dict:
+    resolved_payload = payload or read_json(hook_path)
+    try:
+        hook_path_rel = hook_path.relative_to(project_root).as_posix()
+    except ValueError:
+        hook_path_rel = str(hook_path)
+    return {
+        "hook_id": resolved_payload.get("hook_id") or hook_path.stem,
+        "delivery_status": hook_path.parent.name,
+        "path": hook_path_rel,
+    }
+
+
+def persist_run_delivery_state(project_root: Path, hook_path: Path, payload: dict | None = None) -> dict:
+    resolved_payload = payload or read_json(hook_path)
+    artifacts = resolved_payload.get("artifacts") or {}
+    run_id = str(resolved_payload.get("run_id") or "").strip()
+    run_date = str(resolved_payload.get("run_date") or "").strip() or None
+    delivery_snapshot = build_delivery_snapshot(
+        project_root,
+        run_id=run_id,
+        run_date=run_date,
+        hook_path=hook_path,
+        hook_payload=resolved_payload,
+        result={"status": resolved_payload.get("run_status")},
+        meta={"status": "completed" if resolved_payload.get("run_status") == "success" else "failed"},
+    )
+    hook_snapshot = build_hook_snapshot(project_root, hook_path, resolved_payload)
+
+    for artifact_name in ("result_path", "meta_path"):
+        relative_path = artifacts.get(artifact_name)
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            continue
+        artifact_path = (project_root / relative_path).resolve()
+        if not artifact_path.is_file():
+            continue
+        try:
+            artifact_payload = read_json(artifact_path)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(artifact_payload, dict):
+            continue
+        artifact_payload["hook"] = hook_snapshot
+        artifact_payload["delivery"] = delivery_snapshot
+        write_json_atomic(artifact_path, artifact_payload)
+
+    return delivery_snapshot
 
 
 def build_hook_payload(run_dir: Path, project_root: Path, job: dict, meta: dict, result: dict) -> dict:
@@ -340,6 +488,7 @@ def dispatch_hook_file(hook_path: Path) -> dict:
         delivery["status"] = current_status
         delivery["last_error"] = ""
         target_path = write_hook_payload(project_root, payload, current_status)
+        persist_run_delivery_state(project_root, target_path, payload)
         try:
             emit_openclaw_system_event(project_root, payload)
         except (ValueError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -403,6 +552,7 @@ def dispatch_hook_file(hook_path: Path) -> dict:
         payload["delivery_attempts"] = int(payload.get("delivery_attempts", 0)) + 1
         payload["delivery_attempt_log"].append(attempt)
         target_path = write_hook_payload(project_root, payload, "sent")
+        persist_run_delivery_state(project_root, target_path, payload)
         return {
             "hook_id": hook_id,
             "status": "sent",
@@ -424,6 +574,7 @@ def dispatch_hook_file(hook_path: Path) -> dict:
     if int(payload["delivery_attempts"]) >= max_attempts:
         payload["dead_letter"] = True
     target_path = write_hook_payload(project_root, payload, "failed")
+    persist_run_delivery_state(project_root, target_path, payload)
     return {
         "hook_id": hook_id,
         "status": "failed",
@@ -480,6 +631,7 @@ def deliver_hook_via_callback_bridge(hook_path: Path) -> dict:
     payload["delivery_attempt_log"].append(attempt)
     payload.pop("dead_letter", None)
     target_path = write_hook_payload(project_root, payload, "sent")
+    persist_run_delivery_state(project_root, target_path, payload)
     return {
         "hook_id": hook_id,
         "status": "sent",

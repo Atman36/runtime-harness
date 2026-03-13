@@ -265,6 +265,12 @@ Use case:
 Для `CLAW_HOOK_COMMAND` действует тот же trusted argv contract, что и для agent overrides.
 `CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND` использует тот же trusted argv contract и ожидает argv-prefix для `openclaw system event`; сам bridge добавляет `--text ... --mode now`.
 
+Практическое правило для agent-run:
+- prompt-footer `openclaw system event ...` считается advisory-only и не является delivery contract
+- обязательный completion signal живёт в `result.json` / `meta.json` поле `delivery` и в hook payload на диске
+- успешный run без фактической доставки должен выглядеть как `delivery.status: pending_delivery` или `missing`, а не как silent success
+- оператору нужно смотреть `claw openclaw status` / `claw openclaw summary`, а не предполагать, что вложенный агент вспомнил про footer command
+
 ### Queue execution
 Специальных queue-env пока нет.
 Сейчас queue worker использует тот же `execute_job.py`, поэтому наследует agent-related env overrides полностью.
@@ -474,3 +480,4 @@ projects/<slug>/state/hooks/
 - completion hook без `CLAW_HOOK_COMMAND` может поднять `openclaw system event` через `CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND`
 - `claw openclaw wake` может сам превратить pending/failed hook в callback payload для чата и атомарно перевести hook в `sent`
 - hook-файл остаётся source of truth; system event только будит OpenClaw, а callback строится из payload на диске
+- `claw openclaw status` и `claw openclaw summary` вычисляют mandatory completion delivery из hook state; если footer notify не случился, run остаётся видимым как `pending_delivery`

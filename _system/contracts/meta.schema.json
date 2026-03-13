@@ -127,6 +127,10 @@
     "hook": {
       "type": "object",
       "description": "Hook delivery snapshot after run completion."
+    },
+    "delivery": {
+      "type": "object",
+      "description": "Machine-verifiable completion delivery contract derived from hook state."
     }
   }
 }

@@ -32,7 +32,15 @@ from _system.engine.workflow_contract import contract_summary, load_workflow_con
 from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
 from _system.engine.decomposer import decompose_epic as _decompose_epic  # noqa: E402
 from generate_review_batch import POLICY_PATH, classify_run, generate_batches, load_policy, load_run, resolve_cadence_batch_size  # noqa: E402
-from hooklib import build_callback_payload, deliver_hook_via_callback_bridge, dispatch_hook_file, hook_command, iter_hook_files, trim_text  # noqa: E402
+from hooklib import (
+    build_callback_payload,
+    build_delivery_snapshot,
+    deliver_hook_via_callback_bridge,
+    dispatch_hook_file,
+    hook_command,
+    iter_hook_files,
+    trim_text,
+)  # noqa: E402
 
 
 CADENCE_STATE_FILE = "review_cadence.json"
@@ -966,6 +974,12 @@ def build_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dic
         "failed": 0,
         "unknown": 0,
     }
+    delivery_counts = {
+        "pending": 0,
+        "delivered": 0,
+        "failed": 0,
+        "missing": 0,
+    }
     recent_runs: list[dict] = []
 
     for result_path, result in result_files:
@@ -973,11 +987,24 @@ def build_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dic
         run_statuses[status if status in run_statuses else "unknown"] += 1
         run_id = result.get("run_id") or result_path.parent.name
         finished_at = result.get("finished_at") or result.get("completed_at") or result.get("created_at")
+        meta, _meta_error = load_json_status(result_path.parent / "meta.json")
+        delivery = resolve_run_delivery(project_root, result_path.parent, meta=meta, result=result)
+        delivery_status = str(delivery.get("status") or "")
+        if delivery_status == "pending_delivery":
+            delivery_counts["pending"] += 1
+        elif delivery_status == "delivered":
+            delivery_counts["delivered"] += 1
+        elif delivery_status == "failed":
+            delivery_counts["failed"] += 1
+        elif delivery_status == "missing":
+            delivery_counts["missing"] += 1
         recent_runs.append({
             "run_id": run_id,
             "status": status,
             "agent": result.get("agent", ""),
             "finished_at": finished_at,
+            "task_id": meta.get("task_id"),
+            "delivery": delivery,
         })
 
     snapshot = {
@@ -990,6 +1017,7 @@ def build_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dic
             "total": len(result_files),
             "by_status": run_statuses,
         },
+        "delivery": delivery_counts,
         "reviews": {
             "batch_count": reviewed_batches,
             "pending_decisions": count_pending_review_decisions(project_root),
@@ -1009,6 +1037,20 @@ def load_json_status(path: Path) -> tuple[dict, str | None]:
     if not isinstance(payload, dict):
         return {}, "invalid_json_type"
     return payload, None
+
+
+def resolve_run_delivery(project_root: Path, run_dir: Path, *, meta: dict | None = None, result: dict | None = None) -> dict:
+    resolved_meta = meta or {}
+    resolved_result = result or {}
+    run_id = str(resolved_result.get("run_id") or resolved_meta.get("run_id") or run_dir.name)
+    run_date = str(resolved_meta.get("run_date") or run_dir.parent.name or "").strip() or None
+    return build_delivery_snapshot(
+        project_root,
+        run_id=run_id,
+        run_date=run_date,
+        meta=resolved_meta,
+        result=resolved_result,
+    )
 
 
 def refresh_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dict:
@@ -1591,6 +1633,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "agent": result.get("agent") or meta.get("preferred_agent"),
         "project": meta.get("project"),
         "task_id": meta.get("task_id"),
+        "delivery": resolve_run_delivery(project_root, run_dir, meta=meta, result=result),
     }
     errors = {}
     if meta_error is not None:
@@ -2025,6 +2068,22 @@ def cmd_openclaw_status(args: argparse.Namespace) -> int:
         "project": project_root.name,
         "queue": snapshot["queue"],
         "recent_runs": snapshot["recent_runs"][:max_recent],
+        "delivery": {
+            "pending": snapshot["delivery"]["pending"],
+            "delivered": snapshot["delivery"]["delivered"],
+            "failed": snapshot["delivery"]["failed"],
+            "missing": snapshot["delivery"]["missing"],
+            "runs": [
+                {
+                    "run_id": run["run_id"],
+                    "status": run.get("delivery", {}).get("status"),
+                    "hook_status": run.get("delivery", {}).get("hook_status"),
+                    "task_id": run.get("task_id"),
+                }
+                for run in snapshot["recent_runs"][:max_recent]
+                if (run.get("delivery") or {}).get("required")
+            ],
+        },
         "pending_reviews": snapshot["reviews"]["pending_decisions"],
         "pending_hooks": snapshot["hooks"]["pending"],
         "failed_hooks": snapshot["hooks"]["failed"],
@@ -2228,16 +2287,8 @@ def cmd_openclaw_summary(args: argparse.Namespace) -> int:
     finished_at = result.get("finished_at") or result.get("completed_at")
     duration_seconds = duration_between(started_at, finished_at)
     validation = result.get("validation") or {}
-
-    # Hook delivery status
-    hook_status: dict = {}
-    hook_path = run_dir / "hook.json"
-    if hook_path.is_file():
-        try:
-            hook_data = read_json(hook_path)
-            hook_status = {"delivery_status": hook_data.get("delivery_status")}
-        except (json.JSONDecodeError, OSError):
-            pass
+    delivery = resolve_run_delivery(project_root, run_dir, meta=meta, result=result)
+    hook_status = result.get("hook") or meta.get("hook") or {}
 
     # Report path
     report_path_abs = run_dir / "report.md"
@@ -2256,6 +2307,7 @@ def cmd_openclaw_summary(args: argparse.Namespace) -> int:
         "summary": summary_text,
         "validation": validation,
         "hook": hook_status,
+        "delivery": delivery,
         "report_path": report_path,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
