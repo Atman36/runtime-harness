@@ -37,8 +37,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 POLICY_PATH = REPO_ROOT / "_system" / "registry" / "reviewer_policy.yaml"
 AGENTS_REGISTRY_PATH = REPO_ROOT / "_system" / "registry" / "agents.yaml"
 
-IMMEDIATE_STATUS_TRIGGERS = {"failed"}
-IMMEDIATE_FLAG_TRIGGERS = {"risky_area", "uncertainty", "large_diff"}
+DEFAULT_IMMEDIATE_STATUS_TRIGGERS = {"failed"}
+DEFAULT_IMMEDIATE_FLAG_TRIGGERS = {"risky_area", "uncertainty", "large_diff"}
+DEFAULT_IMMEDIATE_TRIGGERS = ["failed", "needs_review", "risky_area", "uncertainty", "large_diff"]
+KNOWN_IMMEDIATE_TRIGGERS = set(DEFAULT_IMMEDIATE_TRIGGERS)
 
 
 def utc_now() -> str:
@@ -55,6 +57,51 @@ def load_agents_registry(path: Path) -> set[str]:
     return {str(name).strip() for name, config in agents.items() if str(name).strip() and isinstance(config, dict)}
 
 
+def resolve_cadence_batch_size(policy: dict) -> int:
+    cadence = policy.get("cadence", {})
+    if cadence in (None, {}):
+        return 5
+    if not isinstance(cadence, dict):
+        raise ValueError("reviewer_policy.cadence must be a mapping")
+
+    raw_value = cadence.get("successful_runs_batch", 5)
+    try:
+        batch_size = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("reviewer_policy.cadence.successful_runs_batch must be an integer >= 1") from exc
+    if batch_size < 1:
+        raise ValueError("reviewer_policy.cadence.successful_runs_batch must be >= 1")
+    return batch_size
+
+
+def resolve_immediate_trigger_config(policy: dict) -> tuple[set[str], bool, set[str]]:
+    raw_triggers = policy.get("immediate_triggers", DEFAULT_IMMEDIATE_TRIGGERS)
+    if raw_triggers is None:
+        raw_triggers = list(DEFAULT_IMMEDIATE_TRIGGERS)
+    if not isinstance(raw_triggers, list):
+        raise ValueError("reviewer_policy.immediate_triggers must be a list")
+
+    configured: list[str] = []
+    unknown: set[str] = set()
+    for item in raw_triggers:
+        name = str(item).strip()
+        if not name:
+            continue
+        if name not in KNOWN_IMMEDIATE_TRIGGERS:
+            unknown.add(name)
+            continue
+        configured.append(name)
+
+    if unknown:
+        triggers = ", ".join(sorted(unknown))
+        raise ValueError(f"Unknown immediate trigger(s) in reviewer policy: {triggers}")
+
+    status_triggers = {name for name in configured if name in DEFAULT_IMMEDIATE_STATUS_TRIGGERS}
+    needs_review_enabled = "needs_review" in configured
+    flag_triggers = {name for name in configured if name in DEFAULT_IMMEDIATE_FLAG_TRIGGERS}
+    return status_triggers, needs_review_enabled, flag_triggers
+
+
 def validate_policy_agents(policy: dict, registered_agents: set[str]) -> None:
     mapping = policy.get("default_mapping", {})
     if not isinstance(mapping, dict):
@@ -66,6 +113,8 @@ def validate_policy_agents(policy: dict, registered_agents: set[str]) -> None:
             raise ValueError(f"Unknown preferred agent in reviewer policy: {preferred_name}")
         if reviewer_name and reviewer_name not in registered_agents:
             raise ValueError(f"Unknown reviewer agent in reviewer policy: {reviewer_name}")
+    resolve_cadence_batch_size(policy)
+    resolve_immediate_trigger_config(policy)
 
 
 def load_policy(path: Path) -> dict:
@@ -155,14 +204,17 @@ def load_reviewed_run_ids(reviews_dir: Path) -> set[str]:
     return reviewed
 
 
-def classify_run(run: dict) -> str | None:
+def classify_run(run: dict, policy: dict | None = None) -> str | None:
     """Return a trigger reason string, or None if the run does not need immediate review."""
-    if run["status"] in IMMEDIATE_STATUS_TRIGGERS:
+    effective_policy = policy or {}
+    status_triggers, needs_review_enabled, flag_triggers = resolve_immediate_trigger_config(effective_policy)
+
+    if run["status"] in status_triggers:
         return "failed"
-    if run["needs_review"]:
+    if needs_review_enabled and run["needs_review"]:
         return "needs_review"
     flags = set(run.get("risk_flags", []))
-    matching = flags & IMMEDIATE_FLAG_TRIGGERS
+    matching = flags & flag_triggers
     if matching:
         return f"risk_flags:{','.join(sorted(matching))}"
     return None
@@ -253,7 +305,7 @@ def generate_batches(project_root: Path, policy: dict, dry_run: bool = False) ->
     """Generate review batches for one project. Returns list of batch dicts emitted."""
     reviews_dir = project_root / "reviews"
     reviewed_ids = load_reviewed_run_ids(reviews_dir)
-    cadence_batch_size = int(policy.get("cadence", {}).get("successful_runs_batch", 5))
+    cadence_batch_size = resolve_cadence_batch_size(policy)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     immediate_runs: list[dict] = []
@@ -263,7 +315,7 @@ def generate_batches(project_root: Path, policy: dict, dry_run: bool = False) ->
         run = load_run(run_dir, project_root)
         if run is None or run["run_id"] in reviewed_ids:
             continue
-        trigger = classify_run(run)
+        trigger = classify_run(run, policy)
         if trigger:
             run["trigger"] = trigger
             immediate_runs.append(run)

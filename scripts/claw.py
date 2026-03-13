@@ -30,7 +30,7 @@ from _system.engine.error_codes import build_error_envelope  # noqa: E402
 from _system.engine.workflow_contract import contract_summary, load_workflow_contract  # noqa: E402
 from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
 from _system.engine.decomposer import decompose_epic as _decompose_epic  # noqa: E402
-from generate_review_batch import POLICY_PATH, classify_run, generate_batches, load_policy, load_run  # noqa: E402
+from generate_review_batch import POLICY_PATH, classify_run, generate_batches, load_policy, load_run, resolve_cadence_batch_size  # noqa: E402
 from hooklib import build_callback_payload, deliver_hook_via_callback_bridge, dispatch_hook_file, hook_command, iter_hook_files, trim_text  # noqa: E402
 
 
@@ -1145,14 +1145,14 @@ def maybe_trigger_review(project_root: Path, run_dir: Path, result_status: str, 
             return []
 
         cadence_state = load_cadence_state(project_root)
-        trigger = classify_run(run)
+        trigger = classify_run(run, policy)
         batches: list[dict] = []
 
         if trigger is not None:
             batches = generate_batches(project_root, policy)
         elif result_status == "success":
             cadence_state["successful_since_last_batch"] += 1
-            cadence_batch_size = int(policy.get("cadence", {}).get("successful_runs_batch", 5))
+            cadence_batch_size = resolve_cadence_batch_size(policy)
             if cadence_state["successful_since_last_batch"] >= cadence_batch_size:
                 batches = generate_batches(project_root, policy)
 

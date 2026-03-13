@@ -146,6 +146,43 @@ set -e
 [ "$review_rc" -ne 0 ] || { echo "Expected reviewer policy validation failure" >&2; exit 1; }
 assert_contains "$workspace/review.stderr" "Unknown reviewer agent"
 
+cat > "$workspace/_system/registry/reviewer_policy.yaml" <<'EOF'
+reviewer_policy:
+  cadence:
+    successful_runs_batch: 0
+  immediate_triggers:
+    - failed
+  default_mapping:
+    codex: claude
+    claude: codex
+EOF
+
+set +e
+python3 "$workspace/scripts/generate_review_batch.py" "$project_root" >"$workspace/review.stdout" 2>"$workspace/review.stderr"
+review_rc=$?
+set -e
+[ "$review_rc" -ne 0 ] || { echo "Expected cadence policy validation failure" >&2; exit 1; }
+assert_contains "$workspace/review.stderr" "successful_runs_batch must be >= 1"
+
+cat > "$workspace/_system/registry/reviewer_policy.yaml" <<'EOF'
+reviewer_policy:
+  cadence:
+    successful_runs_batch: 5
+  immediate_triggers:
+    - failed
+    - mystery-trigger
+  default_mapping:
+    codex: claude
+    claude: codex
+EOF
+
+set +e
+python3 "$workspace/scripts/generate_review_batch.py" "$project_root" >"$workspace/review.stdout" 2>"$workspace/review.stderr"
+review_rc=$?
+set -e
+[ "$review_rc" -ne 0 ] || { echo "Expected immediate trigger policy validation failure" >&2; exit 1; }
+assert_contains "$workspace/review.stderr" "Unknown immediate trigger(s)"
+
 cat > "$project_root/state/hooks/failed/side-effect.json" <<'EOF'
 {
   "hook_id": "side-effect",
