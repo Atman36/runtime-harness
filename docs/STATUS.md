@@ -70,13 +70,49 @@
 
 ## In Progress
 
+- **Epic 12 (External Project Autonomy)** — активен; TASK-006 и TASK-007 закрыты, TASK-008/010 ждут
 - `live status feed` — следующий слой поверх `events.jsonl` / `event_snapshot.json`; transport/SSE пока сознательно не поднимались
-- переоценка `codex app-server runner` и `MCP provider layer` после стабилизации event-layer
 
 ## Next
 
-- использовать `event_snapshot` как source of truth для будущего `status --live` / feed transport
-- решить, нужен ли отдельный schema/validator слой для run events beyond shell regression coverage
+- **TASK-008** (codex): `commands` block в WORKFLOW.md + `claw run-checks` CLI
+- **TASK-010** (claude): epic-status + `claw orchestrate --scope epic:N`
+- Разделить `run_all.sh` на быстрый (unit) и медленный (integration) прогоны — сейчас весь suite занимает ~40 сек
+
+## Рефлексия сессии 2026-03-14
+
+### Что сделано
+
+- **TASK-001** — статус исправлен на `done` (реализовано в предыдущей сессии, не была отмечена)
+- **TASK-006** — реализован напрямую (claude в текущей сессии): `allowed_agents` gate + `scope_warnings` в launch-plan + `claw workflow-validate`
+- **TASK-007** — выполнен codex через `claw run --execute` (7 мин): `claw task-graph-lint` + file-overlap warnings + `unknown_dependency` abort; все тесты зелёные
+- **hook delivery** — верифицирован end-to-end: run создаёт `state/hooks/pending/<id>.json`, `openclaw wake` диспатчит и возвращает callback payloads
+
+### Что выяснили про hook → Claude цикл
+
+Полный путь: `execute_job.py` → `build_hook_payload()` + `write_hook_payload(project, payload, "pending")` + `dispatch_hook_file()` — если `CLAW_HOOK_COMMAND` не установлен, hook помечается `sent` через `deliver_hook_via_callback_bridge` (in-process). Реальный внешний триггер требует `CLAW_HOOK_COMMAND=<скрипт>`. Через `openclaw wake` оркестратор может читать callbacks и принимать следующее решение — это и есть механизм "Claude поднялся по хуку".
+
+### CLAUDECODE=1 ограничение
+
+`claude -p` внутри Claude Code заблокирован (`CLAUDECODE=1`). Решение: claude-задачи выполняет сам оркестратор в текущей сессии; codex-задачи запускаются через `claw run --execute` (codex не блокирован). TASK-001 из hooks/pending показал `status: failed` с сообщением `"Claude Code cannot be launched inside another Claude Code session"` — это ожидаемо.
+
+### Ключевые находки
+
+- `load_workflow_contract()` никогда не возвращает `None` — при отсутствии WORKFLOW.md возвращает дефолт с `source="defaults"`; правильная проверка: `contract.source == "defaults"`, а не `contract is None`
+- Хуки хранятся в `state/hooks/{pending,sent,failed}/`, а не в `hooks/` — смотреть нужно туда
+- `task-graph-lint` добавлен codex с backward-compat: `task-lint` (старый) продолжает работать
+
+### Статус Epic 12
+
+| Задача | Статус |
+|--------|--------|
+| TASK-004 import-project | ✅ done |
+| TASK-005 guardrail-check | ✅ done |
+| TASK-006 workflow enforcement | ✅ done |
+| TASK-007 task graph lint gate | ✅ done (codex) |
+| TASK-008 command registry | 🔲 todo |
+| TASK-009 decompose-epic | ✅ done |
+| TASK-010 epic completion criteria | 🔲 todo |
 
 ---
 
@@ -179,3 +215,4 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | TASK-002 + TASK-003 reopened regression closure | `scripts/claw.py`, `_system/engine/workflow_contract.py`, `tests/task_graph_lint_test.sh`, `tests/workflow_contract_test.sh`, `tests/run_all.sh`, `projects/_claw-dev/tasks/TASK-002.md`, `projects/_claw-dev/tasks/TASK-003.md`, `docs/STATUS.md`, `docs/PLAN.md` | `bash tests/task_graph_lint_test.sh`; `bash tests/workflow_contract_test.sh`; `bash tests/run_all.sh` | ✅ malformed YAML now yields `task_parse_failed` JSON instead of traceback; `contract_version != 1` now rejected by loader and validator; 7 new regression tests | 11.1 / 11.2 |
 | 2026-03-13 | 11.1 workflow graph artifact + 11.2 event snapshot/replay | `scripts/claw.py`, `_system/engine/event_log.py`, `_system/contracts/workflow_graph.schema.json`, `tests/workflow_graph_artifact_test.sh`, `tests/event_replay_test.sh`, `tests/openclaw_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/BACKLOG.md`, `docs/STATUS.md` | `bash tests/workflow_graph_artifact_test.sh`; `bash tests/event_replay_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/task_graph_lint_test.sh`; `bash tests/workflow_contract_test.sh`; `bash tests/run_all.sh` | ✅ added portable `workflow_graph.json`, append-only `events.jsonl` + `event_snapshot.json`, `claw workflow-graph`, `openclaw replay-events`, and event wiring in enqueue/worker/wake; replay reuses existing delivery status names (`pending_delivery`, `delivered`) instead of inventing aliases | live status feed |
 | 2026-03-14 | TASK-007 task graph lint as mandatory pre-orchestrate gate | `scripts/claw.py`, `_system/engine/error_codes.py`, `tests/task_graph_lint_test.sh`, `projects/_claw-dev/tasks/TASK-007.md`, `docs/STATUS.md` | `bash tests/task_graph_lint_test.sh`; `bash tests/run_all.sh` | ✅ added `claw task-graph-lint` with `blocking_count`/`warning_count`, warning-only file-overlap detection, `unknown_dependency` abort in `claw orchestrate`, and ready-task filtering that skips overlapping specs; assumptions: overlap is inferred from backticked file paths in specs and any truthy `shared_files` front matter allows shared access | TASK-008 |
+| 2026-03-14 | TASK-006 WORKFLOW.md enforcement in orchestrate + launch-plan + workflow-validate | `scripts/claw.py`, `tests/workflow_enforcement_test.sh`, `tests/run_all.sh`, `projects/_claw-dev/tasks/TASK-006.md` | `bash tests/workflow_enforcement_test.sh`; `bash tests/run_all.sh` | ✅ `allowed_agents` gate in `cmd_orchestrate` (reason_code: contract_violation); `scope_warnings` in `launch-plan` output; `claw workflow-validate` standalone command; TASK-001 stale status fixed | TASK-008 |
