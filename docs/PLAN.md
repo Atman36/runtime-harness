@@ -420,6 +420,13 @@ claw/
 - **Тесты + selective merge — лучшая связка для двухагентного режима.** Codex может закрывать runtime slice, Claude — narrative/docs slice, а оркестратор сводит их только после `run_all.sh` и ручной проверки конфликтных документов.
 - **Для непрерывного цикла недостаточно просто “после run запускать reviewer”.** Нужны ещё task selector, review gate, decision engine, queue chaining, stop-conditions и видимость состояния цикла — иначе получится бесконечный шум, а не orchestration.
 
+### Инсайты после запуска двух Claude-оркестраторов по `.local/symphony-ideas.md` и `.local/dify-ideas.md` (сессия 2026-03-13)
+- **Оба агента выбрали разумные first slices**: из Symphony — typed `WORKFLOW.md` loader, из Dify — typed `TriggerEnvelope` для `openclaw enqueue`. Значит, сами заметки в `.local/*-ideas.md` достаточно конкретны для agent-driven decomposition.
+- **Оба агента одинаково промахнулись по project path**: создали `projects/claw-dev/` вместо существующего `projects/_claw-dev/`. Это не случайный баг одной ветки, а системная неоднозначность naming convention. Оркестратор должен явно фиксировать target project slug/path в prompt и/или валидировать, что новые task/spec артефакты кладутся только в разрешённый проект.
+- **Автогенерация project scaffold агентом опасна даже при хорошем кодовом результате.** Оба прогона принесли полезный engine/contracts код, но попутно изменили shape репозитория и даже расслабили тест (`project_count >= 2`) под свой accidental scaffold. Вывод: scaffold-изменения должны считаться sensitive и требовать отдельного подтверждения/правила.
+- **Summary агента нельзя считать доказательством использования orchestration path.** В одном отчёте `launch-plan` был указан в подозрительном формате; проверять надо по реальным командам, артефактам run dir и diff, а не по финальному рассказу.
+- **Нужен orchestration guardrail:** перед коммитом агент должен пройти простую проверку: “не создал ли я новый `projects/<slug>` вместо согласованного project root; не ослабил ли я тесты только ради нового scaffold”. Это cheap check, который сэкономит ручной review.
+
 ---
 
 ## Что улучшить в проекте

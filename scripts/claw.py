@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from _system.engine import FileQueue, QueueEmpty, build_agent_command, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
+from _system.engine.error_codes import build_error_envelope  # noqa: E402
+from _system.engine.workflow_contract import contract_summary, load_workflow_contract  # noqa: E402
 from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
 from generate_review_batch import POLICY_PATH, classify_run, generate_batches, load_policy, load_run  # noqa: E402
 from hooklib import dispatch_hook_file, iter_hook_files, trim_text  # noqa: E402
@@ -1011,6 +1014,107 @@ def refresh_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> d
     return snapshot
 
 
+TASK_SNAPSHOT_FILE = "tasks_snapshot.json"
+
+
+def build_task_snapshot(project_root: Path) -> dict:
+    """Build a structural snapshot of the task graph for lint and selector use."""
+    records = collect_task_records(project_root)
+    tasks = [
+        {
+            "task_id": r["task_id"],
+            "title": r["title"],
+            "status": r["status"],
+            "priority": r["priority"],
+            "dependencies": r["dependencies"],
+            "dependency_blockers": r["dependency_blockers"],
+            "preferred_agent": r["preferred_agent"],
+            "needs_review": r["needs_review"],
+            "ready": r["ready"],
+            "active": r["active"],
+            "task_path": r["task_path_rel"],
+        }
+        for r in records
+    ]
+    canonical = json.dumps(tasks, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    checksum = hashlib.sha256(canonical.encode()).hexdigest()
+    return {
+        "snapshot_version": 1,
+        "project": project_root.name,
+        "updated_at": utc_now(),
+        "task_count": len(tasks),
+        "tasks": tasks,
+        "checksum": checksum,
+    }
+
+
+def refresh_task_snapshot(project_root: Path) -> dict:
+    """Build and atomically write the task snapshot to state/tasks_snapshot.json."""
+    snapshot = build_task_snapshot(project_root)
+    write_json_atomic(project_root / "state" / TASK_SNAPSHOT_FILE, snapshot)
+    return snapshot
+
+
+def detect_task_cycles(records: list[dict]) -> list[list[str]]:
+    """Return list of cycle paths detected in the dependency graph.
+
+    Each cycle is a list of task_ids forming the loop (last element repeats first).
+    Handles disconnected graphs correctly.
+    """
+    graph: dict[str, list[str]] = {r["task_id"]: r["dependencies"] for r in records}
+    all_ids = set(graph)
+    color: dict[str, str] = {}  # absent=white, grey=in-progress, black=done
+    cycles: list[list[str]] = []
+
+    def dfs(node: str, path: list[str]) -> None:
+        if color.get(node) == "black":
+            return
+        if color.get(node) == "grey":
+            loop_start = path.index(node)
+            cycles.append(path[loop_start:] + [node])
+            return
+        color[node] = "grey"
+        for dep in graph.get(node, []):
+            if dep in all_ids:
+                dfs(dep, path + [node])
+        color[node] = "black"
+
+    for task_id in sorted(all_ids):
+        if task_id not in color:
+            dfs(task_id, [])
+
+    return cycles
+
+
+def lint_task_graph(project_root: Path) -> list[dict]:
+    """Lint the task dependency graph. Return list of issue dicts.
+
+    Each issue has keys: code, task_id, message.
+    """
+    records = collect_task_records(project_root)
+    all_ids = {r["task_id"] for r in records}
+    issues: list[dict] = []
+
+    for r in records:
+        for dep in r["dependencies"]:
+            if dep not in all_ids:
+                issues.append({
+                    "code": "unknown_dependency",
+                    "task_id": r["task_id"],
+                    "message": f"Task {r['task_id']} depends on unknown task {dep!r}",
+                })
+
+    for cycle in detect_task_cycles(records):
+        cycle_str = " -> ".join(cycle)
+        issues.append({
+            "code": "task_graph_cycle",
+            "task_id": cycle[0],
+            "message": f"Dependency cycle detected: {cycle_str}",
+        })
+
+    return issues
+
+
 def generate_review_batches_with_policy(project_root: Path, *, dry_run: bool, capture_stdout: bool = False) -> list[dict]:
     try:
         policy = load_policy(POLICY_PATH)
@@ -1572,6 +1676,25 @@ def cmd_resolve_approval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_snapshot(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    snapshot = refresh_task_snapshot(project_root)
+    print(json.dumps(snapshot, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_task_lint(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    issues = lint_task_graph(project_root)
+    payload = {
+        "project": project_root.name,
+        "issue_count": len(issues),
+        "issues": issues,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 1 if issues else 0
+
+
 def cmd_orchestrate(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     max_steps = max(1, int(args.max_steps))
@@ -1580,6 +1703,17 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
     accepted_runs: list[str] = []
     last_status = "idle"
     budget_state = load_orchestration_state(project_root)
+
+    # Load workflow contract (optional — missing contract is not an error)
+    workflow_contract = load_workflow_contract(project_root)
+
+    # Refresh task snapshot and abort if a dependency cycle is detected
+    refresh_task_snapshot(project_root)
+    graph_issues = lint_task_graph(project_root)
+    cycle_issues = [i for i in graph_issues if i["code"] == "task_graph_cycle"]
+    if cycle_issues:
+        _openclaw_error(cycle_issues[0]["message"], "task_graph_cycle")
+        return 1
 
     while steps < max_steps:
         dashboard = build_project_dashboard(project_root, recent_limit=args.recent, ready_limit=args.ready_limit)
@@ -1627,8 +1761,17 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
             last_status = "failure_budget_exhausted" if budget_state["failure_budget_exhausted"] else "awaiting_approval"
             break
 
+    _STATUS_REASON_CODE: dict[str, str | None] = {
+        "idle": "queue_empty",
+        "awaiting_approval": "approval_pending",
+        "awaiting_review": "review_pending",
+        "failure_budget_exhausted": "failure_budget_exhausted",
+        "error": "ERROR",
+        "accepted": None,
+    }
     payload = {
         "status": last_status,
+        "reason_code": _STATUS_REASON_CODE.get(last_status),
         "project": project_root.name,
         "steps": steps,
         "accepted_runs": accepted_runs,
@@ -1644,6 +1787,8 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
             }
             for task in select_ready_tasks(project_root, limit=args.ready_limit)
         ],
+        "task_graph_issues": graph_issues,
+        "contract": contract_summary(workflow_contract),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if last_status != "error" else 1
@@ -1792,8 +1937,8 @@ def cmd_launch_plan(args: argparse.Namespace) -> int:
 
 
 def _openclaw_error(message: str, code: str = "ERROR") -> None:
-    """Write a JSON error to stderr."""
-    json.dump({"error": message, "code": code}, sys.stderr, ensure_ascii=False)
+    """Write a structured JSON error envelope to stderr."""
+    json.dump(build_error_envelope(code, message), sys.stderr, ensure_ascii=False)
     sys.stderr.write("\n")
 
 
@@ -1825,9 +1970,29 @@ def cmd_openclaw_status(args: argparse.Namespace) -> int:
             "runs": snapshot["runs"],
             "reviews": snapshot["reviews"],
         },
+        "contract": contract_summary(load_workflow_contract(project_root)),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+_VALID_TRIGGER_TYPES = {"manual", "schedule", "webhook"}
+
+
+def _parse_trigger_envelope(trigger_json: str) -> tuple[dict, str]:
+    """Parse and minimally validate a trigger envelope JSON string."""
+    try:
+        envelope = json.loads(trigger_json)
+    except json.JSONDecodeError as exc:
+        return {}, f"trigger-json is not valid JSON: {exc}"
+    if not isinstance(envelope, dict):
+        return {}, "trigger-json must be a JSON object"
+    trigger_type = envelope.get("trigger_type")
+    if not trigger_type:
+        return {}, "trigger-json missing required field 'trigger_type'"
+    if trigger_type not in _VALID_TRIGGER_TYPES:
+        return {}, f"trigger_type {trigger_type!r} not in {sorted(_VALID_TRIGGER_TYPES)}"
+    return envelope, ""
 
 
 def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
@@ -1836,6 +2001,14 @@ def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         _openclaw_error(str(exc), "NOT_FOUND")
         return 1
+
+    trigger_envelope: dict = {}
+    trigger_json_raw: str = getattr(args, "trigger_json", None) or ""
+    if trigger_json_raw:
+        trigger_envelope, parse_err = _parse_trigger_envelope(trigger_json_raw)
+        if parse_err:
+            _openclaw_error(parse_err, "TRIGGER_INVALID")
+            return 1
 
     task_path = args.task_path
     try:
@@ -1852,6 +2025,14 @@ def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
 
     run_id = payload["job_id"]
     run_path = payload["run_path"]
+
+    if trigger_envelope:
+        try:
+            trigger_path = run_dir / "trigger.json"
+            trigger_path.write_text(json.dumps(trigger_envelope, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            _openclaw_error(f"Failed to write trigger.json: {exc}", "TRIGGER_WRITE_FAILED")
+            return 1
 
     # Read agent and workspace_mode from job.json
     agent = ""
@@ -1886,6 +2067,13 @@ def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
         "workspace_mode": workspace_mode,
         "preview": preview,
     }
+    if trigger_envelope:
+        result["trigger"] = {
+            "trigger_type": trigger_envelope.get("trigger_type"),
+            "triggered_by": trigger_envelope.get("triggered_by"),
+            "idempotency_key": trigger_envelope.get("idempotency_key"),
+            "reason_code": trigger_envelope.get("reason_code"),
+        }
     refresh_metrics_snapshot(project_root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -2040,9 +2228,12 @@ def cmd_openclaw_wake(args: argparse.Namespace) -> int:
             reconcile_outcomes.append(dispatch_hook_file(hook_path))
 
     after_hooks = hook_counts(project_root)
+    all_outcomes = dispatch_outcomes + reconcile_outcomes
+    has_dispatch_failure = any(o.get("status") == "failed" for o in all_outcomes)
     payload = {
         "project": project_root.name,
         "mode": args.mode,
+        "reason_code": "hook_dispatch_failed" if has_dispatch_failure else None,
         "schedule": {
             "interval_seconds": 900,
             "kind": "cron" if args.mode == "cron" else "event",
@@ -2153,6 +2344,14 @@ def build_parser() -> argparse.ArgumentParser:
     orchestrate.add_argument("--ready-limit", type=int, default=3)
     orchestrate.set_defaults(func=cmd_orchestrate)
 
+    task_snapshot = subcommands.add_parser("task-snapshot", help="Generate and write task graph snapshot")
+    task_snapshot.add_argument("project_root")
+    task_snapshot.set_defaults(func=cmd_task_snapshot)
+
+    task_lint = subcommands.add_parser("task-lint", help="Lint the task dependency graph for cycles and invalid refs")
+    task_lint.add_argument("project_root")
+    task_lint.set_defaults(func=cmd_task_lint)
+
     launch_plan = subcommands.add_parser("launch-plan", help="Preview execution plan for a task without running it")
     launch_plan.add_argument("task_path")
     launch_plan.set_defaults(func=cmd_launch_plan)
@@ -2175,6 +2374,16 @@ def build_parser() -> argparse.ArgumentParser:
     oc_enqueue = openclaw_sub.add_parser("enqueue", help="Build a run and enqueue it, returning JSON")
     oc_enqueue.add_argument("project_path")
     oc_enqueue.add_argument("task_path")
+    oc_enqueue.add_argument(
+        "--trigger-json",
+        metavar="JSON",
+        default=None,
+        help=(
+            "Optional typed trigger envelope as a JSON string "
+            "(trigger_type: manual|schedule|webhook). "
+            "Written as trigger.json alongside job.json in the run directory."
+        ),
+    )
     oc_enqueue.set_defaults(func=cmd_openclaw_enqueue)
 
     oc_review_batch = openclaw_sub.add_parser("review-batch", help="Generate review batches and return JSON summary")

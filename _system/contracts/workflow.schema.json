@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Claw Workflow Contract",
+  "description": "Per-project workflow policy contract for claw orchestration",
+  "type": "object",
+  "required": ["contract_version", "project", "approval_gates", "retry_policy"],
+  "properties": {
+    "contract_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version; must be 1"
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Project slug matching the project directory name"
+    },
+    "approval_gates": {
+      "type": "object",
+      "required": ["require_human_approval_on_failure"],
+      "properties": {
+        "require_human_approval_on_failure": {
+          "type": "boolean",
+          "description": "If true, orchestrate stops and asks for approval after failure_budget is exhausted"
+        },
+        "require_approval_before_first_run": {
+          "type": "boolean",
+          "description": "If true, the first run of any task requires prior human approval"
+        }
+      },
+      "additionalProperties": false
+    },
+    "retry_policy": {
+      "type": "object",
+      "required": ["failure_budget"],
+      "properties": {
+        "failure_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Number of consecutive failures before asking human"
+        },
+        "backoff_base_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Base backoff in seconds between retries"
+        },
+        "backoff_max_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum backoff cap in seconds"
+        }
+      },
+      "additionalProperties": false
+    },
+    "timeout_policy": {
+      "type": "object",
+      "properties": {
+        "worker_lease_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "description": "How long a worker may hold a job lease before it is reclaimed"
+        },
+        "run_timeout_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "description": "Maximum wall-clock time for a single agent run"
+        }
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "edit_scope": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Directories the agent is allowed to modify"
+        },
+        "allowed_agents": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["claude", "codex", "auto"]},
+          "description": "Agents allowed to run tasks in this project"
+        }
+      },
+      "additionalProperties": false
+    },
+    "notes": {
+      "type": "string",
+      "description": "Human-readable notes about this contract"
+    }
+  },
+  "additionalProperties": false
+}

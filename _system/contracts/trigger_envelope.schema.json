@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:claw:trigger_envelope.schema.json",
+  "title": "TriggerEnvelope",
+  "description": "Typed container for external trigger data submitted to openclaw enqueue. Inspired by Dify TriggerData/ScheduleTriggerData/WebhookTriggerData pattern. Stored as trigger.json alongside job.json in the run directory.",
+  "type": "object",
+  "required": ["trigger_type"],
+  "additionalProperties": false,
+  "properties": {
+    "trigger_type": {
+      "type": "string",
+      "enum": ["manual", "schedule", "webhook"],
+      "description": "Source that initiated this run."
+    },
+    "triggered_by": {
+      "type": "string",
+      "description": "Agent, user, or service identity that submitted this trigger."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "Deduplication key. A re-submit with the same key for the same project/task should be a no-op (enforcement is a future concern; schema-only in this slice)."
+    },
+    "reason_code": {
+      "type": "string",
+      "description": "Machine-readable reason for the trigger, e.g. 'schedule_missed', 'webhook_push', 'manual_retry'."
+    },
+    "payload": {
+      "description": "Trigger-type-specific payload. Must match the subtype for the declared trigger_type.",
+      "oneOf": [
+        {"$ref": "#/$defs/manual_payload"},
+        {"$ref": "#/$defs/schedule_payload"},
+        {"$ref": "#/$defs/webhook_payload"}
+      ]
+    }
+  },
+  "$defs": {
+    "manual_payload": {
+      "title": "ManualPayload",
+      "description": "Empty payload for manual triggers.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "schedule_payload": {
+      "title": "SchedulePayload",
+      "description": "Payload for cron/scheduled triggers.",
+      "type": "object",
+      "required": ["scheduled_at"],
+      "additionalProperties": false,
+      "properties": {
+        "cron_expression": {
+          "type": "string",
+          "description": "The cron expression that fired this trigger, e.g. '*/15 * * * *'."
+        },
+        "scheduled_at": {
+          "type": "string",
+          "description": "ISO 8601 UTC timestamp when this run was scheduled to start."
+        }
+      }
+    },
+    "webhook_payload": {
+      "title": "WebhookPayload",
+      "description": "Payload for webhook-driven triggers.",
+      "type": "object",
+      "required": ["source", "event_name"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "External service that sent the webhook, e.g. 'github', 'linear', 'custom'."
+        },
+        "event_name": {
+          "type": "string",
+          "description": "Event name from the webhook, e.g. 'push', 'issue.created'."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "description": "Relevant HTTP headers from the webhook request."
+        },
+        "body": {
+          "type": "object",
+          "description": "Parsed webhook body (top-level keys only; nested values are opaque)."
+        }
+      }
+    }
+  }
+}

@@ -33,12 +33,18 @@ except ImportError:
     _HAS_JSONSCHEMA = False
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 CONTRACTS_DIR = REPO_ROOT / "_system" / "contracts"
 
 ARTIFACT_SCHEMAS = {
     "job.json": "job.schema.json",
     "result.json": "result.schema.json",
     "meta.json": "meta.schema.json",
+}
+
+OPTIONAL_ARTIFACT_SCHEMAS = {
+    "trigger.json": "trigger_envelope.schema.json",
 }
 
 QUEUE_SCHEMA = "queue_item.schema.json"
@@ -119,11 +125,12 @@ def _matches_type(data, t: str) -> bool:
 
 
 def validate_file(artifact_path: Path) -> list[str]:
-    schema_filename = ARTIFACT_SCHEMAS.get(artifact_path.name)
+    schema_filename = ARTIFACT_SCHEMAS.get(artifact_path.name) or OPTIONAL_ARTIFACT_SCHEMAS.get(artifact_path.name)
     if not schema_filename and artifact_path.suffix == '.json' and artifact_path.parent.name in QUEUE_STATE_DIRS:
         schema_filename = QUEUE_SCHEMA
     if not schema_filename:
-        return [f"No schema registered for '{artifact_path.name}' (expected one of: {', '.join(ARTIFACT_SCHEMAS)} or a queue item JSON)"]
+        known = ', '.join(list(ARTIFACT_SCHEMAS) + list(OPTIONAL_ARTIFACT_SCHEMAS))
+        return [f"No schema registered for '{artifact_path.name}' (expected one of: {known} or a queue item JSON)"]
 
     try:
         schema = load_schema(schema_filename)
@@ -149,6 +156,10 @@ def validate_run_dir(run_dir: Path) -> dict[str, list[str]]:
             results[artifact_name] = validate_file(artifact_path)
         else:
             results[artifact_name] = [f"File not found: {artifact_path}"]
+    for artifact_name in OPTIONAL_ARTIFACT_SCHEMAS:
+        artifact_path = run_dir / artifact_name
+        if artifact_path.is_file():
+            results[artifact_name] = validate_file(artifact_path)
     return results
 
 
@@ -197,6 +208,7 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--project", metavar="PROJECT_ROOT", help="Validate all runs in a project directory")
     group.add_argument("--all", action="store_true", help="Validate all runs in all projects under this repo")
+    group.add_argument("--workflow", metavar="PROJECT_ROOT", help="Validate the workflow contract for a project")
     parser.add_argument("path", nargs="?", help="Run directory or artifact file to validate")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress passing artifact lines")
     args = parser.parse_args()
@@ -207,7 +219,25 @@ def main() -> int:
 
     total_errors = 0
 
-    if args.all:
+    if args.workflow:
+        from _system.engine.workflow_contract import load_workflow_contract, validate_workflow_contract
+        project_root = Path(args.workflow).expanduser().resolve()
+        contract = load_workflow_contract(project_root)
+        if contract is None:
+            if not args.quiet:
+                print(f"No workflow contract found at {project_root / 'docs' / 'WORKFLOW.md'}")
+            return 0
+        errors = validate_workflow_contract(contract)
+        if errors:
+            print(f"Workflow contract errors ({len(errors)}):")
+            for e in errors:
+                print(f"  - {e}")
+            return 1
+        if not args.quiet:
+            print("Workflow contract is valid.")
+        return 0
+
+    elif args.all:
         projects_root = REPO_ROOT / "projects"
         if not projects_root.is_dir():
             print(f"Projects directory not found: {projects_root}", file=sys.stderr)
