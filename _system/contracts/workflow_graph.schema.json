@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:claw:workflow_graph.schema.json",
+  "title": "Claw Workflow Graph Artifact",
+  "type": "object",
+  "required": [
+    "artifact_version",
+    "project",
+    "generated_at",
+    "node_count",
+    "edge_count",
+    "nodes",
+    "edges",
+    "checksum"
+  ],
+  "properties": {
+    "artifact_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "project": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "node_count": {
+      "type": "integer"
+    },
+    "edge_count": {
+      "type": "integer"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "node_id",
+          "node_type",
+          "title",
+          "status",
+          "priority",
+          "preferred_agent",
+          "selected_agent",
+          "needs_review",
+          "ready",
+          "active",
+          "dependencies",
+          "dependency_blockers",
+          "task_path"
+        ],
+        "properties": {
+          "node_id": {"type": "string"},
+          "node_type": {"type": "string", "const": "task"},
+          "title": {"type": "string"},
+          "status": {"type": "string"},
+          "priority": {"type": "string"},
+          "preferred_agent": {"type": "string"},
+          "selected_agent": {"type": "string"},
+          "needs_review": {"type": "boolean"},
+          "ready": {"type": "boolean"},
+          "active": {"type": "boolean"},
+          "dependencies": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "dependency_blockers": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "task_path": {"type": "string"},
+          "parse_error": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "edge_type"],
+        "properties": {
+          "from": {"type": "string"},
+          "to": {"type": "string"},
+          "edge_type": {"type": "string", "const": "depends_on"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "checksum": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

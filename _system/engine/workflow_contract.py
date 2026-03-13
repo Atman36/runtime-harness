@@ -165,6 +165,9 @@ def load_workflow_contract(project_root: Path) -> WorkflowContract:
     except (TypeError, ValueError) as exc:
         raise WorkflowLoadError(f"contract_version must be an integer, got {contract_version_raw!r}") from exc
 
+    if contract_version != 1:
+        raise WorkflowLoadError(f"contract_version must be 1, got {contract_version!r}")
+
     project = str(fm.get("project") or project_root.name).strip()
     return WorkflowContract(
         contract_version=contract_version,
@@ -181,6 +184,8 @@ def validate_workflow_contract(contract: WorkflowContract | dict[str, Any] | Non
     if contract is None:
         return []
     if isinstance(contract, WorkflowContract):
+        if contract.contract_version != 1:
+            return [f"contract_version must be 1, got {contract.contract_version!r}"]
         return []
     if is_dataclass(contract):
         return []

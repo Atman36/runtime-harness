@@ -26,6 +26,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from _system.engine import FileQueue, QueueEmpty, build_agent_command, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
+from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
 from _system.engine.error_codes import build_error_envelope  # noqa: E402
 from _system.engine.guardrails import run_guardrails  # noqa: E402
 from _system.engine.workflow_contract import contract_summary, load_workflow_contract  # noqa: E402
@@ -552,7 +553,23 @@ def collect_task_records(project_root: Path) -> list[dict]:
     records: list[dict] = []
 
     for task_path in sorted(tasks_root.glob("TASK-*.md")):
-        front_matter, _body = read_front_matter(task_path)
+        try:
+            front_matter, _body = read_front_matter(task_path)
+        except yaml.YAMLError as exc:
+            records.append({
+                "task_id": task_path.stem,
+                "title": "",
+                "task_path": task_path,
+                "task_path_rel": task_path.relative_to(project_root).as_posix(),
+                "status": "todo",
+                "priority": "",
+                "dependencies": [],
+                "preferred_agent": "auto",
+                "needs_review": False,
+                "active": False,
+                "_parse_error": str(exc),
+            })
+            continue
         task_id = str(front_matter.get("id") or task_path.stem).strip()
         status = str(front_matter.get("status") or "todo").strip().lower()
         dependencies = parse_task_dependencies(front_matter)
@@ -573,6 +590,11 @@ def collect_task_records(project_root: Path) -> list[dict]:
 
     done_ids = {record["task_id"] for record in records if record["status"] in TASK_DONE_STATUSES}
     for record in records:
+        if record.get("_parse_error"):
+            record["dependency_blockers"] = []
+            record["ready"] = False
+            record["selected_agent"] = "auto"
+            continue
         status = record["status"]
         dependency_blockers = [item for item in record["dependencies"] if item not in done_ids]
         is_ready = (
@@ -1060,11 +1082,12 @@ def refresh_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> d
 
 
 TASK_SNAPSHOT_FILE = "tasks_snapshot.json"
+WORKFLOW_GRAPH_FILE = "workflow_graph.json"
 
 
-def build_task_snapshot(project_root: Path) -> dict:
+def build_task_snapshot(project_root: Path, *, records: list[dict] | None = None) -> dict:
     """Build a structural snapshot of the task graph for lint and selector use."""
-    records = collect_task_records(project_root)
+    records = records if records is not None else collect_task_records(project_root)
     tasks = [
         {
             "task_id": r["task_id"],
@@ -1093,10 +1116,60 @@ def build_task_snapshot(project_root: Path) -> dict:
     }
 
 
+def build_workflow_graph(project_root: Path, *, records: list[dict] | None = None) -> dict:
+    records = records if records is not None else collect_task_records(project_root)
+    nodes = []
+    for record in records:
+        node = {
+            "node_id": record["task_id"],
+            "node_type": "task",
+            "title": record["title"],
+            "status": record["status"],
+            "priority": record["priority"],
+            "preferred_agent": record["preferred_agent"],
+            "selected_agent": record.get("selected_agent") or record["preferred_agent"],
+            "needs_review": bool(record["needs_review"]),
+            "ready": bool(record["ready"]),
+            "active": bool(record["active"]),
+            "dependencies": list(record["dependencies"]),
+            "dependency_blockers": list(record["dependency_blockers"]),
+            "task_path": record["task_path_rel"],
+        }
+        if record.get("_parse_error"):
+            node["parse_error"] = str(record["_parse_error"])
+        nodes.append(node)
+
+    edges = [
+        {"from": record["task_id"], "to": dependency, "edge_type": "depends_on"}
+        for record in records
+        for dependency in record["dependencies"]
+    ]
+    canonical = json.dumps({"nodes": nodes, "edges": edges}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    checksum = hashlib.sha256(canonical.encode()).hexdigest()
+    return {
+        "artifact_version": 1,
+        "project": project_root.name,
+        "generated_at": utc_now(),
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "nodes": nodes,
+        "edges": edges,
+        "checksum": checksum,
+    }
+
+
+def refresh_workflow_graph(project_root: Path, *, records: list[dict] | None = None) -> dict:
+    artifact = build_workflow_graph(project_root, records=records)
+    write_json_atomic(project_root / "state" / WORKFLOW_GRAPH_FILE, artifact)
+    return artifact
+
+
 def refresh_task_snapshot(project_root: Path) -> dict:
     """Build and atomically write the task snapshot to state/tasks_snapshot.json."""
-    snapshot = build_task_snapshot(project_root)
+    records = collect_task_records(project_root)
+    snapshot = build_task_snapshot(project_root, records=records)
     write_json_atomic(project_root / "state" / TASK_SNAPSHOT_FILE, snapshot)
+    refresh_workflow_graph(project_root, records=records)
     return snapshot
 
 
@@ -1141,6 +1214,16 @@ def lint_task_graph(project_root: Path) -> list[dict]:
     issues: list[dict] = []
 
     for r in records:
+        if r.get("_parse_error"):
+            issues.append({
+                "code": "task_parse_failed",
+                "task_id": r["task_id"],
+                "message": f"Failed to parse front matter for {r['task_id']}: {r['_parse_error']}",
+            })
+
+    for r in records:
+        if r.get("_parse_error"):
+            continue
         for dep in r["dependencies"]:
             if dep not in all_ids:
                 issues.append({
@@ -1438,9 +1521,30 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=args.execute)
     project_root = run_dir.parent.parent.parent
+    append_run_event(
+        run_dir,
+        "run_created",
+        project_root=project_root,
+        payload={
+            "run_status": "created",
+            "source": "cmd.run",
+            "task_path": str(args.task_path),
+            "executed": bool(args.execute),
+        },
+    )
     if args.enqueue:
         queue_state = "awaiting_approval" if args.awaiting_approval else "pending"
         payload = enqueue_run(run_dir, state=queue_state)
+        append_run_event(
+            run_dir,
+            "run_enqueued",
+            project_root=project_root,
+            payload={
+                "queue_state": queue_state,
+                "run_status": "queued",
+                "source": "cmd.run",
+            },
+        )
         refresh_metrics_snapshot(project_root)
         print(
             json.dumps(
@@ -1449,6 +1553,19 @@ def cmd_run(args: argparse.Namespace) -> int:
             )
         )
         return 0
+    if args.execute:
+        result, _result_error = load_json_status(run_dir / "result.json")
+        append_run_event(
+            run_dir,
+            "run_finished",
+            project_root=project_root,
+            payload={
+                "queue_state": "done",
+                "run_status": result.get("status") or "success",
+                "exit_code": 0 if (result.get("status") or "success") == "success" else 1,
+                "source": "cmd.run",
+            },
+        )
     refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "created", "run_dir": str(run_dir)}, ensure_ascii=False))
     return 0
@@ -1458,7 +1575,20 @@ def cmd_enqueue(args: argparse.Namespace) -> int:
     queue_state = "awaiting_approval" if args.awaiting_approval else "pending"
     run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=False)
     payload = enqueue_run(run_dir, state=queue_state)
-    refresh_metrics_snapshot(run_dir.parent.parent.parent)
+    project_root = run_dir.parent.parent.parent
+    append_run_event(
+        run_dir,
+        "run_created",
+        project_root=project_root,
+        payload={"run_status": "created", "source": "cmd.enqueue", "task_path": str(args.task_path)},
+    )
+    append_run_event(
+        run_dir,
+        "run_enqueued",
+        project_root=project_root,
+        payload={"queue_state": queue_state, "run_status": "queued", "source": "cmd.enqueue"},
+    )
+    refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "queued", "job_id": payload["job_id"], "run_path": payload["run_path"], "queue_state": queue_state}, ensure_ascii=False))
     return 0
 
@@ -1494,6 +1624,17 @@ def cmd_worker(args: argparse.Namespace) -> int:
         claimed_count += 1
         payload = queue.read_claimed(claimed)
         run_dir = (project_root / payload["run_path"]).resolve()
+        append_run_event(
+            run_dir,
+            "job_claimed",
+            project_root=project_root,
+            payload={
+                "queue_state": "running",
+                "run_status": "running",
+                "attempt_count": claimed.attempt_count,
+                "worker_id": claimed.worker_id,
+            },
+        )
         completed, heartbeat_warnings = run_job_with_lease_heartbeat(
             queue,
             claimed,
@@ -1542,6 +1683,46 @@ def cmd_worker(args: argparse.Namespace) -> int:
                     error=error_text,
                 )
                 queue_state = "dead_letter"
+
+        result_payload, _result_error = load_json_status(run_dir / "result.json")
+        meta_payload, _meta_error = load_json_status(run_dir / "meta.json")
+        delivery_snapshot = resolve_run_delivery(project_root, run_dir, meta=meta_payload, result=result_payload)
+        append_run_event(
+            run_dir,
+            "run_finished",
+            project_root=project_root,
+            payload={
+                "queue_state": "pending" if queue_state == "retried" else queue_state,
+                "result_status": result_status,
+                "run_status": result_status,
+                "exit_code": completed.returncode,
+                "delivery_status": delivery_snapshot.get("status"),
+            },
+        )
+        if queue_state == "retried":
+            append_run_event(
+                run_dir,
+                "job_retried",
+                project_root=project_root,
+                payload={
+                    "queue_state": "pending",
+                    "result_status": result_status,
+                    "attempt_count": claimed.attempt_count,
+                    "next_retry_at": next_retry_at,
+                    "retry_backoff_seconds": retry_backoff_seconds,
+                },
+            )
+        elif queue_state == "dead_letter":
+            append_run_event(
+                run_dir,
+                "job_dead_letter",
+                project_root=project_root,
+                payload={
+                    "queue_state": "dead_letter",
+                    "result_status": result_status,
+                    "attempt_count": claimed.attempt_count,
+                },
+            )
 
         if review_policy is not None:
             maybe_trigger_review(project_root, run_dir, result_status, review_policy)
@@ -1599,6 +1780,14 @@ def cmd_approve(args: argparse.Namespace) -> int:
     if not queue.approve(args.run_id):
         print(json.dumps({"status": "not_found", "job_id": args.run_id}, ensure_ascii=False))
         return 1
+    run_dir = find_run_dir(project_root, args.run_id)
+    if run_dir is not None:
+        append_run_event(
+            run_dir,
+            "approval_granted",
+            project_root=project_root,
+            payload={"queue_state": "pending", "run_status": "queued"},
+        )
     refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "approved", "job_id": args.run_id, "queue_state": "pending"}, ensure_ascii=False))
     return 0
@@ -1611,6 +1800,15 @@ def cmd_reclaim(args: argparse.Namespace) -> int:
     refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "reclaimed", "reclaimed": reclaimed, "queue_state": "pending"}, ensure_ascii=False))
     return 0
+
+
+def resolve_run_dir(project_root: Path, run_id_or_path: str) -> Path | None:
+    candidate = Path(run_id_or_path)
+    if candidate.is_absolute() and candidate.is_dir():
+        return candidate.resolve()
+    if (project_root / run_id_or_path).is_dir():
+        return (project_root / run_id_or_path).resolve()
+    return find_run_dir(project_root, run_id_or_path)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -1753,6 +1951,13 @@ def cmd_task_snapshot(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     snapshot = refresh_task_snapshot(project_root)
     print(json.dumps(snapshot, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_workflow_graph(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    artifact = refresh_workflow_graph(project_root)
+    print(json.dumps(artifact, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -2201,6 +2406,28 @@ def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
             "idempotency_key": trigger_envelope.get("idempotency_key"),
             "reason_code": trigger_envelope.get("reason_code"),
         }
+    append_run_event(
+        run_dir,
+        "run_created",
+        project_root=project_root,
+        payload={
+            "run_status": "created",
+            "source": "openclaw.enqueue",
+            "task_path": str(task_path),
+            "agent": agent,
+        },
+    )
+    append_run_event(
+        run_dir,
+        "run_enqueued",
+        project_root=project_root,
+        payload={
+            "queue_state": "pending",
+            "run_status": "queued",
+            "source": "openclaw.enqueue",
+            "trigger_type": trigger_envelope.get("trigger_type") if trigger_envelope else None,
+        },
+    )
     refresh_metrics_snapshot(project_root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -2250,20 +2477,9 @@ def cmd_openclaw_summary(args: argparse.Namespace) -> int:
         _openclaw_error(str(exc), "NOT_FOUND")
         return 1
 
-    run_id_or_path = args.run_id_or_path
-
-    # Resolve run_dir: could be a run_id like RUN-0005 or a path
-    run_dir: Path | None = None
-    candidate = Path(run_id_or_path)
-    if candidate.is_absolute() and candidate.is_dir():
-        run_dir = candidate
-    elif (project_root / run_id_or_path).is_dir():
-        run_dir = (project_root / run_id_or_path).resolve()
-    else:
-        run_dir = find_run_dir(project_root, run_id_or_path)
-
+    run_dir = resolve_run_dir(project_root, args.run_id_or_path)
     if run_dir is None:
-        _openclaw_error(f"Run not found: {run_id_or_path}", "NOT_FOUND")
+        _openclaw_error(f"Run not found: {args.run_id_or_path}", "NOT_FOUND")
         return 1
 
     try:
@@ -2309,6 +2525,31 @@ def cmd_openclaw_summary(args: argparse.Namespace) -> int:
         "hook": hook_status,
         "delivery": delivery,
         "report_path": report_path,
+        "event_snapshot": build_run_event_snapshot(project_root, run_dir),
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_replay_events(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+
+    run_dir = resolve_run_dir(project_root, args.run_id_or_path)
+    if run_dir is None:
+        _openclaw_error(f"Run not found: {args.run_id_or_path}", "NOT_FOUND")
+        return 1
+
+    events = load_run_events(run_dir)
+    payload = {
+        "project": project_root.name,
+        "run_id": run_dir.name,
+        "run_path": run_dir.relative_to(project_root).as_posix(),
+        "snapshot": build_run_event_snapshot(project_root, run_dir, events=events),
+        "events": events,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
@@ -2355,6 +2596,31 @@ def cmd_openclaw_wake(args: argparse.Namespace) -> int:
     after_hooks = hook_counts(project_root)
     all_outcomes = dispatch_outcomes + reconcile_outcomes
     has_dispatch_failure = any(o.get("status") == "failed" for o in all_outcomes)
+    for outcome in all_outcomes:
+        outcome_path = outcome.get("path")
+        if outcome_path is None:
+            continue
+        hook_path = Path(outcome_path)
+        try:
+            hook_payload = read_json(hook_path)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
+        run_dir = resolve_run_dir(project_root, str(hook_payload.get("run_id") or ""))
+        if run_dir is None:
+            continue
+        delivery = hook_payload.get("delivery") if isinstance(hook_payload.get("delivery"), dict) else {}
+        append_run_event(
+            run_dir,
+            "delivery_sent" if outcome.get("status") == "sent" else "delivery_failed",
+            project_root=project_root,
+            payload={
+                "delivery_status": "delivered" if outcome.get("status") == "sent" else "failed",
+                "attempt_count": int(delivery.get("attempt_count", 0)),
+                "hook_id": hook_payload.get("hook_id"),
+                "hook_status": outcome.get("status"),
+                "last_error": delivery.get("last_error"),
+            },
+        )
     callbacks = []
     for outcome in all_outcomes:
         if outcome.get("status") != "sent":
@@ -2516,6 +2782,10 @@ def build_parser() -> argparse.ArgumentParser:
     task_snapshot.add_argument("project_root")
     task_snapshot.set_defaults(func=cmd_task_snapshot)
 
+    workflow_graph = subcommands.add_parser("workflow-graph", help="Generate and write portable workflow graph artifact")
+    workflow_graph.add_argument("project_root")
+    workflow_graph.set_defaults(func=cmd_workflow_graph)
+
     task_lint = subcommands.add_parser("task-lint", help="Lint the task dependency graph for cycles and invalid refs")
     task_lint.add_argument("project_root")
     task_lint.set_defaults(func=cmd_task_lint)
@@ -2584,6 +2854,11 @@ def build_parser() -> argparse.ArgumentParser:
     oc_summary.add_argument("project_path")
     oc_summary.add_argument("run_id_or_path")
     oc_summary.set_defaults(func=cmd_openclaw_summary)
+
+    oc_replay_events = openclaw_sub.add_parser("replay-events", help="Replay append-only run events as JSON")
+    oc_replay_events.add_argument("project_path")
+    oc_replay_events.add_argument("run_id_or_path")
+    oc_replay_events.set_defaults(func=cmd_openclaw_replay_events)
 
     oc_callback = openclaw_sub.add_parser("callback", help="Convert hook payload from stdin into chat callback JSON")
     oc_callback.set_defaults(func=cmd_openclaw_callback)

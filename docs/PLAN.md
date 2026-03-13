@@ -299,7 +299,9 @@ claw/
 
 ## Следующие незавершённые задачи
 
-- _(нет — autonomy backlog закрыт)_
+- `TASK-002` — ✅ закрыт (2026-03-13): `task-lint` теперь эмитирует `task_parse_failed` вместо traceback; regression test добавлен
+- `TASK-003` — ✅ закрыт (2026-03-13): `contract_version != 1` теперь отклоняется loader и validator; regression tests добавлены
+- Следующие slices: `11.1` workflow graph artifact и `11.2` event snapshot + replay
 
 **Закрыто в текущей сессии:**
 - **9.1:** queue/job contract versioning + migration story → `docs/CONTRACT_VERSIONING.md`
@@ -439,6 +441,7 @@ claw/
 - **Нужен orchestration guardrail:** перед коммитом агент должен пройти простую проверку: “не создал ли я новый `projects/<slug>` вместо согласованного project root; не ослабил ли я тесты только ради нового scaffold”. Это cheap check, который сэкономит ручной review.
 - **Guardrail-check живёт на `edit_scope` из `docs/WORKFLOW.md`.** Если агентский slice сознательно расширяет файловую поверхность, а контракт не обновлён, standalone guardrail даст ложный `edit_scope_violation` даже при корректном diff. Для run-driven задач scope надо синхронизировать с реальным DoD до запуска, а не после review.
 - **Prompt-footer notify нельзя считать delivery contract.** Реальный сбой уже был: Codex успешно закончил run, но не выполнил финальную `openclaw system event ...` команду из prompt. Значит, обязательный completion signal должен жить в orchestrator-managed state/hooks, а не в памяти вложенного агента. Это вынесено в `TASK-011` / `SPEC-011`.
+- **2026-03-13: TASK-011 закрыт.** Теперь completed run пишет machine-verifiable `delivery` state в `result/meta`, а `claw openclaw status|summary` показывает `pending_delivery` до reconcile/wake. Практический вывод: агенту можно доверять implementation slice, но не финальный notify-step; завершённость должна определяться по runtime state, а не по footer-команде.
 
 ---
 
@@ -474,22 +477,20 @@ claw/
 
 ## Ближайшие шаги
 
-Все roadmap-задачи из текущего плана закрыты.
-
-Следующие изменения теперь относятся уже к post-v2 расширениям, а не к незавершённому базовому execution loop.
+Roadmap снова открыт уже после закрытия reopened regression slices `TASK-002` и `TASK-003`; post-v2 расширения можно добивать отдельными узкими implementation slices.
 
 ### Post-v2 slice из note review (2026-03-13)
 
-- **11.1 `workflow graph artifact`**
-  - цель: добавить переносимый graph contract как file artifact рядом с текущими task snapshots
-  - минимум: `nodes + edges`, stable schema/version, portable JSON artifact, golden/reference coverage
-  - не включать UI/canvas semantics
-- **11.2 `event snapshot + replay`**
-  - цель: заложить file-backed базу для live run status
-  - минимум: append-only run events artifact, snapshot builder, replay API/helper для `openclaw`
-  - не включать network transport/SSE до появления стабильного event layer
+- **11.1 `workflow graph artifact`** — ✅ сделано (2026-03-13)
+  - добавлен portable artifact `state/workflow_graph.json` с `nodes + edges`
+  - зафиксированы stable schema/version в `_system/contracts/workflow_graph.schema.json`
+  - добавлен CLI `claw workflow-graph` и regression coverage; `task-snapshot` теперь тоже refresh-ит graph artifact
+- **11.2 `event snapshot + replay`** — ✅ сделано (2026-03-13)
+  - добавлены append-only run events `events.jsonl` и derived `event_snapshot.json`
+  - добавлен replay helper `claw openclaw replay-events` и `event_snapshot` в `openclaw summary`
+  - enqueue / worker / wake теперь пишут event trail для live-status слоя
 
-Рекомендуемый порядок: `11.1` → `11.2` → `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
+Следующий порядок: `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
 
 ---
 

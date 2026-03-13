@@ -212,5 +212,61 @@ PYEOF
 [ "$result" = "ok" ] || fail "Test 8 (worker lease_seconds resolution): $result"
 pass "worker uses WORKFLOW.md lease_seconds; explicit CLI flag wins"
 
+# ── Test 9: contract_version: 2 raises WorkflowLoadError ─────────────────────
+cat > "$project_root/docs/WORKFLOW.md" <<'WEOF'
+---
+contract_version: 2
+project: "test-contract-project"
+approval_gates:
+  require_human_approval_on_failure: true
+retry_policy:
+  failure_budget: 3
+  backoff_base_seconds: 30
+  backoff_max_seconds: 300
+---
+WEOF
+
+result="$(cd "$workspace" && python3 - "$project_root" <<'PYEOF'
+import sys
+sys.path.insert(0, ".")
+from _system.engine.workflow_contract import load_workflow_contract, WorkflowLoadError
+from pathlib import Path
+try:
+    load_workflow_contract(Path(sys.argv[1]))
+    print("no_error")
+except WorkflowLoadError as e:
+    print("load_error")
+PYEOF
+)"
+[ "$result" = "load_error" ] || fail "Test 9 (contract_version=2 raises WorkflowLoadError): got $result"
+pass "contract_version: 2 raises WorkflowLoadError"
+
+# ── Test 10: validate_workflow_contract rejects version != 1 ─────────────────
+result="$(cd "$workspace" && python3 - <<'PYEOF'
+import sys
+sys.path.insert(0, ".")
+from _system.engine.workflow_contract import WorkflowContract, validate_workflow_contract
+from dataclasses import replace
+# Build a contract with wrong version by bypassing frozen dataclass
+import dataclasses
+bad_contract = WorkflowContract.__new__(WorkflowContract)
+object.__setattr__(bad_contract, "contract_version", 2)
+object.__setattr__(bad_contract, "project", "test")
+from _system.engine.workflow_contract import ApprovalGates, RetryPolicy, TimeoutPolicy, WorkflowScope
+object.__setattr__(bad_contract, "approval_gates", ApprovalGates())
+object.__setattr__(bad_contract, "retry_policy", RetryPolicy())
+object.__setattr__(bad_contract, "timeout_policy", TimeoutPolicy())
+object.__setattr__(bad_contract, "scope", WorkflowScope())
+object.__setattr__(bad_contract, "source", "test")
+errors = validate_workflow_contract(bad_contract)
+if errors and "contract_version" in errors[0]:
+    print("rejected")
+else:
+    print(f"accepted: {errors}")
+PYEOF
+)"
+[ "$result" = "rejected" ] || fail "Test 10 (validate_workflow_contract rejects version!=1): got $result"
+pass "validate_workflow_contract rejects contract_version != 1"
+
 echo ""
 echo "workflow_contract_test: all tests passed"

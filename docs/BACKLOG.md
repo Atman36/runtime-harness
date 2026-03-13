@@ -163,7 +163,7 @@ E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8
 
 | # | Задача | Зависит от | Phase | Параллельность |
 |---|--------|------------|-------|----------------|
-| 11.1 | Добавить переносимый `workflow graph artifact` (`nodes + edges`) как file-backed contract | v2 done | 11 | можно делать отдельно |
-| 11.2 | Добавить file-backed `event snapshot + replay` для live run state | 11.1 | 11 | после graph contract |
+| 11.1 | ✅ Добавить переносимый `workflow graph artifact` (`nodes + edges`) как file-backed contract | v2 done | 11 | выполнено 2026-03-13 |
+| 11.2 | ✅ Добавить file-backed `event snapshot + replay` для live run state | 11.1 | 11 | выполнено 2026-03-13 |
 
 **Замечание по порядку:** live status transport (`status --live`, SSE/feed) не начинать до появления стабильного event artifact/snapshot слоя.

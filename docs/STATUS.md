@@ -65,16 +65,18 @@
 - **Project control surface зафиксирован в документации**: описаны `docs/WORKFLOW.md`, `state/tasks_snapshot.json`, `claw task-lint` и structured `reason_code` diagnostics; demo-project получил валидный workflow contract
 - **OpenClaw completion bridge закрыт поверх file-backed hooks**: `CLAW_OPENCLAW_SYSTEM_EVENT_COMMAND` будит чат через `openclaw system event`, а `claw openclaw wake` умеет сам материализовать callback payload и переводить hook в `sent`
 - **`claw guardrail-check` добавлен как standalone drift gate**: `_system/engine/guardrails.py` ловит unauthorized `projects/<slug>/`, assert weakening и `edit_scope` violations по diff-файлу; `tests/guardrails_test.sh` держит crafted negative cases
+- **TASK-002 закрыт**: `collect_task_records()` теперь перехватывает `yaml.YAMLError` per-task и добавляет запись с `_parse_error`; `lint_task_graph()` эмитирует `task_parse_failed` вместо traceback; добавлен `tests/task_graph_lint_test.sh` (5 regression cases)
+- **TASK-003 закрыт**: `load_workflow_contract()` бросает `WorkflowLoadError` если `contract_version != 1`; `validate_workflow_contract()` проверяет версию для `WorkflowContract` instances; Tests 9–10 добавлены в `workflow_contract_test.sh`
 
 ## In Progress
 
-- `11.1 workflow graph artifact` — делегирован Codex, в main не принят: агент на первой попытке дошёл только до shell-теста без реализации, на второй попытке застрял в repeated read/planning loop без diff
-- `11.2 event snapshot + replay` — делегирован Claude, в main не принят: первая попытка не дала видимого diff, вторая оставила только partial event-log skeleton (`append_event` wiring + `event_log.py`) без CLI/test/commit
+- `live status feed` — следующий слой поверх `events.jsonl` / `event_snapshot.json`; transport/SSE пока сознательно не поднимались
+- переоценка `codex app-server runner` и `MCP provider layer` после стабилизации event-layer
 
 ## Next
 
-- перепоставить `11.1` более жёстким implementation prompt или выполнить через меньший task slice
-- перепоставить `11.2` с отдельным acceptance gate: сначала `events.jsonl` + `replay-events`, потом snapshot enrichment/live feed
+- использовать `event_snapshot` как source of truth для будущего `status --live` / feed transport
+- решить, нужен ли отдельный schema/validator слой для run events beyond shell regression coverage
 
 ---
 
@@ -174,3 +176,5 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | reviewer cadence policy wiring after OpenClaw bridge | `scripts/generate_review_batch.py`, `scripts/claw.py`, `tests/reviewer_policy_runtime_test.sh`, `tests/runtime_hardening_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/STATUS.md` | `bash tests/reviewer_policy_runtime_test.sh`; `bash tests/runtime_hardening_test.sh`; `bash tests/review_batch_test.sh`; `bash tests/review_batch_cli_test.sh`; `bash tests/review_runtime_integration_test.sh`; `bash tests/run_all.sh` | ✅ immediate triggers and cadence threshold now come from `reviewer_policy.yaml`; invalid reviewer cadence config fails fast; worker and batch CLI stay aligned | `TASK-005` |
 | 2026-03-13 | TASK-005 standalone guardrail-check | `_system/engine/guardrails.py`, `scripts/claw.py`, `tests/guardrails_test.sh`, `tests/run_all.sh`, `projects/_claw-dev/tasks/TASK-005.md`, `docs/PLAN.md`, `docs/STATUS.md` | `bash tests/guardrails_test.sh`; `bash tests/import_project_test.sh`; `bash tests/run_all.sh` | ✅ added diff-driven `claw guardrail-check` for unauthorized scaffold, assert weakening and edit-scope drift; noted that stale `WORKFLOW.md` scope creates false positives before review | next event snapshot slice |
 | 2026-03-13 | TASK-011 mandatory orchestrator completion signal | `scripts/hooklib.py`, `scripts/execute_job.py`, `scripts/claw.py`, `_system/contracts/{meta,result}.schema.json`, `tests/execute_job_test.sh`, `tests/openclaw_test.sh`, `docs/EXECUTION_FLOW.md`, `README.md`, `projects/_claw-dev/tasks/TASK-011.md`, `docs/STATUS.md` | `bash tests/execute_job_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/run_all.sh` | ✅ completed runs now persist machine-verifiable `delivery` state; missing footer notify stays visible as `pending_delivery` until `claw openclaw wake` moves hook delivery to `sent` | next event snapshot slice |
+| 2026-03-13 | TASK-002 + TASK-003 reopened regression closure | `scripts/claw.py`, `_system/engine/workflow_contract.py`, `tests/task_graph_lint_test.sh`, `tests/workflow_contract_test.sh`, `tests/run_all.sh`, `projects/_claw-dev/tasks/TASK-002.md`, `projects/_claw-dev/tasks/TASK-003.md`, `docs/STATUS.md`, `docs/PLAN.md` | `bash tests/task_graph_lint_test.sh`; `bash tests/workflow_contract_test.sh`; `bash tests/run_all.sh` | ✅ malformed YAML now yields `task_parse_failed` JSON instead of traceback; `contract_version != 1` now rejected by loader and validator; 7 new regression tests | 11.1 / 11.2 |
+| 2026-03-13 | 11.1 workflow graph artifact + 11.2 event snapshot/replay | `scripts/claw.py`, `_system/engine/event_log.py`, `_system/contracts/workflow_graph.schema.json`, `tests/workflow_graph_artifact_test.sh`, `tests/event_replay_test.sh`, `tests/openclaw_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/BACKLOG.md`, `docs/STATUS.md` | `bash tests/workflow_graph_artifact_test.sh`; `bash tests/event_replay_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/task_graph_lint_test.sh`; `bash tests/workflow_contract_test.sh`; `bash tests/run_all.sh` | ✅ added portable `workflow_graph.json`, append-only `events.jsonl` + `event_snapshot.json`, `claw workflow-graph`, `openclaw replay-events`, and event wiring in enqueue/worker/wake; replay reuses existing delivery status names (`pending_delivery`, `delivered`) instead of inventing aliases | live status feed |
