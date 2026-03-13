@@ -2009,6 +2009,29 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
                 last_status = "idle"
                 break
             next_task = ready_tasks[0]
+
+            # Enforce allowed_agents from workflow contract
+            if workflow_contract and workflow_contract.scope.allowed_agents:
+                task_agent = next_task.get("preferred_agent", "auto")
+                allowed = set(workflow_contract.scope.allowed_agents)
+                if task_agent not in allowed and task_agent != "auto":
+                    payload = {
+                        "status": "contract_violation",
+                        "reason_code": "contract_violation",
+                        "project": project_root.name,
+                        "steps": steps,
+                        "accepted_runs": accepted_runs,
+                        "task_id": next_task["task_id"],
+                        "agent": task_agent,
+                        "allowed_agents": sorted(allowed),
+                        "message": (
+                            f"Task {next_task['task_id']} requires agent '{task_agent}' "
+                            f"but WORKFLOW.md only allows {sorted(allowed)}"
+                        ),
+                    }
+                    print(json.dumps(payload, ensure_ascii=False, indent=2))
+                    return 1
+
             update_task_status(next_task["task_path"], "in_progress")
             enqueue_task_path(next_task["task_path"])
 
@@ -2044,6 +2067,7 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "awaiting_approval": "approval_pending",
         "awaiting_review": "review_pending",
         "failure_budget_exhausted": "failure_budget_exhausted",
+        "contract_violation": "contract_violation",
         "error": "ERROR",
         "accepted": None,
     }
@@ -2207,8 +2231,68 @@ def cmd_launch_plan(args: argparse.Namespace) -> int:
         project_root=plan.project_root,
         workspace_mode=plan.execution.workspace_mode,
     )
+
+    # Warn if spec references files outside workflow edit_scope
+    contract = load_workflow_contract(plan.project_root)
+    scope_warnings: list[str] = []
+    if contract and contract.scope.edit_scope:
+        spec_path_str = plan_dict.get("spec_path", "")
+        spec_path = Path(spec_path_str) if spec_path_str else None
+        if spec_path and spec_path.is_file():
+            spec_text = spec_path.read_text(encoding="utf-8", errors="replace")
+            path_re = re.compile(r'`([^`]+/[^`]+\.[a-z]+)`')
+            for m in path_re.finditer(spec_text):
+                file_path = m.group(1)
+                top_dir = Path(file_path).parts[0] if Path(file_path).parts else None
+                if top_dir and top_dir not in contract.scope.edit_scope:
+                    scope_warnings.append(
+                        f"Spec references '{file_path}' outside edit_scope {sorted(contract.scope.edit_scope)}"
+                    )
+    if scope_warnings:
+        plan_dict["scope_warnings"] = scope_warnings
+
     print(json.dumps(plan_dict, ensure_ascii=False, indent=2))
     return 0
+
+
+def cmd_workflow_validate(args: argparse.Namespace) -> int:
+    """Validate the workflow contract for a project."""
+    try:
+        project_root = resolve_project_root(args.project_root)
+    except FileNotFoundError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+
+    contract = load_workflow_contract(project_root)
+    if contract.source == "defaults":
+        payload = {
+            "status": "no_contract",
+            "project": project_root.name,
+            "message": "No docs/WORKFLOW.md found — defaults apply",
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    summary = contract_summary(contract)
+    errors = list(summary.get("contract_errors", []))
+
+    if contract.scope.allowed_agents:
+        from _system.engine.workflow_contract import VALID_AGENTS
+        unknown = set(contract.scope.allowed_agents) - VALID_AGENTS
+        if unknown:
+            errors.append(f"Unknown agent(s) in allowed_agents: {sorted(unknown)}")
+
+    payload = {
+        "status": "valid" if not errors else "invalid",
+        "project": project_root.name,
+        "contract_version": contract.contract_version,
+        "allowed_agents": sorted(contract.scope.allowed_agents),
+        "edit_scope": sorted(contract.scope.edit_scope),
+        "failure_budget": contract.retry_policy.failure_budget,
+        "errors": errors,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if not errors else 1
 
 
 def _resolve_guardrail_project(project_argument: str) -> Path:
@@ -2793,6 +2877,13 @@ def build_parser() -> argparse.ArgumentParser:
     launch_plan = subcommands.add_parser("launch-plan", help="Preview execution plan for a task without running it")
     launch_plan.add_argument("task_path")
     launch_plan.set_defaults(func=cmd_launch_plan)
+
+    workflow_validate = subcommands.add_parser(
+        "workflow-validate",
+        help="Validate the WORKFLOW.md contract for a project",
+    )
+    workflow_validate.add_argument("project_root", help="Project root path or slug")
+    workflow_validate.set_defaults(func=cmd_workflow_validate)
 
     guardrail_check = subcommands.add_parser("guardrail-check", help="Run standalone structural guardrails against a diff file")
     guardrail_check.add_argument("--project", required=True, help="Project slug or path used to load edit_scope")

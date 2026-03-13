@@ -1,7 +1,7 @@
 ---
 id: TASK-001
 title: Reason codes registry and structured error envelope
-status: in_progress
+status: done
 spec: ../specs/SPEC-001.md
 preferred_agent: claude
 review_policy: standard
