@@ -18,6 +18,11 @@ scope:
     - codex
     - auto
 notes: "Project workflow contract. Edit the YAML front matter above to change runtime behavior."
+commands:
+  test: "bash tests/run_all.sh"
+  lint: ""
+  build: ""
+  smoke: ""
 ---
 
 # Workflow Contract — {{PROJECT_SLUG}}

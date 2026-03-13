@@ -49,6 +49,14 @@ class WorkflowScope:
 
 
 @dataclass(frozen=True)
+class Commands:
+    test: str = "bash tests/run_all.sh"
+    lint: str = ""
+    build: str = ""
+    smoke: str = ""
+
+
+@dataclass(frozen=True)
 class WorkflowContract:
     contract_version: int = _DEFAULT_CONTRACT_VERSION
     project: str = ""
@@ -56,6 +64,7 @@ class WorkflowContract:
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     timeout_policy: TimeoutPolicy = field(default_factory=TimeoutPolicy)
     scope: WorkflowScope = field(default_factory=WorkflowScope)
+    commands: Commands = field(default_factory=Commands)
     source: str = "defaults"
 
 
@@ -149,6 +158,19 @@ def _parse_scope(raw: Any) -> WorkflowScope:
     return WorkflowScope(edit_scope=edit_scope, allowed_agents=tuple(allowed_agents))
 
 
+def _parse_commands(raw: Any) -> Commands:
+    if raw is None:
+        return Commands()
+    if not isinstance(raw, dict):
+        raise WorkflowLoadError(f"commands must be a mapping, got {type(raw).__name__}")
+    return Commands(
+        test=str(raw.get("test", "bash tests/run_all.sh")),
+        lint=str(raw.get("lint", "")),
+        build=str(raw.get("build", "")),
+        smoke=str(raw.get("smoke", "")),
+    )
+
+
 def load_workflow_contract(project_root: Path) -> WorkflowContract:
     path = _workflow_path(project_root)
     if not path.is_file():
@@ -176,6 +198,7 @@ def load_workflow_contract(project_root: Path) -> WorkflowContract:
         retry_policy=_parse_retry_policy(fm.get("retry_policy")),
         timeout_policy=_parse_timeout_policy(fm.get("timeout_policy")),
         scope=_parse_scope(fm.get("scope")),
+        commands=_parse_commands(fm.get("commands")),
         source=str(path),
     )
 
@@ -207,6 +230,7 @@ def load_workflow_contract_from_dict(data: dict[str, Any]) -> WorkflowContract:
         retry_policy=_parse_retry_policy(data.get("retry_policy")),
         timeout_policy=_parse_timeout_policy(data.get("timeout_policy")),
         scope=_parse_scope(data.get("scope")),
+        commands=_parse_commands(data.get("commands")),
         source="dict",
     )
 
@@ -227,6 +251,7 @@ def contract_summary(contract: WorkflowContract | dict[str, Any] | None) -> dict
         "failure_budget": (data.get("retry_policy") or {}).get("failure_budget"),
         "require_human_approval_on_failure": (data.get("approval_gates") or {}).get("require_human_approval_on_failure"),
         "allowed_agents": (data.get("scope") or {}).get("allowed_agents"),
+        "commands": data.get("commands"),
         "source": data.get("source"),
         "contract_errors": [],
     }

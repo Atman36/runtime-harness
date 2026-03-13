@@ -89,6 +89,7 @@ project_root = Path(sys.argv[2])
 assert payload["steps"] == 2, payload
 assert payload["accepted_runs"] == ["RUN-0001", "RUN-0002"], payload
 assert payload["ready_tasks"][0]["task_id"] == "TASK-003", payload
+assert payload["test_command"] == "bash tests/run_all.sh", payload
 
 for task_id in ("TASK-001", "TASK-002"):
     task_path = project_root / "tasks" / f"{task_id}.md"
@@ -122,6 +123,7 @@ approval = json.loads(open(sys.argv[2]).read())
 task_text = Path(sys.argv[3]).read_text(encoding="utf-8")
 
 assert payload["status"] == "awaiting_approval", payload
+assert payload["test_command"] == "bash tests/run_all.sh", payload
 assert approval["requested_action"] == "retry", approval
 assert "status: in_progress" in task_text, task_text
 PY

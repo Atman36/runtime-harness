@@ -314,6 +314,13 @@ def update_task_status(task_path: Path, status: str) -> None:
     write_front_matter(task_path, front_matter, body)
 
 
+def resolve_project_root_or_slug(argument: str) -> Path:
+    project_slug_root = REPO_ROOT / "projects" / argument
+    if project_slug_root.is_dir() and (project_slug_root / "state" / "project.yaml").is_file():
+        return project_slug_root.resolve()
+    return resolve_project_root(argument)
+
+
 def next_task_id(project_root: Path) -> str:
     tasks_root = project_root / "tasks"
     max_index = 0
@@ -2195,9 +2202,68 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         ],
         "task_graph_issues": graph_issues,
         "contract": contract_summary(workflow_contract),
+        "test_command": workflow_contract.commands.test,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if last_status != "error" else 1
+
+
+def cmd_run_checks(args: argparse.Namespace) -> int:
+    """Run a registered project command from the WORKFLOW.md commands registry."""
+    project_argument = getattr(args, "project", None) or getattr(args, "project_root", None)
+    if not project_argument:
+        print(json.dumps({"error": "project is required"}), file=sys.stderr)
+        return 1
+
+    try:
+        project_root = resolve_project_root_or_slug(project_argument)
+    except FileNotFoundError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+
+    contract = load_workflow_contract(project_root)
+    check_type = getattr(args, "type", "test") or "test"
+    command_map = {
+        "test": contract.commands.test,
+        "lint": contract.commands.lint,
+        "build": contract.commands.build,
+        "smoke": contract.commands.smoke,
+    }
+    command = command_map.get(check_type, "")
+
+    if not command:
+        print(
+            json.dumps(
+                {
+                    "status": "skipped",
+                    "type": check_type,
+                    "message": f"No '{check_type}' command registered in WORKFLOW.md commands",
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    command_cwd = project_root.parent.parent
+    result = subprocess.run(
+        command,
+        shell=True,
+        cwd=str(command_cwd),
+        capture_output=False,
+        check=False,
+    )
+    print(
+        json.dumps(
+            {
+                "status": "success" if result.returncode == 0 else "failed",
+                "type": check_type,
+                "command": command,
+                "returncode": result.returncode,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return result.returncode
 
 
 def cmd_review_batch(args: argparse.Namespace) -> int:
@@ -2393,6 +2459,12 @@ def cmd_workflow_validate(args: argparse.Namespace) -> int:
         "allowed_agents": sorted(contract.scope.allowed_agents),
         "edit_scope": sorted(contract.scope.edit_scope),
         "failure_budget": contract.retry_policy.failure_budget,
+        "commands": {
+            "test": contract.commands.test,
+            "lint": contract.commands.lint,
+            "build": contract.commands.build,
+            "smoke": contract.commands.smoke,
+        },
         "errors": errors,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -2995,6 +3067,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workflow_validate.add_argument("project_root", help="Project root path or slug")
     workflow_validate.set_defaults(func=cmd_workflow_validate)
+
+    run_checks = subcommands.add_parser(
+        "run-checks",
+        help="Run registered project commands (test/lint/build/smoke) from WORKFLOW.md",
+    )
+    run_checks.add_argument("project_root", nargs="?", help="Project root path or slug")
+    run_checks.add_argument("--project", help="Project root path or slug")
+    run_checks.add_argument(
+        "--type",
+        default="test",
+        choices=["test", "lint", "build", "smoke"],
+        help="Which command to run (default: test)",
+    )
+    run_checks.set_defaults(func=cmd_run_checks)
 
     guardrail_check = subcommands.add_parser("guardrail-check", help="Run standalone structural guardrails against a diff file")
     guardrail_check.add_argument("--project", required=True, help="Project slug or path used to load edit_scope")

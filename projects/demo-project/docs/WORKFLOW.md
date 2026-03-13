@@ -21,6 +21,11 @@ scope:
     - codex
     - auto
 notes: "Demo project workflow contract for local orchestration and validation examples."
+commands:
+  test: "bash tests/run_all.sh"
+  lint: ""
+  build: ""
+  smoke: ""
 ---
 
 # Workflow Contract — demo-project

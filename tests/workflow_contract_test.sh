@@ -156,17 +156,19 @@ pass "WorkflowLoadError on failure_budget=0"
 result="$(cd "$workspace" && python3 - <<'PYEOF'
 import sys
 sys.path.insert(0, ".")
-from _system.engine import WorkflowContract, WorkflowLoadError, load_workflow_contract
+from _system.engine import Commands, WorkflowContract, WorkflowLoadError, load_workflow_contract
 print("ok")
 PYEOF
 )"
 [ "$result" = "ok" ] || fail "Test 5 (engine __init__ exports): $result"
-pass "engine __init__ exports WorkflowContract, WorkflowLoadError, load_workflow_contract"
+pass "engine __init__ exports Commands, WorkflowContract, WorkflowLoadError, load_workflow_contract"
 
 # ── Test 6: _template/docs/WORKFLOW.md exists ─────────────────────────────────
 template_workflow="$workspace/projects/_template/docs/WORKFLOW.md"
 [ -f "$template_workflow" ] || fail "Test 6: _template/docs/WORKFLOW.md not found"
 grep -q "contract_version" "$template_workflow" || fail "Test 6: missing contract_version in template WORKFLOW.md"
+grep -q "^commands:" "$template_workflow" || fail "Test 6: missing commands block in template WORKFLOW.md"
+grep -q 'test: "bash tests/run_all.sh"' "$template_workflow" || fail "Test 6: missing default test command in template WORKFLOW.md"
 pass "_template/docs/WORKFLOW.md exists and has contract_version"
 
 # ── Test 7: new project created from template gets WORKFLOW.md ────────────────
@@ -174,6 +176,7 @@ bash "$workspace/scripts/create_project.sh" wf-scaffold-project "$workspace"
 new_project_workflow="$workspace/projects/wf-scaffold-project/docs/WORKFLOW.md"
 [ -f "$new_project_workflow" ] || fail "Test 7: new project missing docs/WORKFLOW.md"
 grep -q "wf-scaffold-project" "$new_project_workflow" || fail "Test 7: slug not substituted in new project WORKFLOW.md"
+grep -q "^commands:" "$new_project_workflow" || fail "Test 7: new project WORKFLOW.md missing commands block"
 pass "new project scaffold includes WORKFLOW.md with slug substituted"
 
 # ── Test 8: claw.py worker reads contract (lease-seconds from WORKFLOW.md) ────
@@ -267,6 +270,89 @@ PYEOF
 )"
 [ "$result" = "rejected" ] || fail "Test 10 (validate_workflow_contract rejects version!=1): got $result"
 pass "validate_workflow_contract rejects contract_version != 1"
+
+# ── Test 11: commands block defaults when omitted ────────────────────────────
+cat > "$project_root/docs/WORKFLOW.md" <<'WEOF'
+---
+contract_version: 1
+project: "test-contract-project"
+approval_gates:
+  require_human_approval_on_failure: true
+retry_policy:
+  failure_budget: 3
+  backoff_base_seconds: 30
+  backoff_max_seconds: 300
+timeout_policy:
+  worker_lease_seconds: 600
+  run_timeout_seconds: 3600
+scope:
+  edit_scope:
+    - tests
+---
+WEOF
+
+result="$(cd "$workspace" && python3 - "$project_root" <<'PYEOF'
+import sys
+sys.path.insert(0, ".")
+from pathlib import Path
+from _system.engine.workflow_contract import load_workflow_contract
+
+c = load_workflow_contract(Path(sys.argv[1]))
+assert c.commands.test == "bash tests/run_all.sh", c.commands
+assert c.commands.lint == "", c.commands
+assert c.commands.build == "", c.commands
+assert c.commands.smoke == "", c.commands
+print("ok")
+PYEOF
+)"
+[ "$result" = "ok" ] || fail "Test 11 (commands defaults when omitted): $result"
+pass "commands block defaults when omitted"
+
+# ── Test 12: commands block loads from WORKFLOW.md front matter ──────────────
+cat > "$project_root/docs/WORKFLOW.md" <<'WEOF'
+---
+contract_version: 1
+project: "test-contract-project"
+commands:
+  test: "pytest -q"
+  lint: "ruff check ."
+  build: "python -m build"
+  smoke: "python scripts/smoke.py"
+---
+WEOF
+
+result="$(cd "$workspace" && python3 - "$project_root" <<'PYEOF'
+import sys
+sys.path.insert(0, ".")
+from pathlib import Path
+from _system.engine.workflow_contract import load_workflow_contract
+
+c = load_workflow_contract(Path(sys.argv[1]))
+assert c.commands.test == "pytest -q", c.commands
+assert c.commands.lint == "ruff check .", c.commands
+assert c.commands.build == "python -m build", c.commands
+assert c.commands.smoke == "python scripts/smoke.py", c.commands
+print("ok")
+PYEOF
+)"
+[ "$result" = "ok" ] || fail "Test 12 (commands values load): $result"
+pass "commands block loads from WORKFLOW.md front matter"
+
+# ── Test 13: contract_summary exposes commands registry ──────────────────────
+result="$(cd "$workspace" && python3 - "$project_root" <<'PYEOF'
+import sys
+sys.path.insert(0, ".")
+from pathlib import Path
+from _system.engine.workflow_contract import contract_summary, load_workflow_contract
+
+summary = contract_summary(load_workflow_contract(Path(sys.argv[1])))
+assert summary["commands"]["test"] == "pytest -q", summary
+assert summary["commands"]["smoke"] == "python scripts/smoke.py", summary
+print("ok")
+PYEOF
+)"
+[ "$result" = "ok" ] || fail "Test 13 (contract_summary exposes commands): $result"
+pass "contract_summary exposes commands registry"
 
 echo ""
 echo "workflow_contract_test: all tests passed"

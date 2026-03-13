@@ -70,12 +70,11 @@
 
 ## In Progress
 
-- **Epic 12 (External Project Autonomy)** — активен; TASK-006 и TASK-007 закрыты, TASK-008/010 ждут
+- **Epic 12 (External Project Autonomy)** — активен; TASK-006, TASK-007 и TASK-008 закрыты, TASK-010 ждёт
 - `live status feed` — следующий слой поверх `events.jsonl` / `event_snapshot.json`; transport/SSE пока сознательно не поднимались
 
 ## Next
 
-- **TASK-008** (codex): `commands` block в WORKFLOW.md + `claw run-checks` CLI
 - **TASK-010** (claude): epic-status + `claw orchestrate --scope epic:N`
 - Разделить `run_all.sh` на быстрый (unit) и медленный (integration) прогоны — сейчас весь suite занимает ~40 сек
 
@@ -86,6 +85,7 @@
 - **TASK-001** — статус исправлен на `done` (реализовано в предыдущей сессии, не была отмечена)
 - **TASK-006** — реализован напрямую (claude в текущей сессии): `allowed_agents` gate + `scope_warnings` в launch-plan + `claw workflow-validate`
 - **TASK-007** — выполнен codex через `claw run --execute` (7 мин): `claw task-graph-lint` + file-overlap warnings + `unknown_dependency` abort; все тесты зелёные
+- **TASK-008** — реализован напрямую: `commands` registry в WORKFLOW contract, `claw run-checks`, `test_command` в `orchestrate`, shell coverage на registry/fallback
 - **hook delivery** — верифицирован end-to-end: run создаёт `state/hooks/pending/<id>.json`, `openclaw wake` диспатчит и возвращает callback payloads
 
 ### Что выяснили про hook → Claude цикл
@@ -101,6 +101,7 @@
 - `load_workflow_contract()` никогда не возвращает `None` — при отсутствии WORKFLOW.md возвращает дефолт с `source="defaults"`; правильная проверка: `contract.source == "defaults"`, а не `contract is None`
 - Хуки хранятся в `state/hooks/{pending,sent,failed}/`, а не в `hooks/` — смотреть нужно туда
 - `task-graph-lint` добавлен codex с backward-compat: `task-lint` (старый) продолжает работать
+- `run-checks` shell-тест нельзя наивно запускать через `run_all.sh` без guard: зарегистрированная `commands.test` команда по умолчанию тоже ведёт в `bash tests/run_all.sh`, поэтому nested execution должен явно пропускать сам тест registry
 
 ### Статус Epic 12
 
@@ -110,7 +111,7 @@
 | TASK-005 guardrail-check | ✅ done |
 | TASK-006 workflow enforcement | ✅ done |
 | TASK-007 task graph lint gate | ✅ done (codex) |
-| TASK-008 command registry | 🔲 todo |
+| TASK-008 command registry | ✅ done |
 | TASK-009 decompose-epic | ✅ done |
 | TASK-010 epic completion criteria | 🔲 todo |
 
@@ -216,3 +217,4 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-13 | 11.1 workflow graph artifact + 11.2 event snapshot/replay | `scripts/claw.py`, `_system/engine/event_log.py`, `_system/contracts/workflow_graph.schema.json`, `tests/workflow_graph_artifact_test.sh`, `tests/event_replay_test.sh`, `tests/openclaw_test.sh`, `tests/run_all.sh`, `docs/PLAN.md`, `docs/BACKLOG.md`, `docs/STATUS.md` | `bash tests/workflow_graph_artifact_test.sh`; `bash tests/event_replay_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/task_graph_lint_test.sh`; `bash tests/workflow_contract_test.sh`; `bash tests/run_all.sh` | ✅ added portable `workflow_graph.json`, append-only `events.jsonl` + `event_snapshot.json`, `claw workflow-graph`, `openclaw replay-events`, and event wiring in enqueue/worker/wake; replay reuses existing delivery status names (`pending_delivery`, `delivered`) instead of inventing aliases | live status feed |
 | 2026-03-14 | TASK-007 task graph lint as mandatory pre-orchestrate gate | `scripts/claw.py`, `_system/engine/error_codes.py`, `tests/task_graph_lint_test.sh`, `projects/_claw-dev/tasks/TASK-007.md`, `docs/STATUS.md` | `bash tests/task_graph_lint_test.sh`; `bash tests/run_all.sh` | ✅ added `claw task-graph-lint` with `blocking_count`/`warning_count`, warning-only file-overlap detection, `unknown_dependency` abort in `claw orchestrate`, and ready-task filtering that skips overlapping specs; assumptions: overlap is inferred from backticked file paths in specs and any truthy `shared_files` front matter allows shared access | TASK-008 |
 | 2026-03-14 | TASK-006 WORKFLOW.md enforcement in orchestrate + launch-plan + workflow-validate | `scripts/claw.py`, `tests/workflow_enforcement_test.sh`, `tests/run_all.sh`, `projects/_claw-dev/tasks/TASK-006.md` | `bash tests/workflow_enforcement_test.sh`; `bash tests/run_all.sh` | ✅ `allowed_agents` gate in `cmd_orchestrate` (reason_code: contract_violation); `scope_warnings` in `launch-plan` output; `claw workflow-validate` standalone command; TASK-001 stale status fixed | TASK-008 |
+| 2026-03-14 | TASK-008 command registry in WORKFLOW contract + `claw run-checks` | `_system/engine/workflow_contract.py`, `_system/engine/__init__.py`, `scripts/claw.py`, `projects/_template/docs/WORKFLOW.md`, `projects/demo-project/docs/WORKFLOW.md`, `tests/workflow_contract_test.sh`, `tests/command_registry_test.sh`, `tests/orchestration_loop_test.sh`, `tests/run_all.sh`, `projects/_claw-dev/tasks/TASK-008.md`, `docs/STATUS.md` | `bash tests/workflow_contract_test.sh`; `bash tests/command_registry_test.sh`; `bash tests/orchestration_loop_test.sh`; `bash tests/run_all.sh` | ✅ typed `commands` registry added to workflow contract/template, `claw run-checks` executes registered `test|lint|build|smoke` commands with default fallback to `bash tests/run_all.sh`, and `claw orchestrate` now surfaces `test_command`; assumption: registry regression test skips itself under nested `run_all.sh` to avoid recursion from the default test command | TASK-010 |

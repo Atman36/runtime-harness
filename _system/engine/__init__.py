@@ -1,7 +1,7 @@
 """Minimal filesystem-backed engine primitives for claw."""
 
 from _system.engine.error_codes import REASON_CODES, build_error_envelope
-from _system.engine.workflow_contract import WorkflowContract, WorkflowLoadError, contract_summary, load_workflow_contract, validate_workflow_contract
+from _system.engine.workflow_contract import Commands, WorkflowContract, WorkflowLoadError, contract_summary, load_workflow_contract, validate_workflow_contract
 from _system.engine.file_queue import ClaimedJob, DuplicateJobError, FileQueue, QueueEmpty
 from _system.engine.task_planner import ExecutionPlan, RoutingDecision, TaskRunPlan, plan_task_run, plan_to_dict
 from _system.engine.agent_exec import AgentCommand, build_agent_command
@@ -20,6 +20,7 @@ from _system.engine.runtime import (
 __all__ = [
     "REASON_CODES",
     "build_error_envelope",
+    "Commands",
     "WorkflowContract",
     "WorkflowLoadError",
     "contract_summary",

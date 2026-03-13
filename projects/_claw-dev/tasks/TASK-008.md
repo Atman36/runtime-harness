@@ -1,7 +1,7 @@
 ---
 id: TASK-008
 title: "Project command registry in WORKFLOW.md"
-status: todo
+status: done
 spec: ../specs/SPEC-008.md
 preferred_agent: codex
 review_policy: standard
