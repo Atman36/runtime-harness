@@ -222,8 +222,13 @@ def stream_agent_output(
 
     try:
         if command_input is not None and proc.stdin is not None:
-            proc.stdin.write(command_input)
-            proc.stdin.close()
+            try:
+                proc.stdin.write(command_input)
+            except BrokenPipeError:
+                # Some agents exit without reading stdin; treat EPIPE as a no-op.
+                pass
+            finally:
+                proc.stdin.close()
 
         proc.wait(timeout=timeout_seconds)
         stdout_thread.join()
@@ -603,6 +608,21 @@ def run_post_artifact_validation(run_dir: Path) -> dict:
             },
         }
 
+def has_pending_approval_checkpoint(run_dir: Path) -> bool:
+    path = run_dir / "approval_checkpoint.json"
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    status = payload.get("status")
+    if not isinstance(status, str):
+        return False
+    return status.strip().lower() == "pending"
+
 
 def main() -> int:
     if len(sys.argv) != 2:
@@ -736,6 +756,12 @@ def main() -> int:
     except Exception as exc:  # pragma: no cover - safety net
         stderr_text = f"Execution error: {exc}\n"
         exit_code = 1
+        status = "failed"
+
+    # Step-level HITL checkpoint: the agent can materialize approval_checkpoint.json mid-run.
+    # We exit with code 2 when the checkpoint is pending, without introducing new result/meta statuses.
+    if status == "success" and has_pending_approval_checkpoint(run_dir):
+        exit_code = 2
         status = "failed"
 
     finished_at = utc_now()

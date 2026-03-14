@@ -499,7 +499,12 @@ Roadmap снова открыт уже после закрытия reopened regr
   - run artifacts теперь включают `agent_stream.jsonl`, а `openclaw summary` отдаёт `stream_tail`
   - regression coverage добавлена для classify/tail/timeout/backward-compat path
 
-Следующий порядок: `TASK-013 approval checkpoint` → затем `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
+- **TASK-013 `approval_checkpoint.json`** — ✅ сделано (2026-03-14)
+  - pending `approval_checkpoint.json` завершает runner с exit code `2`
+  - worker переводит job в `awaiting_approval`, а `resolve-checkpoint` принимает решение accept/reject
+  - добавлен regression coverage для pause/resume потока
+
+Следующий порядок: `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
 
 ### Epic 14 — PaperClip-inspired coordination primitives (2026-03-14)
 

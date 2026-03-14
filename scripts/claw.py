@@ -84,6 +84,21 @@ def duration_between(started_at: str | None, finished_at: str | None) -> float |
         return None
     return round((finish - start).total_seconds(), 1)
 
+def has_pending_approval_checkpoint(run_dir: Path) -> bool:
+    checkpoint_path = run_dir / "approval_checkpoint.json"
+    if not checkpoint_path.is_file():
+        return False
+    try:
+        payload = read_json(checkpoint_path)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    status = payload.get("status")
+    if not isinstance(status, str):
+        return False
+    return status.strip().lower() == "pending"
+
 
 def load_stream_tail(run_dir: Path, limit: int = 10) -> list[dict]:
     stream_path = run_dir / "agent_stream.jsonl"
@@ -1779,6 +1794,9 @@ def cmd_worker(args: argparse.Namespace) -> int:
         if completed.returncode == 0:
             queue.ack(claimed, result_status=result_status, exit_code=completed.returncode)
             queue_state = "done"
+        elif completed.returncode == 2 and has_pending_approval_checkpoint(run_dir):
+            queue.await_approval(claimed)
+            queue_state = "awaiting_approval"
         else:
             error_text = summarize_worker_error(completed, heartbeat_warnings)
             if claimed.attempt_count < claimed.max_attempts:
@@ -1849,7 +1867,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
                 },
             )
 
-        if review_policy is not None:
+        if review_policy is not None and queue_state != "awaiting_approval":
             maybe_trigger_review(project_root, run_dir, result_status, review_policy)
             review_execution = maybe_execute_pending_reviews(project_root)
 
@@ -1915,6 +1933,79 @@ def cmd_approve(args: argparse.Namespace) -> int:
         )
     refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "approved", "job_id": args.run_id, "queue_state": "pending"}, ensure_ascii=False))
+    return 0
+
+
+def cmd_resolve_checkpoint(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    run_dir = find_run_dir(project_root, args.run_id)
+    if run_dir is None:
+        print(f"Run not found: {args.run_id}", file=sys.stderr)
+        return 1
+
+    checkpoint_path = run_dir / "approval_checkpoint.json"
+    if not checkpoint_path.is_file():
+        print(f"Checkpoint not found: {checkpoint_path}", file=sys.stderr)
+        return 1
+
+    try:
+        payload = read_json(checkpoint_path)
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+        print(f"Failed to read checkpoint: {exc}", file=sys.stderr)
+        return 1
+
+    if not isinstance(payload, dict):
+        print("Checkpoint payload must be a JSON object.", file=sys.stderr)
+        return 1
+
+    decision = str(args.decision).strip().lower()
+    if decision not in {"accept", "reject"}:
+        print("Decision must be accept or reject.", file=sys.stderr)
+        return 1
+
+    notes = str(args.notes or "").strip() or None
+    now = utc_now()
+
+    payload["status"] = "resolved"
+    payload["decision"] = decision
+    payload["decision_notes"] = notes
+    payload["resolved_at"] = now
+
+    checkpoint_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    append_run_event(
+        run_dir,
+        "checkpoint_resolved",
+        project_root=project_root,
+        payload={
+            "decision": decision,
+            "notes": notes or "",
+            "checkpoint_id": payload.get("checkpoint_id"),
+        },
+    )
+
+    queue = FileQueue(queue_root_for_project(project_root))
+    queue_action = "none"
+    if decision == "accept":
+        queue_action = "approved" if queue.approve(args.run_id) else "not_found"
+    else:
+        queue_action = "rejected" if queue.reject(args.run_id, error="checkpoint rejected") else "not_found"
+
+    refresh_metrics_snapshot(project_root)
+    queue_state = queue.queue_state(args.run_id)
+    print(
+        json.dumps(
+            {
+                "status": "resolved",
+                "job_id": args.run_id,
+                "decision": decision,
+                "queue_action": queue_action,
+                "queue_state": queue_state,
+                "checkpoint_path": checkpoint_path.relative_to(run_dir).as_posix(),
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -3147,6 +3238,13 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("project_root")
     approve.add_argument("run_id")
     approve.set_defaults(func=cmd_approve)
+
+    resolve_checkpoint = subcommands.add_parser("resolve-checkpoint", help="Resolve a step-level approval checkpoint")
+    resolve_checkpoint.add_argument("project_root")
+    resolve_checkpoint.add_argument("run_id")
+    resolve_checkpoint.add_argument("--decision", required=True, choices=("accept", "reject"))
+    resolve_checkpoint.add_argument("--notes")
+    resolve_checkpoint.set_defaults(func=cmd_resolve_checkpoint)
 
     reclaim = subcommands.add_parser("reclaim", help="Move stale running jobs back to pending")
     reclaim.add_argument("project_root")

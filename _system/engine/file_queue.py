@@ -442,6 +442,13 @@ class FileQueue:
         self._transition_path(src, "pending", event="approved")
         return True
 
+    def reject(self, job_id: str, *, error: str | None = None) -> bool:
+        src = self._find_job_file(self.awaiting_approval, job_id)
+        if src is None:
+            return False
+        self._transition_path(src, "failed", event="checkpoint_rejected", error=error)
+        return True
+
     def retry(self, job_id: str, *, next_retry_at: str | None = None, backoff_seconds: int | None = None) -> bool:
         src = self._find_job_file(self.failed, job_id)
         if src is None:
