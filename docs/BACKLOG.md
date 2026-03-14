@@ -167,3 +167,27 @@ E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8
 | 11.2 | ✅ Добавить file-backed `event snapshot + replay` для live run state | 11.1 | 11 | выполнено 2026-03-13 |
 
 **Замечание по порядку:** live status transport (`status --live`, SSE/feed) не начинать до появления стабильного event artifact/snapshot слоя.
+
+---
+
+## Epic 14 — PaperClip-Inspired Coordination Primitives
+**Приоритет:** P2
+**Статус:** ⏳ planned
+
+Источник: локальный анализ `/Users/Apple/Downloads/paperclip-master` с адаптацией
+идей под filesystem-first модель `claw`.
+
+| # | Задача | Зависит от | Phase | Параллельность |
+|---|--------|------------|-------|----------------|
+| 14.1 | Добавить file-backed heartbeat wake queue + coalescing (`timer`, `assignment`, `mention`, `manual`, `approval`) | Epic 13 done enough для `agent_stream` | 14 | 14.2 blocker |
+| 14.2 | Добавить agent inbox + atomic task claim/release semantics | 14.1 | 14 | 14.3 / 14.4 fan-out |
+| 14.3 | Добавить resumable agent session state + reset/rotate path | 14.2 | 14 | parallel после 14.2 |
+| 14.4 | Добавить file-backed org graph + delegation / escalation policy | 14.2 | 14 | parallel после 14.2 |
+| 14.5 | Добавить budget/governance guardrails и approval-required actions | 14.3, 14.4 | 14 | terminal slice |
+
+**Предлагаемые GitHub issue titles:**
+- `feat: add file-backed heartbeat wake queue with coalescing`
+- `feat: add agent inbox and atomic claim-release lifecycle`
+- `feat: persist resumable agent sessions across heartbeats`
+- `feat: add org graph and delegation-escalation policy`
+- `feat: add budget and governance guardrails for agent runs`

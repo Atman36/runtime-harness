@@ -501,6 +501,42 @@ Roadmap снова открыт уже после закрытия reopened regr
 
 Следующий порядок: `TASK-013 approval checkpoint` → затем `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
 
+### Epic 14 — PaperClip-inspired coordination primitives (2026-03-14)
+
+Цель эпика: перенести в `claw` сильные operational patterns из `PaperClip`,
+не перетаскивая его Node/Postgres/UI control plane. Сохраняем текущий принцип:
+filesystem остаётся source of truth, а новые coordination-механики живут в
+артефактах и project state.
+
+- **TASK-017 `Heartbeat wake queue and coalescing`**
+  - file-backed wakeup contract в `state/` с причинами `timer | assignment | mention | manual | approval`
+  - coalescing одинаковых wakeups по агенту / задаче, чтобы не плодить duplicate runs
+  - inspect/debug CLI для очереди wake-событий без hidden runtime state
+- **TASK-018 `Agent inbox and atomic task claim/release`**
+  - agent-scoped inbox поверх текущих tasks/specs/runs без отдельной БД
+  - атомарный claim/release c conflict semantics вместо неявного "кто успел, тот и взял"
+  - прозрачный follow-up для `blocked` / `in_progress` / `released` transitions
+- **TASK-019 `Resumable agent session state`**
+  - persisted session handle + handoff summary per agent/task
+  - следующий wake поднимает continuity без полного cold-start prompt replay
+  - explicit reset/rotate path для stale/confused sessions
+- **TASK-020 `Org graph and delegation policy`**
+  - file-backed org tree (`reports_to`, capabilities, allowed delegation lanes)
+  - manager/lead agents могут создавать child tasks с parent linkage и escalation rules
+  - blocked work эскалируется вверх по цепочке командования
+- **TASK-021 `Budget and governance guardrails`**
+  - file-backed budget snapshots / soft-limit warnings / hard-stop pause semantics
+  - approval-required actions для risky операций и изменения конфигурации агентов
+  - решения сохраняются как артефакты, а не в hidden runtime flags
+
+Не переносим как есть:
+- React UI / mobile UX
+- Postgres multi-company control plane
+- runtime-specific adapter code из PaperClip без filesystem adaptation
+- "компанию из агентов" как отдельную продуктовую оболочку поверх `claw`
+
+Рекомендуемый порядок после Epic 13: `TASK-017` → `TASK-018` → параллельно `TASK-019` и `TASK-020` → `TASK-021`.
+
 ---
 
 ## Отчёт сессии (2026-03-14) — Epic 12 закрыт, хук верифицирован
