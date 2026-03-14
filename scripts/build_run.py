@@ -98,7 +98,7 @@ def render_template(path: Path, replacements: dict[str, str]) -> str:
     return text
 
 
-def validate_task_front_matter(task_path: Path, project_slug: str, front_matter: dict[str, Any]) -> tuple[str, str, list[str]]:
+def validate_task_front_matter(task_path: Path, project_slug: str, front_matter: dict[str, Any]) -> tuple[str, str, list[str], str]:
     task_id = str(front_matter.get("id") or "").strip()
     spec_reference = str(front_matter.get("spec") or "").strip()
     if not task_id or not spec_reference:
@@ -117,7 +117,8 @@ def validate_task_front_matter(task_path: Path, project_slug: str, front_matter:
         raise RunBuildError(f"Task front matter risk_flags must be a JSON array: {task_path}")
 
     normalized_flags = [str(item) for item in risk_flags]
-    return task_id, spec_reference, normalized_flags
+    task_mode = str(front_matter.get("mode") or "").strip().lower()
+    return task_id, spec_reference, normalized_flags, task_mode
 
 
 def next_run_directory(project_root: Path, created_date: str) -> tuple[str, Path]:
@@ -168,7 +169,7 @@ def execution_payload(plan: TaskRunPlan) -> dict[str, Any]:
 
 def create_run(context: RunContext) -> Path:
     front_matter = read_front_matter(context.task_path)
-    task_id, spec_reference, risk_flags = validate_task_front_matter(context.task_path, context.project_slug, front_matter)
+    task_id, spec_reference, risk_flags, task_mode = validate_task_front_matter(context.task_path, context.project_slug, front_matter)
 
     project_state_path = context.project_root / "state" / "project.yaml"
     project_state = read_project_state(project_state_path)
@@ -234,6 +235,8 @@ def create_run(context: RunContext) -> Path:
     }
     if concurrency_key:
         meta["concurrency_key"] = concurrency_key
+    if task_mode == "advisory":
+        meta["advisory"] = True
 
     job = {
         "job_version": 1,
@@ -271,6 +274,8 @@ def create_run(context: RunContext) -> Path:
     }
     if concurrency_key:
         job["task"]["concurrency_key"] = concurrency_key
+    if task_mode:
+        job["task"]["mode"] = task_mode
 
     result = {
         "result_version": 1,

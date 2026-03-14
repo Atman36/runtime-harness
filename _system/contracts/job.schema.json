@@ -134,6 +134,10 @@
         "title": {"type": "string"},
         "status": {"type": "string"},
         "priority": {"type": "string"},
+        "mode": {
+          "type": "string",
+          "description": "Optional task execution mode, e.g. advisory."
+        },
         "source_path": {
           "type": "string",
           "description": "Relative path from project root to the original task file."

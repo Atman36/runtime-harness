@@ -32,6 +32,8 @@ from hooklib import (
 )
 from _system.engine.trusted_command import command_display, parse_trusted_argv
 
+ADVISORY_ARTIFACTS = ("advice.md", "patch.diff", "review_findings.json")
+
 
 @dataclass(frozen=True)
 class WorkspaceContext:
@@ -228,7 +230,11 @@ def stream_agent_output(
                 # Some agents exit without reading stdin; treat EPIPE as a no-op.
                 pass
             finally:
-                proc.stdin.close()
+                try:
+                    proc.stdin.close()
+                except BrokenPipeError:
+                    # Closing stdin can also surface EPIPE after the child exits early.
+                    pass
 
         proc.wait(timeout=timeout_seconds)
         stdout_thread.join()
@@ -608,6 +614,23 @@ def run_post_artifact_validation(run_dir: Path) -> dict:
             },
         }
 
+
+def advisory_requested(job: dict) -> bool:
+    task = job.get("task") if isinstance(job.get("task"), dict) else {}
+    task_mode = str(task.get("mode") or "").strip().lower()
+    return task_mode == "advisory"
+
+
+def validate_advisory_artifacts(run_dir: Path) -> dict[str, list[str]]:
+    missing = [name for name in ADVISORY_ARTIFACTS if not (run_dir / name).is_file()]
+    present = [name for name in ADVISORY_ARTIFACTS if name not in missing]
+    warnings = [f"WARNING advisory artifact missing: {name}" for name in missing]
+    return {
+        "missing": missing,
+        "present": present,
+        "warnings": warnings,
+    }
+
 def has_pending_approval_checkpoint(run_dir: Path) -> bool:
     path = run_dir / "approval_checkpoint.json"
     if not path.is_file():
@@ -665,6 +688,7 @@ def main() -> int:
 
     prompt = prompt_path.read_text(encoding="utf-8")
     job_execution = job.get("execution") if isinstance(job.get("execution"), dict) else {}
+    advisory_mode = advisory_requested(job)
     preferred_agent = (
         job_execution.get("agent")
         or job.get("preferred_agent")
@@ -705,6 +729,8 @@ def main() -> int:
             },
         }
     )
+    if advisory_mode:
+        meta["advisory"] = True
     write_json(meta_path, meta)
 
     running_result = dict(result)
@@ -725,6 +751,10 @@ def main() -> int:
     stderr_text = ""
     exit_code = 1
     status = "failed"
+    advisory_artifacts = {"missing": [], "present": [], "warnings": []}
+    proc_env = os.environ.copy()
+    if advisory_mode:
+        proc_env["CLAW_ADVISORY"] = "1"
 
     try:
         proc = subprocess.Popen(
@@ -735,6 +765,7 @@ def main() -> int:
             text=True,
             cwd=working_directory,
             bufsize=1,
+            env=proc_env,
         )
         stdout_text, stderr_text = stream_agent_output(
             proc,
@@ -763,6 +794,14 @@ def main() -> int:
     if status == "success" and has_pending_approval_checkpoint(run_dir):
         exit_code = 2
         status = "failed"
+
+    if advisory_mode:
+        advisory_artifacts = validate_advisory_artifacts(run_dir)
+        if advisory_artifacts["warnings"]:
+            warning_block = "\n".join(advisory_artifacts["warnings"]) + "\n"
+            if stderr_text and not stderr_text.endswith("\n"):
+                stderr_text += "\n"
+            stderr_text += warning_block
 
     finished_at = utc_now()
     duration_seconds = round(time.monotonic() - start_monotonic, 3)
@@ -797,6 +836,9 @@ def main() -> int:
             "workspace": workspace_snapshot,
         }
     )
+    if advisory_mode:
+        meta["advisory"] = True
+        meta["advisory_artifacts"] = advisory_artifacts
     write_json(meta_path, meta)
 
     report_text = render_report(
@@ -816,6 +858,11 @@ def main() -> int:
     validation_result = run_post_artifact_validation(run_dir)
     final_result["validation"] = validation_result
     meta["validation"] = validation_result
+    if advisory_mode:
+        final_result["advisory"] = {
+            "requested": True,
+            **advisory_artifacts,
+        }
 
     final_result["hook"] = {}
     meta["hook"] = {}

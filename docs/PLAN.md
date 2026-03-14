@@ -509,6 +509,11 @@ Roadmap снова открыт уже после закрытия reopened regr
   - `claw.py` теперь диспатчит trusted listeners на `run_started`, `run_finished`, `review_created`, `approval_requested`
   - side effects логируются в `state/listener_log.jsonl`, а listener failures не роняют основной orchestration path
 
+- **TASK-015 advisory patch-only review mode** — ✅ сделано (2026-03-14)
+  - task front matter теперь поддерживает `mode: advisory`, runner выставляет `CLAW_ADVISORY=1`, а `meta.json` помечает advisory intent
+  - post-run path предупреждает о пропавших `advice.md`, `patch.diff`, `review_findings.json`, не переводя run в failed только из-за missing artifacts
+  - добавлен `claw apply-patch <project_root> <run_id> [--confirm]` с dry-run preview diff/findings и `git apply` + `patch_applied` event после подтверждения
+
 Следующий порядок: `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
 
 ### Epic 14 — PaperClip-inspired coordination primitives (2026-03-14)

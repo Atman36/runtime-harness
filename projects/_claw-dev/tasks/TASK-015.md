@@ -1,7 +1,7 @@
 ---
 id: TASK-015
 title: "Advisory patch-only review mode"
-status: ready
+status: done
 spec: ../specs/SPEC-015.md
 preferred_agent: codex
 review_policy: standard

@@ -2136,6 +2136,92 @@ def resolve_run_dir(project_root: Path, run_id_or_path: str) -> Path | None:
     return find_run_dir(project_root, run_id_or_path)
 
 
+def load_review_findings(path: Path) -> dict:
+    try:
+        payload = read_json(path)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def cmd_apply_patch(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    run_dir = resolve_run_dir(project_root, args.run_id_or_path)
+    if run_dir is None:
+        print(f"Run not found: {args.run_id_or_path}", file=sys.stderr)
+        return 1
+
+    patch_path = run_dir / "patch.diff"
+    if not patch_path.is_file():
+        print(f"patch.diff not found for run {run_dir.name}: {patch_path}", file=sys.stderr)
+        return 1
+
+    findings_path = run_dir / "review_findings.json"
+    findings_payload = load_review_findings(findings_path)
+    patch_text = patch_path.read_text(encoding="utf-8")
+    findings = findings_payload.get("findings") if isinstance(findings_payload.get("findings"), list) else []
+    severity = findings_payload.get("severity")
+    recommendation = findings_payload.get("recommendation")
+    warnings: list[str] = []
+    if not findings_path.is_file():
+        warnings.append("review_findings.json missing; severity and recommendation unavailable")
+
+    payload = {
+        "status": "dry_run",
+        "project": project_root.name,
+        "run_id": run_dir.name,
+        "run_path": run_dir.relative_to(project_root).as_posix(),
+        "patch_path": patch_path.relative_to(project_root).as_posix(),
+        "severity": severity,
+        "recommendation": recommendation,
+        "findings_count": len(findings),
+        "confirm_required": True,
+    }
+    if warnings:
+        payload["warnings"] = warnings
+
+    if not args.confirm:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        if patch_text:
+            if not patch_text.endswith("\n"):
+                patch_text += "\n"
+            sys.stdout.write(patch_text)
+        return 0
+
+    completed = subprocess.run(
+        ["git", "-C", str(project_root), "apply", str(patch_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        error_text = (completed.stderr or completed.stdout or "").strip() or "git apply failed"
+        print(error_text, file=sys.stderr)
+        return completed.returncode or 1
+
+    event = append_run_event(
+        run_dir,
+        "patch_applied",
+        project_root=project_root,
+        payload={
+            "severity": severity,
+            "recommendation": recommendation,
+            "findings_count": len(findings),
+            "patch_path": patch_path.relative_to(project_root).as_posix(),
+        },
+    )
+    payload.update(
+        {
+            "status": "applied",
+            "confirm_required": False,
+            "event_id": event.get("event_id"),
+            "recorded_at": event.get("recorded_at"),
+        }
+    )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     run_dir = find_run_dir(project_root, args.run_id)
@@ -3382,6 +3468,12 @@ def build_parser() -> argparse.ArgumentParser:
     reclaim.add_argument("project_root")
     reclaim.add_argument("--stale-after-seconds", type=int, required=True)
     reclaim.set_defaults(func=cmd_reclaim)
+
+    apply_patch = subcommands.add_parser("apply-patch", help="Preview or apply an advisory patch artifact")
+    apply_patch.add_argument("project_root")
+    apply_patch.add_argument("run_id_or_path")
+    apply_patch.add_argument("--confirm", action="store_true", help="Actually apply patch.diff via git apply")
+    apply_patch.set_defaults(func=cmd_apply_patch)
 
     status = subcommands.add_parser("status", help="Show queue and run status for one run")
     status.add_argument("project_root")

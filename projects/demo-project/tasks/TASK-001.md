@@ -19,4 +19,6 @@ Use the demo project as the first concrete workspace for deterministic task laun
 
 ## Notes
 - Resolve `spec` from front matter and copy both inputs into the run directory
+- `mode: advisory` is available for patch-only review runs; it only signals intent via `CLAW_ADVISORY=1` and does not enforce read-only execution
+- For enforced isolation, use `workspace_mode: git_worktree`
 - Keep run artifacts deterministic and ready for future engine execution
