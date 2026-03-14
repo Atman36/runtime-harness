@@ -30,6 +30,7 @@ from _system.engine import FileQueue, QueueEmpty, build_agent_command, enqueue_r
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
 from _system.engine.error_codes import build_error_envelope  # noqa: E402
 from _system.engine.guardrails import run_guardrails  # noqa: E402
+from _system.engine.listener_dispatch import dispatch_event_listeners  # noqa: E402
 from _system.engine.workflow_contract import contract_summary, load_workflow_contract  # noqa: E402
 from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
 from _system.engine.decomposer import decompose_epic as _decompose_epic  # noqa: E402
@@ -48,6 +49,7 @@ from hooklib import (
 CADENCE_STATE_FILE = "review_cadence.json"
 METRICS_SNAPSHOT_FILE = "metrics_snapshot.json"
 ORCHESTRATION_STATE_FILE = "orchestration_state.json"
+LISTENER_LOG_FILE = "listener_log.jsonl"
 FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 TASK_ID_RE = re.compile(r"^TASK-(\d+)$")
 DEFAULT_WORKER_LEASE_SECONDS = 600
@@ -98,6 +100,72 @@ def has_pending_approval_checkpoint(run_dir: Path) -> bool:
     if not isinstance(status, str):
         return False
     return status.strip().lower() == "pending"
+
+
+def listener_log_path(project_root: Path) -> Path:
+    return project_root / "state" / LISTENER_LOG_FILE
+
+
+def dispatch_registered_listeners(
+    project_root: Path,
+    event_type: str,
+    *,
+    run_id: str,
+    status: str | None = None,
+    task_id: str | None = None,
+    ts: str | None = None,
+) -> None:
+    dispatch_event_listeners(
+        REPO_ROOT / "_system" / "registry" / "listeners.yaml",
+        event_type,
+        {
+            "run_id": run_id,
+            "project_root": str(project_root),
+            "status": status or "",
+            "task_id": task_id or "",
+            "ts": ts or utc_now(),
+        },
+        listener_log_path(project_root),
+        cwd=REPO_ROOT,
+    )
+
+
+def emit_review_created_events(project_root: Path, batches: list[dict]) -> None:
+    for batch in batches:
+        runs = batch.get("runs") if isinstance(batch.get("runs"), list) else []
+        for run in runs:
+            run_id = str(run.get("run_id") or "").strip()
+            if not run_id:
+                continue
+            run_path = run.get("run_path")
+            run_dir: Path | None = None
+            if isinstance(run_path, str) and run_path.strip():
+                candidate = (project_root / run_path).resolve()
+                if candidate.is_dir():
+                    run_dir = candidate
+            if run_dir is None:
+                run_dir = find_run_dir(project_root, run_id)
+            if run_dir is None:
+                continue
+            event = append_run_event(
+                run_dir,
+                "review_created",
+                project_root=project_root,
+                payload={
+                    "batch_id": batch.get("batch_id"),
+                    "reviewer": batch.get("reviewer"),
+                    "trigger_type": batch.get("trigger_type"),
+                    "run_count": len(runs),
+                },
+            )
+            dispatch_registered_listeners(
+                project_root,
+                "review_created",
+                run_id=run_id,
+                status="created",
+                task_id=str(run.get("task_id") or ""),
+                ts=event.get("recorded_at"),
+            )
 
 
 def load_stream_tail(run_dir: Path, limit: int = 10) -> list[dict]:
@@ -1426,6 +1494,7 @@ def maybe_trigger_review(project_root: Path, run_dir: Path, result_status: str, 
             cadence_state["successful_since_last_batch"] = 0
             cadence_state["last_batch_generated_at"] = utc_now()
 
+        emit_review_created_events(project_root, batches)
         save_cadence_state(project_root, cadence_state)
         return batches
     except Exception as exc:  # pragma: no cover - review generation must not fail worker loop
@@ -1695,7 +1764,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 0
     if args.execute:
         result, _result_error = load_json_status(run_dir / "result.json")
-        append_run_event(
+        event = append_run_event(
             run_dir,
             "run_finished",
             project_root=project_root,
@@ -1705,6 +1774,19 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "exit_code": 0 if (result.get("status") or "success") == "success" else 1,
                 "source": "cmd.run",
             },
+        )
+        task_id = ""
+        try:
+            task_id = str(read_json(run_dir / "job.json").get("task", {}).get("id") or "")
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            task_id = ""
+        dispatch_registered_listeners(
+            project_root,
+            "run_finished",
+            run_id=run_dir.name,
+            status=str(result.get("status") or "success"),
+            task_id=task_id,
+            ts=event.get("recorded_at"),
         )
     refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "created", "run_dir": str(run_dir)}, ensure_ascii=False))
@@ -1775,6 +1857,25 @@ def cmd_worker(args: argparse.Namespace) -> int:
                 "worker_id": claimed.worker_id,
             },
         )
+        started_event = append_run_event(
+            run_dir,
+            "run_started",
+            project_root=project_root,
+            payload={
+                "queue_state": "running",
+                "run_status": "running",
+                "attempt_count": claimed.attempt_count,
+                "worker_id": claimed.worker_id,
+            },
+        )
+        dispatch_registered_listeners(
+            project_root,
+            "run_started",
+            run_id=run_dir.name,
+            status="running",
+            task_id=str(payload.get("task", {}).get("id") or ""),
+            ts=started_event.get("recorded_at"),
+        )
         completed, heartbeat_warnings = run_job_with_lease_heartbeat(
             queue,
             claimed,
@@ -1830,7 +1931,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
         result_payload, _result_error = load_json_status(run_dir / "result.json")
         meta_payload, _meta_error = load_json_status(run_dir / "meta.json")
         delivery_snapshot = resolve_run_delivery(project_root, run_dir, meta=meta_payload, result=result_payload)
-        append_run_event(
+        finished_event = append_run_event(
             run_dir,
             "run_finished",
             project_root=project_root,
@@ -1841,6 +1942,14 @@ def cmd_worker(args: argparse.Namespace) -> int:
                 "exit_code": completed.returncode,
                 "delivery_status": delivery_snapshot.get("status"),
             },
+        )
+        dispatch_registered_listeners(
+            project_root,
+            "run_finished",
+            run_id=run_dir.name,
+            status=result_status,
+            task_id=str(payload.get("task", {}).get("id") or ""),
+            ts=finished_event.get("recorded_at"),
         )
         if queue_state == "retried":
             append_run_event(
@@ -2146,6 +2255,26 @@ def cmd_ask_human(args: argparse.Namespace) -> int:
         source=args.source,
         reason=args.reason,
         requested_action=args.action,
+    )
+    event = append_run_event(
+        run_dir,
+        "approval_requested",
+        project_root=project_root,
+        payload={
+            "approval_id": approval.get("approval_id"),
+            "approval_status": approval.get("status"),
+            "requested_action": approval.get("requested_action"),
+            "source": approval.get("source"),
+            "reason": approval.get("reason"),
+        },
+    )
+    dispatch_registered_listeners(
+        project_root,
+        "approval_requested",
+        run_id=args.run_id,
+        status=str(approval.get("status") or ""),
+        task_id=str(approval.get("task_id") or ""),
+        ts=event.get("recorded_at"),
     )
     refresh_metrics_snapshot(project_root)
     print(json.dumps(approval, ensure_ascii=False, indent=2))
@@ -2903,6 +3032,9 @@ def cmd_openclaw_review_batch(args: argparse.Namespace) -> int:
                 "trigger": run.get("trigger"),
                 "reviewer": batch.get("reviewer"),
             })
+
+    if not dry_run:
+        emit_review_created_events(project_root, batches)
 
     result = {
         "batches_created": len(batches) if not dry_run else 0,

@@ -1,7 +1,7 @@
 ---
 id: TASK-014
 title: "Simple listener registry for orchestrator events"
-status: ready
+status: done
 spec: ../specs/SPEC-014.md
 preferred_agent: codex
 review_policy: standard

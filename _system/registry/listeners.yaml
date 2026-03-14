@@ -1,0 +1,30 @@
+# Global orchestrator listeners.
+# Supported events:
+#   - run_started
+#   - run_finished
+#   - review_created
+#   - approval_requested
+# Conditions are optional equality checks against the listener context.
+# Available template variables: {run_id}, {project_root}, {status}, {task_id}, {ts}
+listeners:
+  - id: example-run-started
+    event: run_started
+    command: python3 scripts/claw.py openclaw summary {project_root} {run_id}
+    enabled: false
+
+  - id: example-run-finished
+    event: run_finished
+    condition:
+      status: success
+    command: python3 scripts/claw.py openclaw summary {project_root} {run_id}
+    enabled: false
+
+  - id: example-review-created
+    event: review_created
+    command: python3 scripts/claw.py openclaw review-batch {project_root} --dry-run
+    enabled: false
+
+  - id: example-approval-requested
+    event: approval_requested
+    command: python3 scripts/claw.py openclaw status {project_root}
+    enabled: false

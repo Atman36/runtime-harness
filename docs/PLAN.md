@@ -504,6 +504,11 @@ Roadmap снова открыт уже после закрытия reopened regr
   - worker переводит job в `awaiting_approval`, а `resolve-checkpoint` принимает решение accept/reject
   - добавлен regression coverage для pause/resume потока
 
+- **TASK-014 listener registry for orchestrator events** — ✅ сделано (2026-03-14)
+  - добавлены `_system/registry/listeners.yaml` и `_system/engine/listener_dispatch.py`
+  - `claw.py` теперь диспатчит trusted listeners на `run_started`, `run_finished`, `review_created`, `approval_requested`
+  - side effects логируются в `state/listener_log.jsonl`, а listener failures не роняют основной orchestration path
+
 Следующий порядок: `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
 
 ### Epic 14 — PaperClip-inspired coordination primitives (2026-03-14)
