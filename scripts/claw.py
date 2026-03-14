@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from _system.engine import FileQueue, QueueEmpty, build_agent_command, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
+from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
 from _system.engine.error_codes import build_error_envelope  # noqa: E402
 from _system.engine.guardrails import run_guardrails  # noqa: E402
@@ -263,6 +264,49 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     finally:
         if temp_path.exists():
             temp_path.unlink()
+
+
+def append_routing_decision(project_root: Path, run_dir: Path, *, source: str) -> None:
+    try:
+        job = read_json(run_dir / "job.json")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+
+    routing = job.get("routing") if isinstance(job.get("routing"), dict) else {}
+    execution = job.get("execution") if isinstance(job.get("execution"), dict) else {}
+    task = job.get("task") if isinstance(job.get("task"), dict) else {}
+
+    append_decision(
+        project_root,
+        "routing",
+        run_id=run_dir.name,
+        task_id=str(task.get("id") or ""),
+        reason_code=str(routing.get("selection_source") or "unknown"),
+        details={
+            "source": source,
+            "selected_agent": routing.get("selected_agent") or job.get("preferred_agent"),
+            "selection_source": routing.get("selection_source"),
+            "routing_rule": routing.get("routing_rule"),
+            "workspace_mode": execution.get("workspace_mode"),
+        },
+        outcome="dispatched",
+    )
+
+
+def append_approval_requested_decision(project_root: Path, approval: dict) -> None:
+    append_decision(
+        project_root,
+        "approval_requested",
+        run_id=str(approval.get("run_id") or ""),
+        task_id=str(approval.get("task_id") or ""),
+        reason_code=str(approval.get("reason") or ""),
+        details={
+            "source": approval.get("source"),
+            "requested_action": approval.get("requested_action"),
+            "approval_id": approval.get("approval_id"),
+        },
+        outcome="waiting",
+    )
 
 
 def load_orchestration_state(project_root: Path) -> dict:
@@ -941,6 +985,21 @@ def materialize_follow_up_tasks(project_root: Path, run_dir: Path, decision: dic
                     "task_path": existing_task.relative_to(project_root).as_posix(),
                 }
             )
+            append_decision(
+                project_root,
+                "follow_up_created",
+                run_id=str(meta.get("run_id") or run_dir.name),
+                task_id=str(meta.get("task_id") or ""),
+                reason_code="needs_follow_up",
+                details={
+                    "review_id": decision.get("review_id"),
+                    "action_id": action_id,
+                    "assigned_agent": action.get("assigned_agent"),
+                    "created_task_id": existing_task.stem,
+                    "created_task_path": existing_task.relative_to(project_root).as_posix(),
+                },
+                outcome="created",
+            )
 
         if existing_task is not None:
             action["task_id"] = existing_task.stem
@@ -1087,7 +1146,9 @@ def run_worker_once(project_root: Path, *, skip_review: bool = False) -> tuple[s
 def enqueue_task_path(task_path: Path) -> tuple[Path, dict]:
     run_dir = execute_run_task(REPO_ROOT, str(task_path), execute=False)
     payload = enqueue_run(run_dir, state="pending")
-    refresh_metrics_snapshot(run_dir.parent.parent.parent)
+    project_root = run_dir.parent.parent.parent
+    append_routing_decision(project_root, run_dir, source="orchestrate")
+    refresh_metrics_snapshot(project_root)
     return run_dir, payload
 
 
@@ -1116,6 +1177,7 @@ def evaluate_run_decision(project_root: Path, run_dir: Path, *, result_status: s
             reason="run_failed",
             requested_action="retry",
         )
+        append_approval_requested_decision(project_root, approval)
         return {"decision": "ask_human", "approval_id": approval["approval_id"], "reason": "run_failed"}
 
     pending_reviews = load_pending_review_decisions(project_root, run_id=run_id)
@@ -1147,6 +1209,7 @@ def evaluate_run_decision(project_root: Path, run_dir: Path, *, result_status: s
             reason=decision,
             requested_action="follow_up" if decision == "needs_follow_up" else "retry",
         )
+        append_approval_requested_decision(project_root, approval)
         return {"decision": "ask_human", "approval_id": approval["approval_id"], "reason": decision}
 
     accept_run(project_root, run_dir)
@@ -1348,7 +1411,14 @@ def build_workflow_graph(project_root: Path, *, records: list[dict] | None = Non
         nodes.append(node)
 
     edges = [
-        {"from": record["task_id"], "to": dependency, "edge_type": "depends_on"}
+        {
+            "from": record["task_id"],
+            "to": dependency,
+            "edge_type": "sequence",
+            "trigger": "dependency_resolved",
+            "reason_code": "dependency",
+            "approval_gate": False,
+        }
         for record in records
         for dependency in record["dependencies"]
     ]
@@ -1744,6 +1814,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.enqueue:
         queue_state = "awaiting_approval" if args.awaiting_approval else "pending"
         payload = enqueue_run(run_dir, state=queue_state)
+        append_routing_decision(project_root, run_dir, source="cmd.run")
         append_run_event(
             run_dir,
             "run_enqueued",
@@ -1798,6 +1869,7 @@ def cmd_enqueue(args: argparse.Namespace) -> int:
     run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=False)
     payload = enqueue_run(run_dir, state=queue_state)
     project_root = run_dir.parent.parent.parent
+    append_routing_decision(project_root, run_dir, source="cmd.enqueue")
     append_run_event(
         run_dir,
         "run_created",
@@ -1917,6 +1989,21 @@ def cmd_worker(args: argparse.Namespace) -> int:
                     claimed.job_id,
                     next_retry_at=next_retry_at,
                     backoff_seconds=retry_backoff_seconds,
+                )
+                append_decision(
+                    project_root,
+                    "retry",
+                    run_id=run_dir.name,
+                    task_id=str(payload.get("task", {}).get("id") or ""),
+                    reason_code="run_failed",
+                    details={
+                        "attempt_count": claimed.attempt_count,
+                        "max_attempts": claimed.max_attempts,
+                        "next_retry_at": next_retry_at,
+                        "retry_backoff_seconds": retry_backoff_seconds,
+                        "exit_code": completed.returncode,
+                    },
+                    outcome="queued",
                 )
                 queue_state = "retried"
             else:
@@ -2342,6 +2429,7 @@ def cmd_ask_human(args: argparse.Namespace) -> int:
         reason=args.reason,
         requested_action=args.action,
     )
+    append_approval_requested_decision(project_root, approval)
     event = append_run_event(
         run_dir,
         "approval_requested",
@@ -2389,6 +2477,14 @@ def cmd_workflow_graph(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     artifact = refresh_workflow_graph(project_root)
     print(json.dumps(artifact, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_decision_log(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    records = read_decisions(project_root, last_n=args.last)
+    for record in records:
+        print(format_decision_for_display(record))
     return 0
 
 
@@ -3065,6 +3161,7 @@ def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
             "idempotency_key": trigger_envelope.get("idempotency_key"),
             "reason_code": trigger_envelope.get("reason_code"),
         }
+    append_routing_decision(project_root, run_dir, source="openclaw.enqueue")
     append_run_event(
         run_dir,
         "run_created",
@@ -3535,6 +3632,11 @@ def build_parser() -> argparse.ArgumentParser:
     workflow_graph = subcommands.add_parser("workflow-graph", help="Generate and write portable workflow graph artifact")
     workflow_graph.add_argument("project_root")
     workflow_graph.set_defaults(func=cmd_workflow_graph)
+
+    decision_log = subcommands.add_parser("decision-log", help="Show recent orchestrator decisions for a project")
+    decision_log.add_argument("project_root")
+    decision_log.add_argument("--last", type=int, default=20)
+    decision_log.set_defaults(func=cmd_decision_log)
 
     task_lint = subcommands.add_parser("task-lint", help="Lint the task dependency graph for cycles and invalid refs")
     task_lint.add_argument("project_root")

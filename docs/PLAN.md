@@ -514,7 +514,12 @@ Roadmap снова открыт уже после закрытия reopened regr
   - post-run path предупреждает о пропавших `advice.md`, `patch.diff`, `review_findings.json`, не переводя run в failed только из-за missing artifacts
   - добавлен `claw apply-patch <project_root> <run_id> [--confirm]` с dry-run preview diff/findings и `git apply` + `patch_applied` event после подтверждения
 
-Следующий порядок: `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
+- **TASK-016 orchestrator decision log + enriched workflow graph metadata** — ✅ сделано (2026-03-15)
+  - добавлен append-only `state/decision_log.jsonl` и CLI `claw decision-log <project_root> [--last N]`
+  - routing / retry / approval_requested / follow_up_created теперь сохраняются как typed decisions с `reason_code`, `details` и `outcome`
+  - `workflow_graph.json` edges получили `edge_type`, `trigger`, `reason_code`, `approval_gate` с backward-compatible schema для legacy artifacts
+
+Epic 13 закрыт. Следующий порядок определяется эпиками 14 и 15: coordination foundation (`TASK-017`/`TASK-018`) и отдельно operator live status slice (`TASK-022`).
 
 ### Epic 14 — PaperClip-inspired coordination primitives (2026-03-14)
 
@@ -551,6 +556,45 @@ filesystem остаётся source of truth, а новые coordination-меха
 - "компанию из агентов" как отдельную продуктовую оболочку поверх `claw`
 
 Рекомендуемый порядок после Epic 13: `TASK-017` → `TASK-018` → параллельно `TASK-019` и `TASK-020` → `TASK-021`.
+
+---
+
+### Epic 15 — operator transport and session UX (2026-03-15)
+
+Цель эпика: добрать операторский слой поверх уже существующего filesystem-first
+engine: live status, контекстные директивы, session continuity, безопасный
+file exchange и transport extensibility. Сохраняем текущий принцип:
+filesystem остаётся source of truth, а transport state и resume handles живут в
+явных артефактах, а не в памяти процесса.
+
+- **TASK-022 `Live status feed for operators`**
+  - CLI/polling feed поверх `events.jsonl`, `event_snapshot.json` и `agent_stream.jsonl`
+  - оператор видит progress/status без ручного tail по run directory
+  - первый slice без SSE/websocket; transport может poll-ить уже готовые артефакты
+- **TASK-023 `Message directives and context binding`**
+  - нормализованный парсер директив `/agent`, `/project`, `@branch`
+  - `ctx:` footer для reply-based context carry-over без hidden transport state
+  - единые правила precedence: reply context > explicit directives > defaults
+- **TASK-024 `Operator session memory and resume handles`**
+  - file-backed session state per operator scope и engine
+  - auto-resume/new-thread semantics с явным reset path
+  - provider-neutral handle contract вместо жёсткой привязки к одному CLI resume format
+- **TASK-025 `Safe file exchange for project roots`**
+  - upload/download contract для файлов и директорий в active project/worktree
+  - deny-globs, path normalization, atomic write и zip-on-fetch
+  - transport layer получает безопасный файловый шлюз без прямого raw FS доступа
+- **TASK-026 `Transport plugin surface and setup checks`**
+  - transport/command backend contract вместо hardcoded единственного ingress path
+  - setup/doctor checks для конфигурации transport layer
+  - новый transport можно подключать как narrow extension, не раздувая `scripts/claw.py`
+
+Не переносим как есть:
+- transport-specific UX и команды, которые требуют уже готового внешнего chat UI
+- provider-specific resume line как canonical source of truth
+- in-memory scheduler как замену существующей file-backed queue
+- фреймворк-плагины без минимального filesystem contract и config validation
+
+Рекомендуемый порядок после Epic 14: `TASK-022` → `TASK-023` → параллельно `TASK-024` и `TASK-025` → `TASK-026`.
 
 ---
 

@@ -99,13 +99,32 @@ assert artifact["edge_count"] == 3, artifact
 node_ids = [node["node_id"] for node in artifact["nodes"]]
 assert node_ids == ["TASK-001", "TASK-002", "TASK-003"], node_ids
 
-edges = {(edge["from"], edge["to"], edge["edge_type"]) for edge in artifact["edges"]}
+edges = {
+    (
+        edge["from"],
+        edge["to"],
+        edge["edge_type"],
+        edge["trigger"],
+        edge["reason_code"],
+        edge["approval_gate"],
+    )
+    for edge in artifact["edges"]
+}
 expected_edges = {
-    ("TASK-002", "TASK-001", "depends_on"),
-    ("TASK-003", "TASK-001", "depends_on"),
-    ("TASK-003", "TASK-002", "depends_on"),
+    ("TASK-002", "TASK-001", "sequence", "dependency_resolved", "dependency", False),
+    ("TASK-003", "TASK-001", "sequence", "dependency_resolved", "dependency", False),
+    ("TASK-003", "TASK-002", "sequence", "dependency_resolved", "dependency", False),
 }
 assert edges == expected_edges, edges
+
+legacy_artifact = json.loads(json.dumps(artifact))
+for edge in legacy_artifact["edges"]:
+    edge.pop("edge_type", None)
+    edge.pop("trigger", None)
+    edge.pop("reason_code", None)
+    edge.pop("approval_gate", None)
+legacy_errors = validate_fallback(legacy_artifact, schema)
+assert not legacy_errors, legacy_errors
 
 task_two = next(node for node in artifact["nodes"] if node["node_id"] == "TASK-002")
 assert task_two["ready"] is True, task_two

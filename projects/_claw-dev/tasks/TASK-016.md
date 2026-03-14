@@ -1,7 +1,7 @@
 ---
 id: TASK-016
 title: "Orchestrator decision log and richer workflow graph metadata"
-status: ready
+status: done
 spec: ../specs/SPEC-016.md
 preferred_agent: codex
 review_policy: standard

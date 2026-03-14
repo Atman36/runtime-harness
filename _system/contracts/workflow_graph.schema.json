@@ -78,11 +78,17 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["from", "to", "edge_type"],
+        "required": ["from", "to"],
         "properties": {
           "from": {"type": "string"},
           "to": {"type": "string"},
-          "edge_type": {"type": "string", "const": "depends_on"}
+          "edge_type": {
+            "type": "string",
+            "enum": ["sequence", "conditional", "approval_gate", "listener", "depends_on"]
+          },
+          "trigger": {"type": "string"},
+          "reason_code": {"type": "string"},
+          "approval_gate": {"type": "boolean"}
         },
         "additionalProperties": false
       }
