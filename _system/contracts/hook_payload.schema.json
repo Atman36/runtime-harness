@@ -39,7 +39,8 @@
         "result_path": { "type": "string" },
         "report_path": { "type": "string" },
         "stdout_path": { "type": "string" },
-        "stderr_path": { "type": "string" }
+        "stderr_path": { "type": "string" },
+        "stream_path": { "type": "string" }
       }
     },
     "delivery": {

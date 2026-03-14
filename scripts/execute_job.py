@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,6 +122,123 @@ def parse_timeout_seconds(raw_value: str | int | None, fallback: int) -> int:
         return max(1, int(raw_value))
     except (TypeError, ValueError):
         return fallback
+
+
+def classify_stream_line(line: str) -> str:
+    stripped = line.strip()
+    lowered = stripped.lower()
+
+    reasoning_prefixes = (
+        "<thinking>",
+        "[thinking]",
+        "thinking:",
+        "thought:",
+        "reasoning:",
+        "analysis:",
+    )
+    if lowered.startswith(reasoning_prefixes):
+        return "reasoning"
+
+    command_prefixes = (
+        "openclaw ",
+        "claw ",
+        "python scripts/claw.py ",
+        "python3 scripts/claw.py ",
+        "./scripts/claw.py ",
+        "git ",
+        "bash ",
+        "npm ",
+        "pnpm ",
+    )
+    if stripped.startswith(command_prefixes):
+        return "command"
+
+    return "message"
+
+
+def append_stream_record(stream_path: Path, state: dict[str, int], record_type: str, text: str) -> None:
+    state["seq"] += 1
+    record = {
+        "ts": utc_now(),
+        "seq": state["seq"],
+        "type": record_type,
+        "text": text,
+    }
+    with stream_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False))
+        handle.write("\n")
+
+
+def stream_agent_output(
+    proc: subprocess.Popen[str],
+    stream_path: Path,
+    timeout_seconds: int,
+    *,
+    command_input: str | None = None,
+) -> tuple[str, str]:
+    stream_path.parent.mkdir(parents=True, exist_ok=True)
+    stream_path.write_text("", encoding="utf-8")
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    stream_state = {"seq": 0}
+    stream_lock = threading.Lock()
+
+    def _append_record(record_type: str, text: str) -> None:
+        with stream_lock:
+            append_stream_record(stream_path, stream_state, record_type, text)
+
+    def _drain_stdout(pipe: object) -> None:
+        if pipe is None:
+            return
+        try:
+            while True:
+                line = pipe.readline()
+                if line == "":
+                    break
+                stdout_lines.append(line)
+                _append_record(classify_stream_line(line), line.rstrip("\r\n"))
+        finally:
+            pipe.close()
+
+    def _drain_stderr(pipe: object) -> None:
+        if pipe is None:
+            return
+        try:
+            while True:
+                line = pipe.readline()
+                if line == "":
+                    break
+                stderr_lines.append(line)
+        finally:
+            pipe.close()
+
+    stdout_thread = threading.Thread(target=_drain_stdout, args=(proc.stdout,), daemon=True)
+    stderr_thread = threading.Thread(target=_drain_stderr, args=(proc.stderr,), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+
+    _append_record("status", "run_start")
+
+    try:
+        if command_input is not None and proc.stdin is not None:
+            proc.stdin.write(command_input)
+            proc.stdin.close()
+
+        proc.wait(timeout=timeout_seconds)
+        stdout_thread.join()
+        stderr_thread.join()
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        stdout_thread.join()
+        stderr_thread.join()
+        exc.stdout = "".join(stdout_lines)
+        exc.stderr = "".join(stderr_lines)
+        _append_record("status", "run_end")
+        raise
+
+    _append_record("status", "run_end")
+    return "".join(stdout_lines), "".join(stderr_lines)
 
 
 def render_agent_args(
@@ -518,6 +637,7 @@ def main() -> int:
     stdout_path = run_dir / artifacts.get("stdout_path", "stdout.log")
     stderr_path = run_dir / artifacts.get("stderr_path", "stderr.log")
     report_path = run_dir / artifacts.get("report_path", "report.md")
+    stream_path = run_dir / artifacts.get("stream_path", "agent_stream.jsonl")
 
     if not prompt_path.is_file():
         print(f"Prompt file not found: {prompt_path}", file=sys.stderr)
@@ -587,18 +707,22 @@ def main() -> int:
     status = "failed"
 
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             command,
-            input=command_input,
-            capture_output=True,
+            stdin=subprocess.PIPE if command_input is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             cwd=working_directory,
-            timeout=timeout_seconds,
-            check=False,
+            bufsize=1,
         )
-        stdout_text = completed.stdout or ""
-        stderr_text = completed.stderr or ""
-        exit_code = completed.returncode
+        stdout_text, stderr_text = stream_agent_output(
+            proc,
+            stream_path,
+            timeout_seconds,
+            command_input=command_input,
+        )
+        exit_code = proc.returncode if proc.returncode is not None else 1
         status = "success" if exit_code == 0 else "failed"
     except subprocess.TimeoutExpired as exc:
         stdout_text = exc.stdout or ""

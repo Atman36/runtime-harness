@@ -178,7 +178,8 @@
         "report_path":  {"type": "string"},
         "result_path":  {"type": "string"},
         "stdout_path":  {"type": "string"},
-        "stderr_path":  {"type": "string"}
+        "stderr_path":  {"type": "string"},
+        "stream_path":  {"type": "string"}
       }
     }
   }

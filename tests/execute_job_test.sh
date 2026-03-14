@@ -108,6 +108,7 @@ assert_file "$run_one/result.json"
 assert_file "$run_one/report.md"
 assert_file "$run_one/stdout.log"
 assert_file "$run_one/stderr.log"
+assert_file "$run_one/agent_stream.jsonl"
 assert_contains "$run_one/meta.json" '"status": "completed"'
 assert_contains "$run_one/result.json" '"status": "success"'
 assert_contains "$run_one/result.json" '"exit_code": 0'
@@ -123,6 +124,26 @@ assert_contains "$run_one/report.md" '- Agent: codex'
 assert_contains "$run_one/report.md" '- Status: success'
 assert_contains "$run_one/report.md" 'FAKE SUCCESS'
 assert_file "$hook_one_pending"
+
+python3 - "$run_one/agent_stream.jsonl" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+assert len(records) >= 3, records
+assert records[0]["type"] == "status", records
+assert records[0]["text"] == "run_start", records
+assert records[-1]["type"] == "status", records
+assert records[-1]["text"] == "run_end", records
+assert any(record["type"] == "message" and "FAKE SUCCESS" in record["text"] for record in records), records
+for index, record in enumerate(records, start=1):
+    assert isinstance(record["ts"], str) and record["ts"], record
+    assert record["type"] in {"message", "reasoning", "command", "status"}, record
+    assert isinstance(record["text"], str), record
+    assert record["seq"] == index, records
+PY
 
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_fail_agent.sh" \
   bash "$workspace/scripts/run_task.sh" "$task_path"
@@ -188,6 +209,7 @@ assert_dir "$run_three"
 assert_contains "$run_three/result.json" '"status": "success"'
 assert_contains "$run_three/result.json" '"exit_code": 0'
 assert_contains "$run_three/stdout.log" 'STUB SUCCESS'
+assert_file "$run_three/agent_stream.jsonl"
 assert_contains "$workspace/agent-args.txt" 'exec --mode stdin --flag registry'
 assert_contains "$workspace/agent-stdin.txt" 'Task: TASK-001'
 assert_contains "$workspace/agent-cwd.txt" "$project_root_resolved"

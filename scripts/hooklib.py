@@ -326,6 +326,7 @@ def build_hook_payload(run_dir: Path, project_root: Path, job: dict, meta: dict,
             "report_path": f"{run_rel_dir}/report.md",
             "stdout_path": f"{run_rel_dir}/stdout.log",
             "stderr_path": f"{run_rel_dir}/stderr.log",
+            "stream_path": f"{run_rel_dir}/{job.get('artifacts', {}).get('stream_path', 'agent_stream.jsonl')}",
         },
         "delivery": {
             "status": "pending",

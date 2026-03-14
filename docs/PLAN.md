@@ -492,7 +492,14 @@ Roadmap снова открыт уже после закрытия reopened regr
   - добавлен replay helper `claw openclaw replay-events` и `event_snapshot` в `openclaw summary`
   - enqueue / worker / wake теперь пишут event trail для live-status слоя
 
-Следующий порядок: `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
+### Epic 13 — live agent feedback loop (2026-03-14)
+
+- **TASK-012 `agent_stream.jsonl`** — ✅ сделано (2026-03-14)
+  - `execute_job.py` переведён на `Popen` + threaded stdout/stderr drain без потери timeout-semantics
+  - run artifacts теперь включают `agent_stream.jsonl`, а `openclaw summary` отдаёт `stream_tail`
+  - regression coverage добавлена для classify/tail/timeout/backward-compat path
+
+Следующий порядок: `TASK-013 approval checkpoint` → затем `live status feed` → затем переоценка `codex app-server runner` и `MCP provider layer`.
 
 ---
 

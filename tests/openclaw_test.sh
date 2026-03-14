@@ -171,6 +171,7 @@ expected_run_id = sys.argv[2]
 assert data["run_id"] == expected_run_id, f"run_id: expected {expected_run_id!r}, got {data['run_id']!r}"
 assert "status" in data, "Missing 'status' field"
 assert "agent" in data, "Missing 'agent' field"
+assert data["stream_tail"] == [], f"expected empty stream_tail before execution, got {data['stream_tail']!r}"
 PY
 
 echo "  ok: test3 — openclaw summary returns JSON with run_id, status, agent"
@@ -248,6 +249,20 @@ echo "  ok: test4 — openclaw review-batch --dry-run returns JSON with dry_run=
 
 CLAW_AGENT_COMMAND_CODEX="bash $workspace/scripts/fake_success_agent.sh" \
   python3 "$workspace/scripts/execute_job.py" "$project_root/runs/$today/$run_id" >/dev/null
+
+summary_after_run="$tmp_root/summary-after-run.json"
+claw openclaw summary "$project_root" "$run_id" > "$summary_after_run"
+
+python3 - "$summary_after_run" <<'PY'
+import json, sys
+data = json.loads(open(sys.argv[1]).read())
+stream_tail = data["stream_tail"]
+assert isinstance(stream_tail, list), stream_tail
+assert len(stream_tail) >= 2, stream_tail
+assert stream_tail[-1]["type"] == "status", stream_tail
+assert stream_tail[-1]["text"] == "run_end", stream_tail
+assert any(record["type"] == "message" and "OpenClaw callback summary from fake agent" in record["text"] for record in stream_tail), stream_tail
+PY
 
 hook_path="$project_root/state/hooks/pending/${today}--${run_id}.json"
 callback_out="$tmp_root/callback.json"

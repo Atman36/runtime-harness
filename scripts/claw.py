@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -82,6 +83,42 @@ def duration_between(started_at: str | None, finished_at: str | None) -> float |
     if start is None or finish is None:
         return None
     return round((finish - start).total_seconds(), 1)
+
+
+def load_stream_tail(run_dir: Path, limit: int = 10) -> list[dict]:
+    stream_path = run_dir / "agent_stream.jsonl"
+    job_path = run_dir / "job.json"
+
+    if job_path.is_file():
+        try:
+            job = read_json(job_path)
+            artifacts = job.get("artifacts") or {}
+            relative_path = artifacts.get("stream_path")
+            if isinstance(relative_path, str) and relative_path.strip():
+                stream_path = run_dir / relative_path
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+
+    if not stream_path.is_file():
+        return []
+
+    tail: deque[dict] = deque(maxlen=max(1, limit))
+    try:
+        with stream_path.open(encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    tail.append(record)
+    except OSError:
+        return []
+
+    return list(tail)
 
 
 def load_cadence_state(project_root: Path) -> dict:
@@ -2837,6 +2874,7 @@ def cmd_openclaw_summary(args: argparse.Namespace) -> int:
         "agent": agent,
         "duration_seconds": duration_seconds,
         "summary": summary_text,
+        "stream_tail": load_stream_tail(run_dir),
         "validation": validation,
         "hook": hook_status,
         "delivery": delivery,

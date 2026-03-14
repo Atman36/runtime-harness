@@ -266,6 +266,7 @@ def create_run(context: RunContext) -> Path:
             "result_path": "result.json",
             "stdout_path": "stdout.log",
             "stderr_path": "stderr.log",
+            "stream_path": "agent_stream.jsonl",
         },
     }
     if concurrency_key:

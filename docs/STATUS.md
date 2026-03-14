@@ -70,12 +70,12 @@
 
 ## In Progress
 
-- **Epic 12 (External Project Autonomy)** — активен; TASK-006, TASK-007 и TASK-008 закрыты, TASK-010 ждёт
-- `live status feed` — следующий слой поверх `events.jsonl` / `event_snapshot.json`; transport/SSE пока сознательно не поднимались
+- **Epic 13 (Live agent feedback loop)** — активен; `TASK-012` закрыт, следующий узкий slice: `TASK-013 approval checkpoint`
+- `live status feed` остаётся следующим observability-слоем поверх `events.jsonl` / `event_snapshot.json`; transport/SSE пока сознательно не поднимались
 
 ## Next
 
-- **TASK-010** (claude): epic-status + `claw orchestrate --scope epic:N`
+- **TASK-013** (codex): within-run approval checkpoint / pause-resume primitive поверх `approval_checkpoint.json`
 - Разделить `run_all.sh` на быстрый (unit) и медленный (integration) прогоны — сейчас весь suite занимает ~40 сек
 
 ## Рефлексия сессии 2026-03-14
@@ -220,3 +220,4 @@ python scripts/claw.py worker projects/demo-project
 | 2026-03-14 | TASK-008 command registry in WORKFLOW contract + `claw run-checks` | `_system/engine/workflow_contract.py`, `_system/engine/__init__.py`, `scripts/claw.py`, `projects/_template/docs/WORKFLOW.md`, `projects/demo-project/docs/WORKFLOW.md`, `tests/workflow_contract_test.sh`, `tests/command_registry_test.sh`, `tests/orchestration_loop_test.sh`, `tests/run_all.sh`, `projects/_claw-dev/tasks/TASK-008.md`, `docs/STATUS.md` | `bash tests/workflow_contract_test.sh`; `bash tests/command_registry_test.sh`; `bash tests/orchestration_loop_test.sh`; `bash tests/run_all.sh` | ✅ typed `commands` registry added to workflow contract/template, `claw run-checks` executes registered `test|lint|build|smoke` commands with default fallback to `bash tests/run_all.sh`, and `claw orchestrate` now surfaces `test_command`; assumption: registry regression test skips itself under nested `run_all.sh` to avoid recursion from the default test command | TASK-010 |
 | 2026-03-14 | README и docs cleanup под текущий workflow OpenClaw -> claw -> Codex/Claude | `README.md`, `docs/EXECUTION_FLOW.md`, `docs/AUTONOMY_GAPS_PLAN.md`, `docs/STATUS.md` | `bash tests/run_all.sh` | ✅ README переписан как актуальный entrypoint проекта; устаревшие gap-формулировки в autonomy plan помечены как historical record; execution flow синхронизирован с Epic 12 и delivery hardening | git/worktree cleanup |
 | 2026-03-14 | Анализ `crewAI-main` и `ccg-workflow-main` как доноров для `claw` | `.local/crewai-ccg-ideas.md`, `docs/STATUS.md` | `rg`; `sed`; `bash tests/run_all.sh` | ✅ выделены только практичные slices для переноса: streaming agent events, step-level human feedback, listener registry, advisory patch mode; assumption: переносим идеи, а не код/архитектуру целиком | live agent stream slice |
+| 2026-03-14 | TASK-012 live agent stream: `agent_stream.jsonl` | `scripts/execute_job.py`, `scripts/build_run.py`, `scripts/claw.py`, `scripts/hooklib.py`, `_system/contracts/{job,hook_payload}.schema.json`, `tests/{stream_classify_test.sh,execute_job_test.sh,openclaw_test.sh,run_all.sh}`, `projects/_claw-dev/tasks/TASK-012.md`, `docs/PLAN.md`, `docs/STATUS.md` | `bash tests/stream_classify_test.sh`; `bash tests/execute_job_test.sh`; `bash tests/openclaw_test.sh`; `bash tests/runtime_hardening_test.sh`; `bash tests/run_all.sh` | ✅ `execute_job` теперь пишет line-by-line `agent_stream.jsonl` с `status/message/command/reasoning`, сохраняет старые `stdout.log`/`stderr.log`, а `openclaw summary` отдаёт `stream_tail`; assumption: command classification намеренно узкая и case-sensitive, чтобы обычные user-facing строки не считались CLI-командами | TASK-013 |
