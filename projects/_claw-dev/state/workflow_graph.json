@@ -1,7 +1,7 @@
 {
   "artifact_version": 1,
   "project": "_claw-dev",
-  "generated_at": "2026-03-15T08:39:43Z",
+  "generated_at": "2026-03-15T09:57:33Z",
   "node_count": 26,
   "edge_count": 28,
   "nodes": [
@@ -312,12 +312,12 @@
       "node_id": "TASK-019",
       "node_type": "task",
       "title": "Resumable agent session state",
-      "status": "ready",
+      "status": "done",
       "priority": "medium",
       "preferred_agent": "codex",
       "selected_agent": "codex",
       "needs_review": true,
-      "ready": true,
+      "ready": false,
       "active": false,
       "dependencies": [
         "TASK-018"
@@ -329,12 +329,12 @@
       "node_id": "TASK-020",
       "node_type": "task",
       "title": "Org graph and delegation policy",
-      "status": "ready",
+      "status": "done",
       "priority": "medium",
       "preferred_agent": "codex",
       "selected_agent": "codex",
       "needs_review": true,
-      "ready": true,
+      "ready": false,
       "active": false,
       "dependencies": [
         "TASK-018"
@@ -351,16 +351,13 @@
       "preferred_agent": "codex",
       "selected_agent": "codex",
       "needs_review": true,
-      "ready": false,
+      "ready": true,
       "active": false,
       "dependencies": [
         "TASK-019",
         "TASK-020"
       ],
-      "dependency_blockers": [
-        "TASK-019",
-        "TASK-020"
-      ],
+      "dependency_blockers": [],
       "task_path": "tasks/TASK-021.md"
     },
     {
@@ -685,5 +682,5 @@
       "approval_gate": false
     }
   ],
-  "checksum": "ee3c7ae1877355ee5bcdee158d5608d3eedc90bdc2ec2fd15ebfe7c8a6feaa34"
+  "checksum": "1b7c034e4eb3f04c485d27bf99e726108f9d2dfbc51b9cdac5e3f459f3eba6f8"
 }

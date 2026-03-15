@@ -1,7 +1,7 @@
 # Contract Versioning & Migration — claw
 
 Date: 2026-03-13
-Status: authoritative / covers job, result, meta, queue item, hook payload, review decision, workflow contract, task snapshot, task claim
+Status: authoritative / covers job, result, meta, queue item, hook payload, review decision, workflow contract, task snapshot, task claim, session state
 
 ---
 
@@ -29,6 +29,7 @@ This document covers:
 | Workflow contract (`docs/WORKFLOW.md`) | `contract_version` | YAML front matter | `1` |
 | Task snapshot (`state/tasks_snapshot.json`) | `snapshot_version` | Top-level | `1` |
 | Task claim (`state/claims/*.json`) | `claim_version` | Top-level | `1` |
+| Session state (`state/sessions/*.json`) | `session_version` | Top-level | `1` |
 | `result.json` | _(none yet — see below)_ | — | — |
 | `meta.json` | _(none yet — see below)_ | — | — |
 

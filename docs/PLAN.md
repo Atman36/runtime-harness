@@ -536,14 +536,14 @@ filesystem остаётся source of truth, а новые coordination-меха
   - добавлены `task-claim` / `task-release` / `inbox` CLI и file-backed claims в `state/claims/`
   - claim идемпотентен для текущего владельца, конфликтует для других, release пишет reason trail
   - claim влияет на routing и будит wake queue; `blocked` / `in_progress` / `released` отражаются в task front matter
-- **TASK-019 `Resumable agent session state`**
-  - persisted session handle + handoff summary per agent/task
-  - следующий wake поднимает continuity без полного cold-start prompt replay
-  - explicit reset/rotate path для stale/confused sessions
-- **TASK-020 `Org graph and delegation policy`**
-  - file-backed org tree (`reports_to`, capabilities, allowed delegation lanes)
-  - manager/lead agents могут создавать child tasks с parent linkage и escalation rules
-  - blocked work эскалируется вверх по цепочке командования
+- **TASK-019 `Resumable agent session state`** — ✅ сделано (2026-03-15)
+  - file-backed session continuity в `state/sessions` + schema `session_state.schema.json`
+  - CLI `session-status|session-update|session-reset|session-rotate` хранит resume handle + handoff summary
+  - inbox/wake/task-claim теперь возвращают session summary для resume
+- **TASK-020 `Org graph and delegation policy`** — ✅ сделано (2026-03-15)
+  - добавлен `org_graph.yaml` в registry + loader/validation в `_system/engine/org_graph.py`
+  - CLI `org-graph`, `task-delegate`, `task-escalate` создают child tasks с parent linkage + delegation metadata
+  - blocked задачи эскалируются вверх по `reports_to` chain с explicit diagnostics при запрете
 - **TASK-021 `Budget and governance guardrails`**
   - file-backed budget snapshots / soft-limit warnings / hard-stop pause semantics
   - approval-required actions для risky операций и изменения конфигурации агентов

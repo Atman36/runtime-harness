@@ -1,0 +1,20 @@
+org_graph:
+  agents:
+    claude:
+      reports_to: null
+      capabilities:
+        - design
+        - ux
+        - architecture
+        - research
+      delegates_to:
+        - codex
+    codex:
+      reports_to: claude
+      capabilities:
+        - implementation
+        - tests
+        - fixes
+        - shell_glue
+  delegation:
+    allow_self_delegate: false

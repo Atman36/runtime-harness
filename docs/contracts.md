@@ -13,6 +13,7 @@ Located in `_system/contracts/`:
 | `result.schema.json` | `runs/**/result.json` | `run_id`, `status` |
 | `meta.schema.json` | `runs/**/meta.json` | `run_id`, `status`, `project`, `routing`, `execution` |
 | `task_claim.schema.json` | `projects/<slug>/state/claims/*.json` | `claim_version`, `task_id`, `status`, `owner`, `events` |
+| `session_state.schema.json` | `projects/<slug>/state/sessions/*.json` | `session_version`, `session_id`, `scope`, `resume`, `handoff` |
 | `workflow.schema.json` | `projects/<slug>/docs/WORKFLOW.md` front matter | `contract_version`, `project`, `approval_gates`, `retry_policy` |
 
 Schemas follow [JSON Schema draft 2020-12](https://json-schema.org/draft/2020-12/schema).
