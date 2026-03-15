@@ -26,7 +26,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileQueue, QueueEmpty, build_agent_command, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command  # noqa: E402
+from _system.engine import FileQueue, QueueEmpty, VALID_WAKE_REASONS, WakeQueue, build_agent_command, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command, wake_root_for_project  # noqa: E402
 from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
 from _system.engine.error_codes import build_error_envelope  # noqa: E402
@@ -363,6 +363,11 @@ def queue_counts(project_root: Path) -> dict[str, int]:
         state_dir = queue_root / state
         counts[state] = len(list(state_dir.glob("*.json"))) if state_dir.is_dir() else 0
     return counts
+
+
+def wake_snapshot(project_root: Path, *, limit: int = 5) -> dict:
+    queue = WakeQueue(wake_root_for_project(project_root))
+    return queue.snapshot(limit=limit)
 
 
 def default_heartbeat_interval(lease_seconds: int) -> float:
@@ -1093,6 +1098,7 @@ def build_project_dashboard(project_root: Path, *, recent_limit: int = 5, ready_
     return {
         "project": project_root.name,
         "queue": snapshot["queue"],
+        "wakes": snapshot.get("wakes") or wake_snapshot(project_root, limit=ready_limit)["counts"],
         "pending_reviews": snapshot["reviews"]["pending_decisions"],
         "pending_hooks": snapshot["hooks"]["pending"],
         "failed_hooks": snapshot["hooks"]["failed"],
@@ -1256,6 +1262,7 @@ def count_pending_review_decisions(project_root: Path) -> int:
 
 def build_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dict:
     queue_snapshot = queue_counts(project_root)
+    wakes_snapshot = wake_snapshot(project_root, limit=recent_limit)
     hook_snapshot = hook_counts(project_root)
     reviewed_batches = len(list((project_root / "reviews").glob("REVIEW-*.json")))
     result_files = collect_run_results(project_root)
@@ -1305,6 +1312,7 @@ def build_metrics_snapshot(project_root: Path, *, recent_limit: int = 20) -> dic
         "project": project_root.name,
         "updated_at": utc_now(),
         "queue": queue_snapshot,
+        "wakes": wakes_snapshot["counts"],
         "hooks": hook_snapshot,
         "runs": {
             "total": len(result_files),
@@ -2359,6 +2367,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             "pending_approvals": sum(project["pending_approvals"] for project in projects),
             "pending_hooks": sum(project["pending_hooks"] for project in projects),
             "failed_hooks": sum(project["failed_hooks"] for project in projects),
+            "pending_wakes": sum(int((project.get("wakes") or {}).get("pending", 0)) for project in projects),
             "retry_backlog": sum(project["retry_backlog"] for project in projects),
         },
     }
@@ -2408,6 +2417,53 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
             if queue_counts(project_root)["pending"] > 0 or queue_counts(project_root)["running"] > 0
         ],
     }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _parse_context_json(raw_value: str | None) -> dict | None:
+    if not raw_value:
+        return None
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"context-json is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("context-json must be a JSON object")
+    return payload
+
+
+def cmd_wake_enqueue(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    try:
+        context = _parse_context_json(getattr(args, "context_json", None))
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+
+    queue = WakeQueue(wake_root_for_project(project_root))
+    try:
+        payload = queue.enqueue(
+            agent=args.agent,
+            task_id=args.task_id,
+            reason=args.reason,
+            run_id=args.run_id,
+            source=args.source,
+            note=args.note,
+            context=context,
+        )
+    except (TimeoutError, ValueError) as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+
+    refresh_metrics_snapshot(project_root)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_wake_status(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    payload = wake_snapshot(project_root, limit=args.limit)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -3023,10 +3079,15 @@ def cmd_openclaw_status(args: argparse.Namespace) -> int:
     max_recent = getattr(args, "recent", 5)
     snapshot = refresh_metrics_snapshot(project_root, recent_limit=max(max_recent, 20))
     dashboard = build_project_dashboard(project_root, recent_limit=max_recent, ready_limit=3)
+    wakes = wake_snapshot(project_root, limit=3)
 
     payload = {
         "project": project_root.name,
         "queue": snapshot["queue"],
+        "wakes": {
+            **wakes["counts"],
+            "pending_items": wakes["pending"],
+        },
         "recent_runs": snapshot["recent_runs"][:max_recent],
         "delivery": {
             "pending": snapshot["delivery"]["pending"],
@@ -3398,6 +3459,7 @@ def cmd_openclaw_wake(args: argparse.Namespace) -> int:
             "kind": "cron" if args.mode == "cron" else "event",
         },
         "queue": queue_counts(project_root),
+        "wakes": wake_snapshot(project_root, limit=3),
         "hooks": {
             "before": before_hooks,
             "after": after_hooks,
@@ -3583,6 +3645,22 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--recent", type=int, default=5)
     dashboard.add_argument("--ready-limit", type=int, default=3)
     dashboard.set_defaults(func=cmd_dashboard)
+
+    wake_enqueue = subcommands.add_parser("wake-enqueue", help="Create or coalesce a pending wake artifact for an agent/task scope")
+    wake_enqueue.add_argument("project_root")
+    wake_enqueue.add_argument("--agent", required=True, help="Agent id, e.g. codex")
+    wake_enqueue.add_argument("--task-id", required=True, help="Task id, e.g. TASK-001")
+    wake_enqueue.add_argument("--reason", required=True, choices=sorted(VALID_WAKE_REASONS))
+    wake_enqueue.add_argument("--run-id", help="Optional run id associated with the wake")
+    wake_enqueue.add_argument("--source", help="Optional source marker for debugging")
+    wake_enqueue.add_argument("--note", help="Optional human-readable note")
+    wake_enqueue.add_argument("--context-json", help="Optional JSON object with extra wake context")
+    wake_enqueue.set_defaults(func=cmd_wake_enqueue)
+
+    wake_status = subcommands.add_parser("wake-status", help="Inspect pending wake artifacts as JSON")
+    wake_status.add_argument("project_root")
+    wake_status.add_argument("--limit", type=int, default=20)
+    wake_status.set_defaults(func=cmd_wake_status)
 
     scheduler = subcommands.add_parser("scheduler", help="Run fair multi-project worker scheduling")
     scheduler.add_argument("projects", nargs="*")

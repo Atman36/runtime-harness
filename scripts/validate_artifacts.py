@@ -49,6 +49,7 @@ OPTIONAL_ARTIFACT_SCHEMAS = {
 
 QUEUE_SCHEMA = "queue_item.schema.json"
 QUEUE_STATE_DIRS = {"pending", "running", "awaiting_approval", "done", "failed", "dead_letter"}
+WAKE_SCHEMA = "wake_item.schema.json"
 
 
 def load_schema(schema_filename: str) -> dict:
@@ -126,8 +127,20 @@ def _matches_type(data, t: str) -> bool:
 
 def validate_file(artifact_path: Path) -> list[str]:
     schema_filename = ARTIFACT_SCHEMAS.get(artifact_path.name) or OPTIONAL_ARTIFACT_SCHEMAS.get(artifact_path.name)
-    if not schema_filename and artifact_path.suffix == '.json' and artifact_path.parent.name in QUEUE_STATE_DIRS:
+    if (
+        not schema_filename
+        and artifact_path.suffix == '.json'
+        and artifact_path.parent.name in QUEUE_STATE_DIRS
+        and artifact_path.parent.parent.name == "queue"
+    ):
         schema_filename = QUEUE_SCHEMA
+    if (
+        not schema_filename
+        and artifact_path.suffix == '.json'
+        and artifact_path.parent.name == "pending"
+        and artifact_path.parent.parent.name == "wakes"
+    ):
+        schema_filename = WAKE_SCHEMA
     if not schema_filename:
         known = ', '.join(list(ARTIFACT_SCHEMAS) + list(OPTIONAL_ARTIFACT_SCHEMAS))
         return [f"No schema registered for '{artifact_path.name}' (expected one of: {known} or a queue item JSON)"]

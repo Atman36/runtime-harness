@@ -1,7 +1,7 @@
 ---
 id: TASK-017
 title: "Heartbeat wake queue and coalescing"
-status: ready
+status: done
 spec: ../specs/SPEC-017.md
 preferred_agent: codex
 review_policy: standard

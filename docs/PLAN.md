@@ -528,10 +528,10 @@ Epic 13 закрыт. Следующий порядок определяется
 filesystem остаётся source of truth, а новые coordination-механики живут в
 артефактах и project state.
 
-- **TASK-017 `Heartbeat wake queue and coalescing`**
-  - file-backed wakeup contract в `state/` с причинами `timer | assignment | mention | manual | approval`
-  - coalescing одинаковых wakeups по агенту / задаче, чтобы не плодить duplicate runs
-  - inspect/debug CLI для очереди wake-событий без hidden runtime state
+- **TASK-017 `Heartbeat wake queue and coalescing`** — ✅ сделано (2026-03-15)
+  - добавлен file-backed wake contract в `state/wakes/pending/*.json` + schema `_system/contracts/wake_item.schema.json`
+  - `claw wake-enqueue` детерминированно coalesce-ит wake-события по `agent/task` scope с типами `timer | assignment | mention | manual | approval`
+  - `claw wake-status`, `openclaw status` и `openclaw wake` показывают pending/coalesced wake state без hidden runtime state
 - **TASK-018 `Agent inbox and atomic task claim/release`**
   - agent-scoped inbox поверх текущих tasks/specs/runs без отдельной БД
   - атомарный claim/release c conflict semantics вместо неявного "кто успел, тот и взял"
