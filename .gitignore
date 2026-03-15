@@ -29,17 +29,11 @@ _system/scripts/
 .DS_Store
 **/.DS_Store
 
-# ── Project docs are source artifacts — must remain trackable ────────────────
-# (negation rules must come last; more specific exclusions follow below)
-!docs/
-!docs/**
-!projects/*/docs/
-!projects/*/docs/**
+# ── Development docs (local only, not for GitHub) ────────────────────────────
+docs/
 
-# ── Internal docs excluded from public repo (override the !docs/** above) ───
-docs/PRD.md
-docs/PRO_FRAMEWORK_ANALYSIS_PROMPT.md
-
-# ── macOS metadata inside tracked doc dirs (re-exclude after !docs/**) ──────
-docs/.DS_Store
-projects/**/docs/.DS_Store
+# ── User project workspaces (local only, not for GitHub) ─────────────────────
+# All projects except _template (which is part of the system)
+projects/*/
+!projects/_template/
+!projects/_template/**
