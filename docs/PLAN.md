@@ -543,6 +543,7 @@ filesystem остаётся source of truth, а новые coordination-меха
 - **TASK-020 `Org graph and delegation policy`** — ✅ сделано (2026-03-15)
   - добавлен `org_graph.yaml` в registry + loader/validation в `_system/engine/org_graph.py`
   - CLI `org-graph`, `task-delegate`, `task-escalate` создают child tasks с parent linkage + delegation metadata
+  - project-level `docs/ORG_GRAPH.yaml` теперь может частично override-ить agent policy без потери базовых `reports_to/capabilities`, а `delegation.allow_self_delegate` реально влияет на policy
   - blocked задачи эскалируются вверх по `reports_to` chain с explicit diagnostics при запрете
 - **TASK-021 `Budget and governance guardrails`**
   - file-backed budget snapshots / soft-limit warnings / hard-stop pause semantics

@@ -33,6 +33,7 @@ cp "$repo_root/scripts/reconcile_hooks.py" "$workspace/scripts/reconcile_hooks.p
 cp "$repo_root/scripts/validate_artifacts.py" "$workspace/scripts/validate_artifacts.py"
 
 project_root="$workspace/projects/demo-project"
+project_override="$project_root/docs/ORG_GRAPH.yaml"
 
 org_out="$tmp_root/org-graph.json"
 python3 "$workspace/scripts/claw.py" org-graph "$project_root" > "$org_out"
@@ -76,7 +77,28 @@ python3 "$workspace/scripts/claw.py" task-escalate "$project_root" \
   --agent codex \
   --reason "blocked on decision" > "$escalate_out"
 
-python3 - "$org_out" "$delegate_out" "$forbidden_out" "$escalate_out" "$project_root" <<'PY'
+cat > "$project_override" <<'YAML'
+org_graph:
+  agents:
+    codex:
+      can_delegate: true
+      delegates_to:
+        - codex
+  delegation:
+    allow_self_delegate: true
+YAML
+
+override_out="$tmp_root/org-graph-override.json"
+python3 "$workspace/scripts/claw.py" org-graph "$project_root" > "$override_out"
+
+self_delegate_out="$tmp_root/delegate-self.json"
+python3 "$workspace/scripts/claw.py" task-delegate "$project_root" \
+  --task-id TASK-003 \
+  --agent codex \
+  --assignee codex \
+  --reason "split into a focused subtask" > "$self_delegate_out"
+
+python3 - "$org_out" "$delegate_out" "$forbidden_out" "$escalate_out" "$override_out" "$self_delegate_out" "$project_root" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -85,7 +107,9 @@ org_payload = json.loads(Path(sys.argv[1]).read_text())
 delegate_payload = json.loads(Path(sys.argv[2]).read_text())
 forbidden_payload = json.loads(Path(sys.argv[3]).read_text())
 escalate_payload = json.loads(Path(sys.argv[4]).read_text())
-project_root = Path(sys.argv[5])
+override_payload = json.loads(Path(sys.argv[5]).read_text())
+self_delegate_payload = json.loads(Path(sys.argv[6]).read_text())
+project_root = Path(sys.argv[7])
 
 assert org_payload["status"] == "ok", org_payload
 assert org_payload["org_graph"]["agents"]["codex"]["reports_to"] == "claude", org_payload
@@ -109,6 +133,20 @@ escalated_text = escalated_task_path.read_text()
 assert "parent_task_id: TASK-002" in escalated_text, escalated_text
 assert "delegated_to: claude" in escalated_text, escalated_text
 assert "delegation_type: escalation" in escalated_text, escalated_text
+
+codex_cfg = override_payload["org_graph"]["agents"]["codex"]
+assert codex_cfg["reports_to"] == "claude", override_payload
+assert "implementation" in codex_cfg["capabilities"], override_payload
+assert codex_cfg["can_delegate"] is True, override_payload
+assert codex_cfg["delegates_to"] == ["codex"], override_payload
+
+assert self_delegate_payload["status"] == "delegated", self_delegate_payload
+self_delegate_task = project_root / self_delegate_payload["task_path"]
+assert self_delegate_task.is_file(), self_delegate_task
+self_delegate_text = self_delegate_task.read_text()
+assert "parent_task_id: TASK-003" in self_delegate_text, self_delegate_text
+assert "delegated_by: codex" in self_delegate_text, self_delegate_text
+assert "delegated_to: codex" in self_delegate_text, self_delegate_text
 PY
 
 echo "org graph test: ok"

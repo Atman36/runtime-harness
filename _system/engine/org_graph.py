@@ -42,7 +42,17 @@ def _merge_graph(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
     merged = dict(base)
     base_agents = base.get("agents") if isinstance(base.get("agents"), dict) else {}
     override_agents = override.get("agents") if isinstance(override.get("agents"), dict) else {}
-    merged["agents"] = {**base_agents, **override_agents}
+    merged_agents: dict[str, Any] = {}
+    for agent in set(base_agents) | set(override_agents):
+        base_cfg = base_agents.get(agent)
+        override_cfg = override_agents.get(agent)
+        if isinstance(base_cfg, dict) and isinstance(override_cfg, dict):
+            merged_agents[agent] = {**base_cfg, **override_cfg}
+        elif agent in override_agents:
+            merged_agents[agent] = override_cfg
+        else:
+            merged_agents[agent] = base_cfg
+    merged["agents"] = merged_agents
     base_policy = base.get("delegation") if isinstance(base.get("delegation"), dict) else {}
     override_policy = override.get("delegation") if isinstance(override.get("delegation"), dict) else {}
     if base_policy or override_policy:
@@ -80,10 +90,29 @@ def validate_org_graph(graph: dict[str, Any]) -> None:
         raise OrgGraphError("Org graph missing agents map", code="ORG_GRAPH_INVALID")
 
     errors: list[str] = []
+    delegation_policy = graph.get("delegation")
+    if delegation_policy is not None and not isinstance(delegation_policy, dict):
+        errors.append("delegation policy must be an object")
+    elif isinstance(delegation_policy, dict):
+        allow_self_delegate = delegation_policy.get("allow_self_delegate")
+        if allow_self_delegate is not None and not isinstance(allow_self_delegate, bool):
+            errors.append("delegation.allow_self_delegate must be a boolean")
+
     for agent, cfg in agents.items():
         if not isinstance(cfg, dict):
             errors.append(f"agent {agent} must be an object")
             continue
+        capabilities = cfg.get("capabilities")
+        if capabilities is not None:
+            if not isinstance(capabilities, list):
+                errors.append(f"agent {agent} capabilities must be a list")
+            else:
+                for capability in capabilities:
+                    if not isinstance(capability, str):
+                        errors.append(f"agent {agent} capabilities entries must be strings")
+        can_delegate = cfg.get("can_delegate")
+        if can_delegate is not None and not isinstance(can_delegate, bool):
+            errors.append(f"agent {agent} can_delegate must be a boolean")
         reports_to = cfg.get("reports_to")
         if reports_to not in (None, ""):
             if not isinstance(reports_to, str):
@@ -151,8 +180,12 @@ def validate_delegation(graph: dict[str, Any], *, delegator: str, delegatee: str
         return DelegationCheck(False, reason_code="unknown_delegator", details={"delegator": delegator})
     if delegatee not in agents:
         return DelegationCheck(False, reason_code="unknown_delegatee", details={"delegatee": delegatee})
-    if delegator == delegatee:
+    delegation_policy = graph.get("delegation") if isinstance(graph.get("delegation"), dict) else {}
+    allow_self_delegate = bool(delegation_policy.get("allow_self_delegate", False))
+    if delegator == delegatee and not allow_self_delegate:
         return DelegationCheck(False, reason_code="self_delegate_forbidden")
+    if delegator == delegatee:
+        return DelegationCheck(True)
 
     allowed = delegation_targets(graph, delegator=delegator)
     if delegatee not in allowed:
