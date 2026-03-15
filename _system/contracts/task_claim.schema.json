@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:claw:task_claim.schema.json",
+  "title": "Claw Task Claim",
+  "type": "object",
+  "required": [
+    "claim_version",
+    "task_id",
+    "project",
+    "task_path",
+    "status",
+    "owner",
+    "created_at",
+    "updated_at",
+    "events"
+  ],
+  "properties": {
+    "claim_version": {
+      "const": 1
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "project": {
+      "type": "string"
+    },
+    "task_path": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["claimed", "released", "blocked"]
+    },
+    "owner": {
+      "type": ["string", "null"]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "claimed_at": {
+      "type": ["string", "null"]
+    },
+    "released_at": {
+      "type": ["string", "null"]
+    },
+    "reason": {
+      "type": ["string", "null"]
+    },
+    "note": {
+      "type": ["string", "null"]
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["at", "event", "status", "owner"],
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "event": {
+            "type": "string",
+            "enum": ["claimed", "released", "blocked"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["claimed", "released", "blocked"]
+          },
+          "owner": {
+            "type": ["string", "null"]
+          },
+          "previous_owner": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

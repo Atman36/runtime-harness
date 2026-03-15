@@ -26,7 +26,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileQueue, QueueEmpty, VALID_WAKE_REASONS, WakeQueue, build_agent_command, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command, wake_root_for_project  # noqa: E402
+from _system.engine import FileQueue, QueueEmpty, TaskClaimStore, VALID_WAKE_REASONS, WakeQueue, build_agent_command, claims_root_for_project, enqueue_run, execute_run_task, find_run_dir, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command, wake_root_for_project  # noqa: E402
 from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
 from _system.engine.error_codes import build_error_envelope  # noqa: E402
@@ -804,6 +804,109 @@ def collect_task_records(project_root: Path) -> list[dict]:
             record["selected_agent"] = record["preferred_agent"]
 
     return records
+
+
+def resolve_task_path_for_id(project_root: Path, task_id: str) -> Path | None:
+    candidate = project_root / "tasks" / f"{task_id}.md"
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def load_task_claims_map(project_root: Path) -> dict[str, dict]:
+    store = TaskClaimStore(claims_root_for_project(project_root))
+    claims: dict[str, dict] = {}
+    for payload in store.list_claims():
+        task_id = str(payload.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        claims[task_id] = payload
+    return claims
+
+
+def _claim_summary(payload: dict | None) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "status": payload.get("status"),
+        "owner": payload.get("owner"),
+        "updated_at": payload.get("updated_at"),
+        "reason": payload.get("reason"),
+        "note": payload.get("note"),
+        "claim_file": payload.get("claim_file"),
+    }
+
+
+def _task_inbox_entry(record: dict, claim: dict | None) -> dict:
+    entry = {
+        "task_id": record.get("task_id"),
+        "title": record.get("title"),
+        "status": record.get("status"),
+        "priority": record.get("priority"),
+        "ready": record.get("ready"),
+        "active": record.get("active"),
+        "task_path": record.get("task_path_rel"),
+        "selected_agent": record.get("selected_agent"),
+        "preferred_agent": record.get("preferred_agent"),
+        "dependency_blockers": record.get("dependency_blockers"),
+    }
+    claim_summary = _claim_summary(claim)
+    if claim_summary:
+        entry["claim"] = claim_summary
+    return entry
+
+
+def build_agent_inbox(project_root: Path, *, agent: str, limit: int = 20) -> dict:
+    normalized_agent = str(agent or "").strip()
+    records = collect_task_records(project_root)
+    claims = load_task_claims_map(project_root)
+    claimed: list[dict] = []
+    blocked: list[dict] = []
+    released: list[dict] = []
+    available: list[dict] = []
+    conflicts: list[dict] = []
+
+    for record in records:
+        task_id = record.get("task_id")
+        claim = claims.get(task_id) if task_id else None
+        claim_status = str(claim.get("status") or "").strip() if isinstance(claim, dict) else ""
+        claim_owner = str(claim.get("owner") or "").strip() if isinstance(claim, dict) else ""
+        selected_agent = str(record.get("selected_agent") or record.get("preferred_agent") or "").strip()
+        eligible = selected_agent == normalized_agent
+
+        if claim_status == "claimed":
+            if claim_owner == normalized_agent:
+                claimed.append(_task_inbox_entry(record, claim))
+            elif eligible:
+                conflicts.append(_task_inbox_entry(record, claim))
+            continue
+
+        if claim_status == "blocked" and claim_owner == normalized_agent:
+            blocked.append(_task_inbox_entry(record, claim))
+        if claim_status == "released" and claim_owner == normalized_agent:
+            released.append(_task_inbox_entry(record, claim))
+
+        if record.get("ready") and eligible:
+            available.append(_task_inbox_entry(record, claim))
+
+    payload = {
+        "project": project_root.name,
+        "agent": normalized_agent,
+        "generated_at": utc_now(),
+        "counts": {
+            "claimed": len(claimed),
+            "blocked": len(blocked),
+            "released": len(released),
+            "available": len(available),
+            "conflicts": len(conflicts),
+        },
+        "claimed": claimed[: max(1, int(limit))],
+        "blocked": blocked[: max(1, int(limit))],
+        "released": released[: max(1, int(limit))],
+        "available": available[: max(1, int(limit))],
+        "conflicts": conflicts[: max(1, int(limit))],
+    }
+    return payload
 
 
 def _task_declares_shared_files(record: dict) -> bool:
@@ -2529,6 +2632,138 @@ def cmd_task_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_claim(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    task_id = str(args.task_id).strip()
+    agent = str(args.agent).strip()
+    task_path = resolve_task_path_for_id(project_root, task_id)
+    if task_path is None:
+        print(json.dumps({"status": "not_found", "task_id": task_id, "agent": agent}, ensure_ascii=False))
+        return 1
+
+    front_matter, _body = read_front_matter(task_path)
+    task_status = str(front_matter.get("status") or "todo").strip().lower()
+    if task_status in TASK_DONE_STATUSES:
+        print(
+            json.dumps(
+                {
+                    "status": "task_done",
+                    "task_id": task_id,
+                    "agent": agent,
+                    "task_status": task_status,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
+
+    store = TaskClaimStore(claims_root_for_project(project_root))
+    task_rel = task_path.relative_to(project_root).as_posix()
+    result = store.claim(
+        task_id=task_id,
+        agent=agent,
+        reason=args.reason,
+        note=args.note,
+        task_path=task_rel,
+        project=project_root.name,
+    )
+    status = result.get("status")
+    if status not in {"claimed", "already_claimed"}:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1
+
+    if task_status != "in_progress":
+        update_task_status(task_path, "in_progress")
+
+    wake_payload = None
+    wake_error = None
+    if not args.no_wake and status == "claimed":
+        try:
+            queue = WakeQueue(wake_root_for_project(project_root))
+            wake_payload = queue.enqueue(
+                agent=agent,
+                task_id=task_id,
+                reason="assignment",
+                source="task_claim",
+                note=args.note,
+                context={"claim_status": status, "task_path": task_rel},
+            )
+        except Exception as exc:
+            wake_error = str(exc)
+
+    refresh_task_snapshot(project_root)
+
+    claim_file = None
+    if result.get("claim_file"):
+        claim_file = (claims_root_for_project(project_root) / str(result["claim_file"]).strip()).relative_to(project_root).as_posix()
+
+    payload = {
+        "status": status,
+        "task_id": task_id,
+        "agent": agent,
+        "task_path": task_rel,
+        "claim": result.get("claim"),
+        "claim_file": claim_file,
+        "wake": wake_payload,
+        "wake_error": wake_error,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_task_release(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    task_id = str(args.task_id).strip()
+    agent = str(args.agent).strip()
+    task_path = resolve_task_path_for_id(project_root, task_id)
+    task_rel = task_path.relative_to(project_root).as_posix() if task_path else ""
+
+    store = TaskClaimStore(claims_root_for_project(project_root))
+    result = store.release(
+        task_id=task_id,
+        agent=agent,
+        status=args.status,
+        reason=args.reason,
+        note=args.note,
+        task_path=task_rel or None,
+        project=project_root.name,
+    )
+    status = result.get("status")
+    if status not in {"released", "blocked"}:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1
+
+    if task_path is not None:
+        front_matter, _body = read_front_matter(task_path)
+        task_status = str(front_matter.get("status") or "todo").strip().lower()
+        if task_status not in TASK_DONE_STATUSES:
+            update_task_status(task_path, status)
+
+    refresh_task_snapshot(project_root)
+
+    claim_file = None
+    if result.get("claim_file"):
+        claim_file = (claims_root_for_project(project_root) / str(result["claim_file"]).strip()).relative_to(project_root).as_posix()
+
+    payload = {
+        "status": status,
+        "task_id": task_id,
+        "agent": agent,
+        "task_path": task_rel,
+        "claim": result.get("claim"),
+        "claim_file": claim_file,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    payload = build_agent_inbox(project_root, agent=args.agent, limit=args.limit)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_workflow_graph(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     artifact = refresh_workflow_graph(project_root)
@@ -3706,6 +3941,30 @@ def build_parser() -> argparse.ArgumentParser:
     task_snapshot = subcommands.add_parser("task-snapshot", help="Generate and write task graph snapshot")
     task_snapshot.add_argument("project_root")
     task_snapshot.set_defaults(func=cmd_task_snapshot)
+
+    task_claim = subcommands.add_parser("task-claim", help="Claim a task for an agent")
+    task_claim.add_argument("project_root")
+    task_claim.add_argument("--task-id", required=True, help="Task id (e.g. TASK-001)")
+    task_claim.add_argument("--agent", required=True, help="Agent id (e.g. codex)")
+    task_claim.add_argument("--reason", help="Optional claim reason")
+    task_claim.add_argument("--note", help="Optional claim note")
+    task_claim.add_argument("--no-wake", action="store_true", help="Do not enqueue assignment wake")
+    task_claim.set_defaults(func=cmd_task_claim)
+
+    task_release = subcommands.add_parser("task-release", help="Release a claimed task")
+    task_release.add_argument("project_root")
+    task_release.add_argument("--task-id", required=True, help="Task id (e.g. TASK-001)")
+    task_release.add_argument("--agent", required=True, help="Agent id (e.g. codex)")
+    task_release.add_argument("--status", choices=("released", "blocked"), default="released")
+    task_release.add_argument("--reason", help="Optional release reason")
+    task_release.add_argument("--note", help="Optional release note")
+    task_release.set_defaults(func=cmd_task_release)
+
+    inbox = subcommands.add_parser("inbox", help="Materialize an agent inbox projection as JSON")
+    inbox.add_argument("project_root")
+    inbox.add_argument("--agent", required=True, help="Agent id (e.g. codex)")
+    inbox.add_argument("--limit", type=int, default=20)
+    inbox.set_defaults(func=cmd_inbox)
 
     workflow_graph = subcommands.add_parser("workflow-graph", help="Generate and write portable workflow graph artifact")
     workflow_graph.add_argument("project_root")

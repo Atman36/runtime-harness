@@ -1,0 +1,689 @@
+{
+  "artifact_version": 1,
+  "project": "_claw-dev",
+  "generated_at": "2026-03-15T08:39:43Z",
+  "node_count": 26,
+  "edge_count": 28,
+  "nodes": [
+    {
+      "node_id": "TASK-001",
+      "node_type": "task",
+      "title": "Reason codes registry and structured error envelope",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": true,
+      "dependencies": [],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-001.md"
+    },
+    {
+      "node_id": "TASK-002",
+      "node_type": "task",
+      "title": "Task graph snapshot and lint",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-001"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-002.md"
+    },
+    {
+      "node_id": "TASK-003",
+      "node_type": "task",
+      "title": "Workflow contract schema and validator",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-002"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-003.md"
+    },
+    {
+      "node_id": "TASK-004",
+      "node_type": "task",
+      "title": "claw import-project CLI command",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-004.md"
+    },
+    {
+      "node_id": "TASK-005",
+      "node_type": "task",
+      "title": "Structural guardrails against agent drift",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-005.md"
+    },
+    {
+      "node_id": "TASK-006",
+      "node_type": "task",
+      "title": "WORKFLOW.md enforcement in orchestrate",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-003",
+        "TASK-004"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-006.md"
+    },
+    {
+      "node_id": "TASK-007",
+      "node_type": "task",
+      "title": "Task graph lint as mandatory pre-orchestrate gate",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-002",
+        "TASK-006"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-007.md"
+    },
+    {
+      "node_id": "TASK-008",
+      "node_type": "task",
+      "title": "Project command registry in WORKFLOW.md",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-006"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-008.md"
+    },
+    {
+      "node_id": "TASK-009",
+      "node_type": "task",
+      "title": "claw decompose-epic via LLM",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-004"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-009.md"
+    },
+    {
+      "node_id": "TASK-010",
+      "node_type": "task",
+      "title": "Epic/roadmap completion criteria",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "claude",
+      "selected_agent": "claude",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-007",
+        "TASK-009"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-010.md"
+    },
+    {
+      "node_id": "TASK-011",
+      "node_type": "task",
+      "title": "Mandatory orchestrator completion signal",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": false,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-005"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-011.md"
+    },
+    {
+      "node_id": "TASK-012",
+      "node_type": "task",
+      "title": "Live agent stream: agent_stream.jsonl",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-011"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-012.md"
+    },
+    {
+      "node_id": "TASK-013",
+      "node_type": "task",
+      "title": "Step-level HITL checkpoint: approval_checkpoint.json",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-012"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-013.md"
+    },
+    {
+      "node_id": "TASK-014",
+      "node_type": "task",
+      "title": "Simple listener registry for orchestrator events",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-012"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-014.md"
+    },
+    {
+      "node_id": "TASK-015",
+      "node_type": "task",
+      "title": "Advisory patch-only review mode",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-012"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-015.md"
+    },
+    {
+      "node_id": "TASK-016",
+      "node_type": "task",
+      "title": "Orchestrator decision log and richer workflow graph metadata",
+      "status": "done",
+      "priority": "low",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-014"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-016.md"
+    },
+    {
+      "node_id": "TASK-017",
+      "node_type": "task",
+      "title": "Heartbeat wake queue and coalescing",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-013"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-017.md"
+    },
+    {
+      "node_id": "TASK-018",
+      "node_type": "task",
+      "title": "Agent inbox and atomic task claim/release",
+      "status": "done",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-017"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-018.md"
+    },
+    {
+      "node_id": "TASK-019",
+      "node_type": "task",
+      "title": "Resumable agent session state",
+      "status": "ready",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": true,
+      "active": false,
+      "dependencies": [
+        "TASK-018"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-019.md"
+    },
+    {
+      "node_id": "TASK-020",
+      "node_type": "task",
+      "title": "Org graph and delegation policy",
+      "status": "ready",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": true,
+      "active": false,
+      "dependencies": [
+        "TASK-018"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-020.md"
+    },
+    {
+      "node_id": "TASK-021",
+      "node_type": "task",
+      "title": "Budget and governance guardrails",
+      "status": "ready",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-019",
+        "TASK-020"
+      ],
+      "dependency_blockers": [
+        "TASK-019",
+        "TASK-020"
+      ],
+      "task_path": "tasks/TASK-021.md"
+    },
+    {
+      "node_id": "TASK-022",
+      "node_type": "task",
+      "title": "Live status feed for operators",
+      "status": "ready",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": true,
+      "active": false,
+      "dependencies": [
+        "TASK-015"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-022.md"
+    },
+    {
+      "node_id": "TASK-023",
+      "node_type": "task",
+      "title": "Message directives and context binding",
+      "status": "ready",
+      "priority": "high",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-022"
+      ],
+      "dependency_blockers": [
+        "TASK-022"
+      ],
+      "task_path": "tasks/TASK-023.md"
+    },
+    {
+      "node_id": "TASK-024",
+      "node_type": "task",
+      "title": "Operator session memory and resume handles",
+      "status": "ready",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-023"
+      ],
+      "dependency_blockers": [
+        "TASK-023"
+      ],
+      "task_path": "tasks/TASK-024.md"
+    },
+    {
+      "node_id": "TASK-025",
+      "node_type": "task",
+      "title": "Safe file exchange for project roots",
+      "status": "ready",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-023"
+      ],
+      "dependency_blockers": [
+        "TASK-023"
+      ],
+      "task_path": "tasks/TASK-025.md"
+    },
+    {
+      "node_id": "TASK-026",
+      "node_type": "task",
+      "title": "Transport plugin surface and setup checks",
+      "status": "ready",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-024",
+        "TASK-025"
+      ],
+      "dependency_blockers": [
+        "TASK-024",
+        "TASK-025"
+      ],
+      "task_path": "tasks/TASK-026.md"
+    }
+  ],
+  "edges": [
+    {
+      "from": "TASK-002",
+      "to": "TASK-001",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-003",
+      "to": "TASK-002",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-006",
+      "to": "TASK-003",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-006",
+      "to": "TASK-004",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-007",
+      "to": "TASK-002",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-007",
+      "to": "TASK-006",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-008",
+      "to": "TASK-006",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-009",
+      "to": "TASK-004",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-010",
+      "to": "TASK-007",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-010",
+      "to": "TASK-009",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-011",
+      "to": "TASK-005",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-012",
+      "to": "TASK-011",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-013",
+      "to": "TASK-012",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-014",
+      "to": "TASK-012",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-015",
+      "to": "TASK-012",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-016",
+      "to": "TASK-014",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-017",
+      "to": "TASK-013",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-018",
+      "to": "TASK-017",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-019",
+      "to": "TASK-018",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-020",
+      "to": "TASK-018",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-021",
+      "to": "TASK-019",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-021",
+      "to": "TASK-020",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-022",
+      "to": "TASK-015",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-023",
+      "to": "TASK-022",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-024",
+      "to": "TASK-023",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-025",
+      "to": "TASK-023",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-026",
+      "to": "TASK-024",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-026",
+      "to": "TASK-025",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    }
+  ],
+  "checksum": "ee3c7ae1877355ee5bcdee158d5608d3eedc90bdc2ec2fd15ebfe7c8a6feaa34"
+}

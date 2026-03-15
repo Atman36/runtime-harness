@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from _system.engine.task_claims import TaskClaimStore, claims_root_for_project
+
 
 FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 
@@ -132,6 +134,20 @@ def select_agent(repo_root: Path, front_matter: dict[str, Any], project_state: d
     return RoutingDecision(selected_agent=default_agent, selection_source="project_default")
 
 
+def _claimed_agent_for_task(project_root: Path, task_id: str) -> str | None:
+    try:
+        store = TaskClaimStore(claims_root_for_project(project_root))
+        claim = store.load_claim(task_id)
+    except Exception:
+        return None
+    if not isinstance(claim, dict):
+        return None
+    if str(claim.get("status") or "").strip() != "claimed":
+        return None
+    owner = str(claim.get("owner") or "").strip()
+    return owner or None
+
+
 def build_execution_plan(project_root: Path, front_matter: dict[str, Any], project_state: dict[str, Any]) -> ExecutionPlan:
     execution = project_state.get("execution") if isinstance(project_state.get("execution"), dict) else {}
     workspace_mode = str(front_matter.get("workspace_mode") or execution.get("workspace_mode") or "shared_project").strip()
@@ -170,7 +186,11 @@ def plan_task_run(repo_root: Path, task_path: Path | str) -> TaskRunPlan:
     if not task_id:
         raise ValueError(f"Task front matter missing id: {task}")
 
-    routing = select_agent(Path(repo_root).resolve(), front_matter, project_state)
+    claimed_agent = _claimed_agent_for_task(project_root, task_id)
+    if claimed_agent:
+        routing = RoutingDecision(selected_agent=claimed_agent, selection_source="task_claim")
+    else:
+        routing = select_agent(Path(repo_root).resolve(), front_matter, project_state)
     execution = build_execution_plan(project_root, front_matter, project_state)
     return TaskRunPlan(
         project_slug=project_root.name,

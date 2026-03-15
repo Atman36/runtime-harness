@@ -29,11 +29,9 @@ _system/scripts/
 .DS_Store
 **/.DS_Store
 
-# ── Development docs (local only, not for GitHub) ────────────────────────────
-docs/
-
 # ── User project workspaces (local only, not for GitHub) ─────────────────────
-# All projects except _template (which is part of the system)
-projects/*/
+# Heavy runtime artifacts are ignored above; keep project docs trackable.
 !projects/_template/
 !projects/_template/**
+!projects/*/docs/
+!projects/*/docs/**
