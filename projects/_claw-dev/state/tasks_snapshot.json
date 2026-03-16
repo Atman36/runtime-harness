@@ -1,7 +1,7 @@
 {
   "snapshot_version": 1,
   "project": "_claw-dev",
-  "updated_at": "2026-03-15T09:57:30Z",
+  "updated_at": "2026-03-16T05:00:31Z",
   "task_count": 26,
   "tasks": [
     {
@@ -304,7 +304,7 @@
     {
       "task_id": "TASK-021",
       "title": "Budget and governance guardrails",
-      "status": "ready",
+      "status": "done",
       "priority": "medium",
       "dependencies": [
         "TASK-019",
@@ -313,7 +313,7 @@
       "dependency_blockers": [],
       "preferred_agent": "codex",
       "needs_review": true,
-      "ready": true,
+      "ready": false,
       "active": false,
       "task_path": "tasks/TASK-021.md"
     },
@@ -403,5 +403,5 @@
       "task_path": "tasks/TASK-026.md"
     }
   ],
-  "checksum": "f85974a2cf83e5875f12b05a0f9c9996cd8ebf690249012fd6d3615665f59b7d"
+  "checksum": "ae0f1f1c63d3110482ef7d347d86708fec4ebc17f16441c9291bb0b508696e05"
 }

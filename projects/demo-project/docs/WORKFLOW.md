@@ -1,6 +1,6 @@
 ---
 contract_version: 1
-project: "{{PROJECT_SLUG}}"
+project: "demo-project"
 approval_gates:
   require_human_approval_on_failure: true
   require_approval_before_first_run: false
@@ -12,12 +12,15 @@ timeout_policy:
   worker_lease_seconds: 600
   run_timeout_seconds: 3600
 scope:
-  edit_scope: []
+  edit_scope:
+    - docs
+    - scripts
+    - tests
   allowed_agents:
     - claude
     - codex
     - auto
-notes: "Project workflow contract. Edit the YAML front matter above to change runtime behavior."
+notes: "Demo project workflow contract for local orchestration and validation examples."
 commands:
   test: "bash tests/run_all.sh"
   lint: ""
@@ -39,9 +42,9 @@ guardrails:
     approval_required_agents: []
 ---
 
-# Workflow Contract — {{PROJECT_SLUG}}
+# Workflow Contract — demo-project
 
-This file defines the orchestration policy for this project.
+This file defines the orchestration policy for the demo project.
 Edit the YAML front matter above to change runtime behavior.
 
 ## Approval Gates

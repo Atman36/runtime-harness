@@ -88,6 +88,56 @@
     "notes": {
       "type": "string",
       "description": "Human-readable notes about this contract"
+    },
+    "guardrails": {
+      "type": "object",
+      "properties": {
+        "budget": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "warning_limit": {"type": "integer", "minimum": 0},
+            "hard_limit": {"type": "integer", "minimum": 0},
+            "base_run_cost": {"type": "integer", "minimum": 1},
+            "agent_costs": {
+              "type": "object",
+              "additionalProperties": {"type": "integer", "minimum": 0}
+            },
+            "workspace_mode_costs": {
+              "type": "object",
+              "additionalProperties": {"type": "integer", "minimum": 0}
+            },
+            "risk_flag_costs": {
+              "type": "object",
+              "additionalProperties": {"type": "integer", "minimum": 0}
+            }
+          },
+          "additionalProperties": false
+        },
+        "governance": {
+          "type": "object",
+          "properties": {
+            "approval_required_risk_flags": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "approval_required_paths": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "approval_required_workspace_modes": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "approval_required_agents": {
+              "type": "array",
+              "items": {"type": "string"}
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

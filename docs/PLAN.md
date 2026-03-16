@@ -545,10 +545,10 @@ filesystem остаётся source of truth, а новые coordination-меха
   - CLI `org-graph`, `task-delegate`, `task-escalate` создают child tasks с parent linkage + delegation metadata
   - project-level `docs/ORG_GRAPH.yaml` теперь может частично override-ить agent policy без потери базовых `reports_to/capabilities`, а `delegation.allow_self_delegate` реально влияет на policy
   - blocked задачи эскалируются вверх по `reports_to` chain с explicit diagnostics при запрете
-- **TASK-021 `Budget and governance guardrails`**
-  - file-backed budget snapshots / soft-limit warnings / hard-stop pause semantics
-  - approval-required actions для risky операций и изменения конфигурации агентов
-  - решения сохраняются как артефакты, а не в hidden runtime flags
+- **TASK-021 `Budget and governance guardrails`** — ✅ сделано (2026-03-16)
+  - file-backed `guardrail_snapshot.json` per run + project `state/guardrails/budget_snapshot.json`
+  - soft-limit warnings / hard-stop pause semantics wired into worker and `claw run --execute`
+  - approval-required actions reuse `state/approvals/` and expose guardrail state through `status` / `dashboard` / `openclaw status`
 
 Не переносим как есть:
 - React UI / mobile UX

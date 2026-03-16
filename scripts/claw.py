@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from _system.engine import FileQueue, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, VALID_WAKE_REASONS, WakeQueue, build_agent_command, claims_root_for_project, delegation_targets, enqueue_run, escalation_chain, execute_run_task, find_run_dir, load_org_graph, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
+from _system.engine.budget_guardrails import evaluate_guardrails, extract_referenced_paths, summarize_project_guardrails  # noqa: E402
 from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
 from _system.engine.error_codes import build_error_envelope  # noqa: E402
@@ -51,6 +52,8 @@ CADENCE_STATE_FILE = "review_cadence.json"
 METRICS_SNAPSHOT_FILE = "metrics_snapshot.json"
 ORCHESTRATION_STATE_FILE = "orchestration_state.json"
 LISTENER_LOG_FILE = "listener_log.jsonl"
+GUARDRAIL_SNAPSHOT_FILE = "guardrail_snapshot.json"
+GUARDRAIL_STATE_DIR = "guardrails"
 FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 TASK_ID_RE = re.compile(r"^TASK-(\d+)$")
 DEFAULT_WORKER_LEASE_SECONDS = 600
@@ -782,11 +785,215 @@ def resolve_approval_request(project_root: Path, approval_id: str, *, decision: 
                 update_task_status(task_path, "todo")
             elif decision == "approved" and payload.get("requested_action") == "accept":
                 update_task_status(task_path, "done")
+            elif payload.get("requested_action") == "run":
+                if decision == "approved":
+                    queue = FileQueue(queue_root_for_project(project_root))
+                    run_id = str(payload.get("run_id") or "")
+                    if not queue.approve(run_id):
+                        run_dir = find_run_dir(project_root, run_id)
+                        if run_dir is not None:
+                            enqueue_run(run_dir, state="pending")
+                    update_task_status(task_path, "queued")
+                elif decision == "rejected":
+                    update_task_status(task_path, "blocked")
 
     target_path = directories["resolved"] / pending_path.name
     write_json_atomic(target_path, payload)
     pending_path.unlink()
     return payload
+
+
+def guardrails_root(project_root: Path) -> Path:
+    return project_root / "state" / GUARDRAIL_STATE_DIR
+
+
+def guardrail_state_path(project_root: Path) -> Path:
+    return guardrails_root(project_root) / "budget_snapshot.json"
+
+
+def run_guardrail_path(run_dir: Path) -> Path:
+    return run_dir / GUARDRAIL_SNAPSHOT_FILE
+
+
+def load_guardrail_snapshot(run_dir: Path) -> dict | None:
+    payload, error = load_json_status(run_guardrail_path(run_dir))
+    if error is not None:
+        return None
+    return payload
+
+
+def collect_guardrail_snapshots(project_root: Path) -> list[dict]:
+    snapshots: list[dict] = []
+    runs_root = project_root / "runs"
+    if not runs_root.is_dir():
+        return snapshots
+    for date_dir in sorted(runs_root.iterdir()):
+        if not date_dir.is_dir():
+            continue
+        for run_dir in sorted(date_dir.iterdir()):
+            if not run_dir.is_dir() or not run_dir.name.startswith("RUN-"):
+                continue
+            snapshot = load_guardrail_snapshot(run_dir)
+            if snapshot is not None:
+                snapshots.append(snapshot)
+    return snapshots
+
+
+def load_guardrail_project_snapshot(project_root: Path) -> dict:
+    payload, error = load_json_status(guardrail_state_path(project_root))
+    if error is not None:
+        return {
+            "snapshot_version": 1,
+            "budget": {
+                "enabled": False,
+                "warning_limit": 0,
+                "hard_limit": 0,
+                "consumed_units": 0,
+                "warning_runs": 0,
+                "soft_limit_reached": False,
+                "hard_limit_reached": False,
+                "policy": {},
+            },
+            "pending_runs": 0,
+            "last_run_id": None,
+            "governance": {"policy": {}},
+            "updated_at": None,
+        }
+    return payload
+
+
+def refresh_guardrail_snapshot(project_root: Path) -> dict:
+    contract = load_workflow_contract(project_root)
+    snapshots = collect_guardrail_snapshots(project_root)
+    summary = summarize_project_guardrails(contract.guardrails, snapshots)
+    summary["updated_at"] = utc_now()
+    write_json_atomic(guardrail_state_path(project_root), summary)
+    return summary
+
+
+def load_resolved_guardrail_override(project_root: Path, run_id: str) -> dict | None:
+    for payload in load_approval_requests(project_root, state="resolved"):
+        if payload.get("source") != "guardrail":
+            continue
+        if payload.get("requested_action") != "run":
+            continue
+        if payload.get("decision") != "approved":
+            continue
+        if payload.get("run_id") != run_id:
+            continue
+        return payload
+    return None
+
+
+def write_guardrail_snapshot(run_dir: Path, snapshot: dict) -> None:
+    write_json_atomic(run_guardrail_path(run_dir), snapshot)
+
+
+def preflight_guardrails(
+    project_root: Path,
+    run_dir: Path,
+    *,
+    source: str,
+) -> dict:
+    refresh_guardrail_snapshot(project_root)
+    project_snapshot = load_guardrail_project_snapshot(project_root)
+    contract = load_workflow_contract(project_root)
+    job, _job_error = load_json_status(run_dir / "job.json")
+    meta, _meta_error = load_json_status(run_dir / "meta.json")
+
+    task = job.get("task") if isinstance(job.get("task"), dict) else {}
+    execution = job.get("execution") if isinstance(job.get("execution"), dict) else {}
+    routing = job.get("routing") if isinstance(job.get("routing"), dict) else {}
+    spec_text = ""
+    spec_path = run_dir / "spec.md"
+    if spec_path.is_file():
+        spec_text = spec_path.read_text(encoding="utf-8", errors="replace")
+    override = load_resolved_guardrail_override(project_root, run_dir.name)
+    snapshot = evaluate_guardrails(
+        contract.guardrails,
+        current_consumed_units=int(((project_snapshot.get("budget") or {}).get("consumed_units") or 0)),
+        run_id=run_dir.name,
+        task_id=str(task.get("id") or meta.get("task_id") or ""),
+        task_title=str(task.get("title") or meta.get("task_title") or ""),
+        selected_agent=str(routing.get("selected_agent") or job.get("preferred_agent") or meta.get("preferred_agent") or "codex"),
+        workspace_mode=str(execution.get("workspace_mode") or "project_root"),
+        risk_flags=[str(item).strip() for item in (task.get("risk_flags") or []) if str(item).strip()],
+        referenced_paths=extract_referenced_paths(spec_text),
+        approval_override=override is not None,
+        approval_id=str(override.get("approval_id") or "") if override else None,
+    )
+    snapshot["source"] = source
+    snapshot["recorded_at"] = utc_now()
+    write_guardrail_snapshot(run_dir, snapshot)
+    refresh_guardrail_snapshot(project_root)
+    return snapshot
+
+
+def finalize_guardrails(project_root: Path, run_dir: Path, *, executed: bool) -> dict | None:
+    snapshot = load_guardrail_snapshot(run_dir)
+    if snapshot is None:
+        return None
+    budget = snapshot.get("budget") if isinstance(snapshot.get("budget"), dict) else {}
+    if executed:
+        budget["consumed_units"] = int(budget.get("estimated_units", 0) or 0)
+        snapshot["accounted_at"] = utc_now()
+    snapshot["budget"] = budget
+    write_guardrail_snapshot(run_dir, snapshot)
+    refresh_guardrail_snapshot(project_root)
+    return snapshot
+
+
+def guardrail_task_path(project_root: Path, meta: dict) -> Path | None:
+    task_rel_path = str(meta.get("task_path") or "").strip()
+    if not task_rel_path:
+        return None
+    task_path = (project_root / task_rel_path).resolve()
+    if not task_path.is_file():
+        return None
+    return task_path
+
+
+def pause_run_for_guardrail(
+    project_root: Path,
+    run_dir: Path,
+    snapshot: dict,
+    *,
+    source: str,
+    claimed=None,
+) -> dict:
+    meta, _meta_error = load_json_status(run_dir / "meta.json")
+    task_path = guardrail_task_path(project_root, meta)
+    if task_path is not None:
+        update_task_status(task_path, "awaiting_approval")
+
+    primary_reason = str((snapshot.get("reason_codes") or ["guardrail_pause"])[0])
+    approval = create_approval_request(
+        project_root,
+        run_id=run_dir.name,
+        task_id=str(meta.get("task_id") or ""),
+        task_path=str(meta.get("task_path") or ""),
+        source="guardrail",
+        reason=primary_reason,
+        requested_action="run",
+    )
+    append_approval_requested_decision(project_root, approval)
+    if claimed is not None:
+        FileQueue(queue_root_for_project(project_root)).await_approval(claimed)
+
+    append_run_event(
+        run_dir,
+        "guardrail_paused",
+        project_root=project_root,
+        payload={
+            "queue_state": "awaiting_approval",
+            "reason_codes": snapshot.get("reason_codes") or [],
+            "source": source,
+            "approval_id": approval.get("approval_id"),
+        },
+    )
+    refresh_guardrail_snapshot(project_root)
+    refresh_metrics_snapshot(project_root)
+    return approval
 
 
 def parse_task_dependencies(front_matter: dict) -> list[str]:
@@ -1318,6 +1525,7 @@ def current_running_job(project_root: Path) -> dict | None:
 
 def build_project_dashboard(project_root: Path, *, recent_limit: int = 5, ready_limit: int = 3) -> dict:
     snapshot = refresh_metrics_snapshot(project_root, recent_limit=max(recent_limit, 20))
+    guardrails = refresh_guardrail_snapshot(project_root)
     approvals = approval_counts(project_root)
     ready_tasks = select_ready_tasks(project_root, limit=ready_limit)
 
@@ -1345,6 +1553,7 @@ def build_project_dashboard(project_root: Path, *, recent_limit: int = 5, ready_
             for task in ready_tasks
         ],
         "approvals": load_approval_requests(project_root, state="pending")[:ready_limit],
+        "guardrails": guardrails,
         "metrics": {
             "updated_at": snapshot["updated_at"],
             "runs": snapshot["runs"],
@@ -2032,7 +2241,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.awaiting_approval and not args.enqueue:
         raise SystemExit("--awaiting-approval requires --enqueue")
 
-    run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=args.execute)
+    run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=False)
     project_root = run_dir.parent.parent.parent
     append_run_event(
         run_dir,
@@ -2068,6 +2277,25 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         return 0
     if args.execute:
+        guardrail_snapshot = preflight_guardrails(project_root, run_dir, source="cmd.run")
+        if guardrail_snapshot.get("decision") == "pause":
+            approval = pause_run_for_guardrail(project_root, run_dir, guardrail_snapshot, source="cmd.run")
+            print(
+                json.dumps(
+                    {
+                        "status": "awaiting_approval",
+                        "run_dir": str(run_dir),
+                        "approval_id": approval.get("approval_id"),
+                        "guardrails": guardrail_snapshot,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        completed = run_command(["python3", str(REPO_ROOT / "scripts" / "execute_job.py"), str(run_dir)], cwd=REPO_ROOT)
+        finalize_guardrails(project_root, run_dir, executed=completed.returncode in (0, 2))
+        sys.stdout.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
         result, _result_error = load_json_status(run_dir / "result.json")
         event = append_run_event(
             run_dir,
@@ -2163,6 +2391,26 @@ def cmd_worker(args: argparse.Namespace) -> int:
                 "worker_id": claimed.worker_id,
             },
         )
+        guardrail_snapshot = preflight_guardrails(project_root, run_dir, source="worker")
+        if guardrail_snapshot.get("decision") == "pause":
+            approval = pause_run_for_guardrail(project_root, run_dir, guardrail_snapshot, source="worker", claimed=claimed)
+            print(
+                json.dumps(
+                    {
+                        "job_id": payload["job_id"],
+                        "run_path": payload["run_path"],
+                        "queue_state": "awaiting_approval",
+                        "result_status": "guardrail_blocked",
+                        "approval_id": approval.get("approval_id"),
+                        "guardrails": guardrail_snapshot,
+                        "reclaimed": reclaimed,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            if args.once:
+                return 0
+            continue
         started_event = append_run_event(
             run_dir,
             "run_started",
@@ -2194,6 +2442,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
             result_status = read_json(run_dir / "result.json").get("status") or result_status
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             result_status = "success" if completed.returncode == 0 else "failed"
+        finalize_guardrails(project_root, run_dir, executed=completed.returncode in (0, 2))
 
         next_retry_at = None
         retry_backoff_seconds = None
@@ -2563,6 +2812,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "agent": result.get("agent") or meta.get("preferred_agent"),
         "project": meta.get("project"),
         "task_id": meta.get("task_id"),
+        "guardrails": load_guardrail_snapshot(run_dir),
         "delivery": resolve_run_delivery(project_root, run_dir, meta=meta, result=result),
     }
     errors = {}
@@ -3366,6 +3616,9 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         if run_dir is None or not run_dir.is_dir():
             last_status = "error"
             break
+        if worker_payload.get("queue_state") == "awaiting_approval":
+            last_status = "awaiting_approval"
+            break
 
         decision = evaluate_run_decision(project_root, run_dir, result_status=result_status)
         budget_state = record_orchestration_decision(project_root, run_id=run_dir.name, decision=decision, failure_budget=failure_budget)
@@ -3681,6 +3934,7 @@ def cmd_workflow_validate(args: argparse.Namespace) -> int:
             "build": contract.commands.build,
             "smoke": contract.commands.smoke,
         },
+        "guardrails": contract_summary(contract).get("guardrails"),
         "errors": errors,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -3776,6 +4030,7 @@ def cmd_openclaw_status(args: argparse.Namespace) -> int:
         "pending_approvals": dashboard["pending_approvals"],
         "retry_backlog": dashboard["retry_backlog"],
         "current_run": dashboard["current_run"],
+        "guardrails": dashboard.get("guardrails"),
         "recent_failures": dashboard["recent_failures"],
         "ready_tasks": dashboard["ready_tasks"],
         "metrics": {

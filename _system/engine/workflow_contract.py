@@ -57,6 +57,31 @@ class Commands:
 
 
 @dataclass(frozen=True)
+class BudgetGuardrails:
+    enabled: bool = False
+    warning_limit: int = 0
+    hard_limit: int = 0
+    base_run_cost: int = 1
+    agent_costs: dict[str, int] = field(default_factory=dict)
+    workspace_mode_costs: dict[str, int] = field(default_factory=dict)
+    risk_flag_costs: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GovernanceGuardrails:
+    approval_required_risk_flags: tuple[str, ...] = field(default_factory=tuple)
+    approval_required_paths: tuple[str, ...] = field(default_factory=tuple)
+    approval_required_workspace_modes: tuple[str, ...] = field(default_factory=tuple)
+    approval_required_agents: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class GuardrailPolicy:
+    budget: BudgetGuardrails = field(default_factory=BudgetGuardrails)
+    governance: GovernanceGuardrails = field(default_factory=GovernanceGuardrails)
+
+
+@dataclass(frozen=True)
 class WorkflowContract:
     contract_version: int = _DEFAULT_CONTRACT_VERSION
     project: str = ""
@@ -65,6 +90,7 @@ class WorkflowContract:
     timeout_policy: TimeoutPolicy = field(default_factory=TimeoutPolicy)
     scope: WorkflowScope = field(default_factory=WorkflowScope)
     commands: Commands = field(default_factory=Commands)
+    guardrails: GuardrailPolicy = field(default_factory=GuardrailPolicy)
     source: str = "defaults"
 
 
@@ -97,6 +123,17 @@ def _require_bool(data: dict[str, Any], key: str, default: bool) -> bool:
     value = data.get(key, default)
     if not isinstance(value, bool):
         raise WorkflowLoadError(f"{key!r} must be a boolean, got {value!r}")
+    return value
+
+
+def _require_non_negative_int(data: dict[str, Any], key: str, default: int) -> int:
+    value = data.get(key, default)
+    try:
+        value = int(value)
+    except (TypeError, ValueError) as exc:
+        raise WorkflowLoadError(f"{key!r} must be an integer, got {value!r}") from exc
+    if value < 0:
+        raise WorkflowLoadError(f"{key!r} must be >= 0, got {value!r}")
     return value
 
 
@@ -171,6 +208,78 @@ def _parse_commands(raw: Any) -> Commands:
     )
 
 
+def _parse_int_map(raw: Any, *, field_name: str) -> dict[str, int]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise WorkflowLoadError(f"{field_name} must be a mapping, got {type(raw).__name__}")
+    parsed: dict[str, int] = {}
+    for key, value in raw.items():
+        name = str(key).strip()
+        if not name:
+            continue
+        try:
+            parsed[name] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise WorkflowLoadError(f"{field_name}.{name!r} must be an integer, got {value!r}") from exc
+        if parsed[name] < 0:
+            raise WorkflowLoadError(f"{field_name}.{name!r} must be >= 0, got {value!r}")
+    return parsed
+
+
+def _parse_string_tuple(raw: Any, *, field_name: str) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise WorkflowLoadError(f"{field_name} must be a list, got {type(raw).__name__}")
+    values = [str(item).strip() for item in raw if str(item).strip()]
+    return tuple(values)
+
+
+def _parse_budget_guardrails(raw: Any) -> BudgetGuardrails:
+    if raw is None:
+        return BudgetGuardrails()
+    if not isinstance(raw, dict):
+        raise WorkflowLoadError(f"guardrails.budget must be a mapping, got {type(raw).__name__}")
+    warning_limit = _require_non_negative_int(raw, "warning_limit", 0)
+    hard_limit = _require_non_negative_int(raw, "hard_limit", 0)
+    if warning_limit and hard_limit and hard_limit < warning_limit:
+        raise WorkflowLoadError("guardrails.budget.hard_limit must be >= warning_limit")
+    return BudgetGuardrails(
+        enabled=_require_bool(raw, "enabled", False),
+        warning_limit=warning_limit,
+        hard_limit=hard_limit,
+        base_run_cost=_require_positive_int(raw, "base_run_cost", 1),
+        agent_costs=_parse_int_map(raw.get("agent_costs"), field_name="guardrails.budget.agent_costs"),
+        workspace_mode_costs=_parse_int_map(raw.get("workspace_mode_costs"), field_name="guardrails.budget.workspace_mode_costs"),
+        risk_flag_costs=_parse_int_map(raw.get("risk_flag_costs"), field_name="guardrails.budget.risk_flag_costs"),
+    )
+
+
+def _parse_governance_guardrails(raw: Any) -> GovernanceGuardrails:
+    if raw is None:
+        return GovernanceGuardrails()
+    if not isinstance(raw, dict):
+        raise WorkflowLoadError(f"guardrails.governance must be a mapping, got {type(raw).__name__}")
+    return GovernanceGuardrails(
+        approval_required_risk_flags=_parse_string_tuple(raw.get("approval_required_risk_flags"), field_name="guardrails.governance.approval_required_risk_flags"),
+        approval_required_paths=_parse_string_tuple(raw.get("approval_required_paths"), field_name="guardrails.governance.approval_required_paths"),
+        approval_required_workspace_modes=_parse_string_tuple(raw.get("approval_required_workspace_modes"), field_name="guardrails.governance.approval_required_workspace_modes"),
+        approval_required_agents=_parse_string_tuple(raw.get("approval_required_agents"), field_name="guardrails.governance.approval_required_agents"),
+    )
+
+
+def _parse_guardrails(raw: Any) -> GuardrailPolicy:
+    if raw is None:
+        return GuardrailPolicy()
+    if not isinstance(raw, dict):
+        raise WorkflowLoadError(f"guardrails must be a mapping, got {type(raw).__name__}")
+    return GuardrailPolicy(
+        budget=_parse_budget_guardrails(raw.get("budget")),
+        governance=_parse_governance_guardrails(raw.get("governance")),
+    )
+
+
 def load_workflow_contract(project_root: Path) -> WorkflowContract:
     path = _workflow_path(project_root)
     if not path.is_file():
@@ -199,6 +308,7 @@ def load_workflow_contract(project_root: Path) -> WorkflowContract:
         timeout_policy=_parse_timeout_policy(fm.get("timeout_policy")),
         scope=_parse_scope(fm.get("scope")),
         commands=_parse_commands(fm.get("commands")),
+        guardrails=_parse_guardrails(fm.get("guardrails")),
         source=str(path),
     )
 
@@ -231,6 +341,7 @@ def load_workflow_contract_from_dict(data: dict[str, Any]) -> WorkflowContract:
         timeout_policy=_parse_timeout_policy(data.get("timeout_policy")),
         scope=_parse_scope(data.get("scope")),
         commands=_parse_commands(data.get("commands")),
+        guardrails=_parse_guardrails(data.get("guardrails")),
         source="dict",
     )
 
@@ -252,6 +363,7 @@ def contract_summary(contract: WorkflowContract | dict[str, Any] | None) -> dict
         "require_human_approval_on_failure": (data.get("approval_gates") or {}).get("require_human_approval_on_failure"),
         "allowed_agents": (data.get("scope") or {}).get("allowed_agents"),
         "commands": data.get("commands"),
+        "guardrails": data.get("guardrails"),
         "source": data.get("source"),
         "contract_errors": [],
     }
