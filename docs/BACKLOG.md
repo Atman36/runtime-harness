@@ -207,7 +207,7 @@ E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8
 | 15.2 | ✅ Добавить message directives + `ctx:` context binding contract | 15.1 | 15 | done |
 | 15.3 | ✅ Добавить operator session memory + resume handles | 15.2 | 15 | done |
 | 15.4 | ✅ Добавить safe file exchange для active project/worktree | 15.2 | 15 | done |
-| 15.5 | Добавить transport plugin surface + setup/doctor checks | 15.3, 15.4 | 15 | terminal slice |
+| 15.5 | ✅ Добавить transport plugin surface + setup/doctor checks | 15.3, 15.4 | 15 | done |
 
 **Предлагаемые GitHub issue titles:**
 - `feat: add live status feed for operator polling`

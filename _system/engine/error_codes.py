@@ -68,6 +68,56 @@ REASON_CODES: dict[str, dict[str, str]] = {
         "likely_cause": "Reviewer policy or routing rules contain invalid configuration",
         "next_action": "Review files in _system/registry/",
     },
+    "TRANSPORT_REGISTRY_INVALID": {
+        "description": "The transport registry is missing or malformed",
+        "likely_cause": "_system/registry/operator_transports.yaml is absent or contains invalid YAML",
+        "next_action": "Restore the transport registry and validate provider entries",
+    },
+    "TRANSPORT_CONFIG_INVALID": {
+        "description": "Transport backend config is malformed",
+        "likely_cause": "operator_transport in state/project.yaml does not match the backend contract",
+        "next_action": "Run `claw openclaw doctor <project>` and fix the reported backend config",
+    },
+    "TRANSPORT_ID_INVALID": {
+        "description": "Transport backend id is invalid",
+        "likely_cause": "A backend id is empty, reserved, or does not match the allowed pattern",
+        "next_action": "Rename the backend id to a lowercase slug like `file_exchange`",
+    },
+    "TRANSPORT_PROVIDER_UNKNOWN": {
+        "description": "Transport backend references an unknown provider",
+        "likely_cause": "state/project.yaml points to a provider not declared in the transport registry",
+        "next_action": "Declare the provider in _system/registry/operator_transports.yaml or fix the provider id",
+    },
+    "TRANSPORT_PROVIDER_DUPLICATE": {
+        "description": "Multiple backends map to the same transport provider",
+        "likely_cause": "operator_transport.backends contains duplicate provider entries",
+        "next_action": "Keep a single configured backend per provider",
+    },
+    "TRANSPORT_PROVIDER_LOAD_FAILED": {
+        "description": "Transport backend provider failed to load",
+        "likely_cause": "The registry module/factory path is wrong or the provider raised during import",
+        "next_action": "Fix the provider module path or inspect the provider implementation",
+    },
+    "TRANSPORT_BINARY_MISSING": {
+        "description": "Transport backend prerequisite binary is missing",
+        "likely_cause": "The transport provider depends on a CLI that is not installed on this machine",
+        "next_action": "Install the missing binary or disable that transport backend",
+    },
+    "TRANSPORT_UNSUPPORTED_COMBINATION": {
+        "description": "Transport backend does not support the current project setup",
+        "likely_cause": "The configured workspace mode or project setup is incompatible with the selected transport",
+        "next_action": "Adjust the project execution config or choose a compatible transport backend",
+    },
+    "TRANSPORT_BACKEND_NOT_FOUND": {
+        "description": "The requested transport backend is not configured",
+        "likely_cause": "The project has no matching enabled backend for that provider or id",
+        "next_action": "Inspect `claw openclaw transports <project>` and configure the missing backend",
+    },
+    "TRANSPORT_BACKEND_DISABLED": {
+        "description": "The requested transport backend is disabled",
+        "likely_cause": "The backend exists in project config but enabled=false",
+        "next_action": "Enable the backend in state/project.yaml or choose another transport",
+    },
     "INVALID_PAYLOAD": {
         "description": "The input payload is not a valid JSON object",
         "likely_cause": "stdin did not contain valid JSON or was empty",

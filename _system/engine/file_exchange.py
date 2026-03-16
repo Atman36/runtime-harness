@@ -43,11 +43,13 @@ def _read_yaml_object(path: Path) -> dict[str, Any]:
     return dict(loaded)
 
 
-def load_file_exchange_policy(project_root: Path) -> dict[str, Any]:
-    state = _read_yaml_object(project_root / "state" / "project.yaml")
-    operator_transport = state.get("operator_transport") if isinstance(state.get("operator_transport"), dict) else {}
-    file_exchange = operator_transport.get("file_exchange") if isinstance(operator_transport.get("file_exchange"), dict) else {}
-    raw_globs = file_exchange.get("deny_globs")
+def load_file_exchange_policy(project_root: Path, repo_root: Path | None = None) -> dict[str, Any]:
+    from _system.engine.operator_transport import load_transport_backend  # noqa: PLC0415
+
+    resolved_project_root = Path(project_root).resolve()
+    resolved_repo_root = Path(repo_root).resolve() if repo_root is not None else resolved_project_root.parents[1]
+    loaded = load_transport_backend(resolved_repo_root, resolved_project_root, provider_id="file_exchange")
+    raw_globs = loaded.config.get("deny_globs") if isinstance(loaded.config, dict) else []
     deny_globs = [str(item).strip() for item in raw_globs if str(item).strip()] if isinstance(raw_globs, list) else []
     merged = list(DEFAULT_DENY_GLOBS)
     for pattern in deny_globs:

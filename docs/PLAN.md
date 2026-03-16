@@ -584,7 +584,7 @@ filesystem остаётся source of truth, а transport state и resume handle
   - `openclaw file-put|file-fetch` добавляют upload/download contract для файлов и директорий в active project/worktree
   - deny-globs, path normalization, atomic write и zip-on-fetch зафиксированы в reusable engine helper
   - worktree-targeted exchange требует явный `--run`, чтобы transport не адресовал произвольные raw FS paths
-- **TASK-026 `Transport plugin surface and setup checks`**
+- **TASK-026 `Transport plugin surface and setup checks`** ✅ done
   - transport/command backend contract вместо hardcoded единственного ingress path
   - setup/doctor checks для конфигурации transport layer
   - новый transport можно подключать как narrow extension, не раздувая `scripts/claw.py`
@@ -595,7 +595,7 @@ filesystem остаётся source of truth, а transport state и resume handle
 - in-memory scheduler как замену существующей file-backed queue
 - фреймворк-плагины без минимального filesystem contract и config validation
 
-Рекомендуемый порядок после Epic 14: `TASK-022` → `TASK-023` → параллельно `TASK-024` и `TASK-025` → `TASK-026`.
+Epic 15 закрыт: transport/session operator surface теперь покрывает status feed, context binding, session continuity, safe file exchange и explicit transport plugin/setup contract.
 
 ---
 

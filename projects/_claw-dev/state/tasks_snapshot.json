@@ -1,7 +1,7 @@
 {
   "snapshot_version": 1,
   "project": "_claw-dev",
-  "updated_at": "2026-03-16T16:49:59Z",
+  "updated_at": "2026-03-16T17:06:00Z",
   "task_count": 26,
   "tasks": [
     {
@@ -380,7 +380,7 @@
     {
       "task_id": "TASK-026",
       "title": "Transport plugin surface and setup checks",
-      "status": "ready",
+      "status": "done",
       "priority": "medium",
       "dependencies": [
         "TASK-024",
@@ -389,10 +389,10 @@
       "dependency_blockers": [],
       "preferred_agent": "codex",
       "needs_review": true,
-      "ready": true,
+      "ready": false,
       "active": false,
       "task_path": "tasks/TASK-026.md"
     }
   ],
-  "checksum": "9f2c9f82f82fbf788a0f890b05e22bd16d4adadd3f089a8aad4c680735427af4"
+  "checksum": "5e89c6632c74a5962a516bf6366ed06921afbe233da422e021758924ed51908d"
 }

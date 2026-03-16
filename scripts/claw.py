@@ -26,7 +26,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileExchangeError, FileQueue, OperatorSessionStore, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, enqueue_run, escalation_chain, execute_run_task, fetch_path, find_run_dir, load_file_exchange_policy, load_org_graph, operator_sessions_root_for_repo, plan_task_run, plan_to_dict, put_file, queue_root_for_project, read_json, resolve_project_root, run_command, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
+from _system.engine import FileExchangeError, FileQueue, OperatorSessionStore, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, TransportConfigError, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, describe_transport_backends, enqueue_run, escalation_chain, execute_run_task, fetch_path, find_run_dir, load_file_exchange_policy, load_org_graph, operator_sessions_root_for_repo, plan_task_run, plan_to_dict, put_file, queue_root_for_project, read_json, resolve_project_root, run_command, run_transport_doctor, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
 from _system.engine.budget_guardrails import evaluate_guardrails, extract_referenced_paths, summarize_project_guardrails  # noqa: E402
 from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
@@ -4684,7 +4684,7 @@ def cmd_openclaw_file_put(args: argparse.Namespace) -> int:
         project_root = resolve_project_root(args.project_path)
         context_payload = _load_context_json_option(getattr(args, "context_json", None), getattr(args, "context_json_file", None))
         target_root, workspace_mode, run_dir = _resolve_file_exchange_target(project_root, context_payload, getattr(args, "run", None))
-        policy = load_file_exchange_policy(project_root)
+        policy = load_file_exchange_policy(project_root, REPO_ROOT)
         result = put_file(
             target_root,
             args.relative_path,
@@ -4693,6 +4693,9 @@ def cmd_openclaw_file_put(args: argparse.Namespace) -> int:
         )
     except FileNotFoundError as exc:
         _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+    except TransportConfigError as exc:
+        _openclaw_error(str(exc), exc.code)
         return 1
     except FileExchangeError as exc:
         _openclaw_error(str(exc), exc.code)
@@ -4718,7 +4721,7 @@ def cmd_openclaw_file_fetch(args: argparse.Namespace) -> int:
         project_root = resolve_project_root(args.project_path)
         context_payload = _load_context_json_option(getattr(args, "context_json", None), getattr(args, "context_json_file", None))
         target_root, workspace_mode, run_dir = _resolve_file_exchange_target(project_root, context_payload, getattr(args, "run", None))
-        policy = load_file_exchange_policy(project_root)
+        policy = load_file_exchange_policy(project_root, REPO_ROOT)
         result = fetch_path(
             target_root,
             args.relative_path,
@@ -4727,6 +4730,9 @@ def cmd_openclaw_file_fetch(args: argparse.Namespace) -> int:
         )
     except FileNotFoundError as exc:
         _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+    except TransportConfigError as exc:
+        _openclaw_error(str(exc), exc.code)
         return 1
     except FileExchangeError as exc:
         _openclaw_error(str(exc), exc.code)
@@ -5014,6 +5020,37 @@ def cmd_openclaw_wake(args: argparse.Namespace) -> int:
     refresh_metrics_snapshot(project_root)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def cmd_openclaw_transports(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+        payload = {
+            "status": "ok",
+            "project": project_root.name,
+            "backends": describe_transport_backends(REPO_ROOT, project_root),
+        }
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+    except TransportConfigError as exc:
+        _openclaw_error(str(exc), exc.code)
+        return 1
+
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_doctor(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+        payload = run_transport_doctor(REPO_ROOT, project_root)
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload.get("status") == "ok" else 1
 
 
 def cmd_decompose_epic(args: argparse.Namespace) -> int:
@@ -5471,6 +5508,14 @@ def build_parser() -> argparse.ArgumentParser:
     oc_file_fetch.add_argument("--context-json-file", help="Read bind-context JSON payload from a file")
     oc_file_fetch.add_argument("--run", help="Optional run id or run path used to resolve worktree-backed targets")
     oc_file_fetch.set_defaults(func=cmd_openclaw_file_fetch)
+
+    oc_transports = openclaw_sub.add_parser("transports", help="List discovered operator transport backends")
+    oc_transports.add_argument("project_path")
+    oc_transports.set_defaults(func=cmd_openclaw_transports)
+
+    oc_doctor = openclaw_sub.add_parser("doctor", help="Run setup checks for configured operator transport backends")
+    oc_doctor.add_argument("project_path")
+    oc_doctor.set_defaults(func=cmd_openclaw_doctor)
 
     oc_session_status = openclaw_sub.add_parser("session-status", help="Show operator session continuity for one scope/engine")
     oc_session_status.add_argument("project_path")

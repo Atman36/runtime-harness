@@ -7,6 +7,7 @@ from _system.engine.wake_queue import VALID_WAKE_REASONS, WakeQueue, wake_root_f
 from _system.engine.task_claims import TaskClaimStore, claims_root_for_project
 from _system.engine.session_store import SessionStore, sessions_root_for_project
 from _system.engine.operator_session_store import OperatorSessionStore, operator_sessions_root_for_repo
+from _system.engine.operator_transport import TransportConfigError, describe_transport_backends, load_transport_backend, run_transport_doctor
 from _system.engine.org_graph import DelegationCheck, OrgGraphError, delegation_targets, escalation_chain, load_org_graph, validate_delegation
 from _system.engine.file_exchange import FileExchangeError, fetch_path, load_file_exchange_policy, put_file
 from _system.engine.operator_context import bind_operator_context, extract_ctx_footer, parse_message_directives, render_ctx_footer
@@ -45,6 +46,7 @@ __all__ = [
     "TaskClaimStore",
     "SessionStore",
     "OperatorSessionStore",
+    "TransportConfigError",
     "OrgGraphError",
     "DelegationCheck",
     "FileExchangeError",
@@ -52,9 +54,12 @@ __all__ = [
     "validate_delegation",
     "delegation_targets",
     "escalation_chain",
+    "describe_transport_backends",
     "fetch_path",
+    "load_transport_backend",
     "load_file_exchange_policy",
     "put_file",
+    "run_transport_doctor",
     "bind_operator_context",
     "extract_ctx_footer",
     "parse_message_directives",

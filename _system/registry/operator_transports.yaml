@@ -1,0 +1,5 @@
+providers:
+  file_exchange:
+    module: _system.engine.transport_plugins.file_exchange
+    factory: load_transport_backend
+    description: Safe file upload/download contract for project roots and active worktrees
