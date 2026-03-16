@@ -1,7 +1,7 @@
 {
   "snapshot_version": 1,
   "project": "_claw-dev",
-  "updated_at": "2026-03-16T05:15:56Z",
+  "updated_at": "2026-03-16T15:48:38Z",
   "task_count": 26,
   "tasks": [
     {
@@ -335,7 +335,7 @@
     {
       "task_id": "TASK-023",
       "title": "Message directives and context binding",
-      "status": "ready",
+      "status": "done",
       "priority": "high",
       "dependencies": [
         "TASK-022"
@@ -343,7 +343,7 @@
       "dependency_blockers": [],
       "preferred_agent": "codex",
       "needs_review": true,
-      "ready": true,
+      "ready": false,
       "active": false,
       "task_path": "tasks/TASK-023.md"
     },
@@ -355,12 +355,10 @@
       "dependencies": [
         "TASK-023"
       ],
-      "dependency_blockers": [
-        "TASK-023"
-      ],
+      "dependency_blockers": [],
       "preferred_agent": "codex",
       "needs_review": true,
-      "ready": false,
+      "ready": true,
       "active": false,
       "task_path": "tasks/TASK-024.md"
     },
@@ -372,12 +370,10 @@
       "dependencies": [
         "TASK-023"
       ],
-      "dependency_blockers": [
-        "TASK-023"
-      ],
+      "dependency_blockers": [],
       "preferred_agent": "codex",
       "needs_review": true,
-      "ready": false,
+      "ready": true,
       "active": false,
       "task_path": "tasks/TASK-025.md"
     },
@@ -401,5 +397,5 @@
       "task_path": "tasks/TASK-026.md"
     }
   ],
-  "checksum": "c2a2b485ac8f4c59e163ba6098ec7ea43317b365ab028468ea4d2923a0353ec3"
+  "checksum": "66c19464e8a1d11885e5fee78767199ca537be307a29be2e6fb9bdd15bbc1cd5"
 }

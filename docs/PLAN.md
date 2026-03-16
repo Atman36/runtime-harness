@@ -572,7 +572,7 @@ filesystem остаётся source of truth, а transport state и resume handle
   - CLI/polling feed поверх `events.jsonl`, `event_snapshot.json` и `agent_stream.jsonl`
   - оператор видит progress/status без ручного tail по run directory
   - первый slice без SSE/websocket; transport может poll-ить уже готовые артефакты
-- **TASK-023 `Message directives and context binding`**
+- **TASK-023 `Message directives and context binding`** ✅ done
   - нормализованный парсер директив `/agent`, `/project`, `@branch`
   - `ctx:` footer для reply-based context carry-over без hidden transport state
   - единые правила precedence: reply context > explicit directives > defaults

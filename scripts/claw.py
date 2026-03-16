@@ -26,7 +26,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileQueue, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, VALID_WAKE_REASONS, WakeQueue, build_agent_command, claims_root_for_project, delegation_targets, enqueue_run, escalation_chain, execute_run_task, find_run_dir, load_org_graph, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
+from _system.engine import FileQueue, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, enqueue_run, escalation_chain, execute_run_task, find_run_dir, load_org_graph, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
 from _system.engine.budget_guardrails import evaluate_guardrails, extract_referenced_paths, summarize_project_guardrails  # noqa: E402
 from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
@@ -3216,6 +3216,19 @@ def _load_summary_text(summary: str | None, summary_file: str | None) -> str | N
     return None
 
 
+def _load_text_option(value: str | None, file_path: str | None, *, option_name: str) -> str | None:
+    if value and file_path:
+        raise ValueError(f"Use only one of --{option_name} or --{option_name}-file")
+    if file_path:
+        path = Path(file_path).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError(f"{option_name}-file not found: {file_path}")
+        return path.read_text(encoding="utf-8")
+    if value is not None:
+        return str(value)
+    return None
+
+
 def cmd_wake_enqueue(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     try:
@@ -4448,6 +4461,39 @@ def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_openclaw_bind_context(args: argparse.Namespace) -> int:
+    try:
+        message_text = _load_text_option(args.message, args.message_file, option_name="message")
+        reply_text = _load_text_option(args.reply_message, args.reply_message_file, option_name="reply-message")
+    except ValueError as exc:
+        _openclaw_error(str(exc), "CONTEXT_INVALID")
+        return 1
+
+    if message_text is None:
+        _openclaw_error("One of --message or --message-file is required", "CONTEXT_INVALID")
+        return 1
+
+    defaults = {
+        "project": getattr(args, "default_project", None),
+        "agent": getattr(args, "default_agent", None),
+        "branch": getattr(args, "default_branch", None),
+    }
+
+    try:
+        payload = bind_operator_context(
+            REPO_ROOT,
+            message_text,
+            reply_message_text=reply_text,
+            defaults=defaults,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        _openclaw_error(str(exc), "CONTEXT_INVALID")
+        return 1
+
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_openclaw_review_batch(args: argparse.Namespace) -> int:
     try:
         project_root = resolve_project_root(args.project_path)
@@ -5045,6 +5091,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     oc_enqueue.set_defaults(func=cmd_openclaw_enqueue)
+
+    oc_bind_context = openclaw_sub.add_parser("bind-context", help="Normalize operator directives and ctx footer into routing context JSON")
+    oc_bind_context.add_argument("--message", help="Operator message text")
+    oc_bind_context.add_argument("--message-file", help="Read operator message text from a file")
+    oc_bind_context.add_argument("--reply-message", help="Optional replied-to message text carrying a ctx footer")
+    oc_bind_context.add_argument("--reply-message-file", help="Read replied-to message text from a file")
+    oc_bind_context.add_argument("--default-project", help="Ambient default project slug or path")
+    oc_bind_context.add_argument("--default-agent", help="Ambient default agent id")
+    oc_bind_context.add_argument("--default-branch", help="Ambient default branch name")
+    oc_bind_context.set_defaults(func=cmd_openclaw_bind_context)
 
     oc_review_batch = openclaw_sub.add_parser("review-batch", help="Generate review batches and return JSON summary")
     oc_review_batch.add_argument("project_path")
