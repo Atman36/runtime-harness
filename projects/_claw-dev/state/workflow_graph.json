@@ -1,7 +1,7 @@
 {
   "artifact_version": 1,
   "project": "_claw-dev",
-  "generated_at": "2026-03-16T05:00:31Z",
+  "generated_at": "2026-03-16T05:15:56Z",
   "node_count": 26,
   "edge_count": 28,
   "nodes": [
@@ -364,12 +364,12 @@
       "node_id": "TASK-022",
       "node_type": "task",
       "title": "Live status feed for operators",
-      "status": "ready",
+      "status": "done",
       "priority": "high",
       "preferred_agent": "codex",
       "selected_agent": "codex",
       "needs_review": true,
-      "ready": true,
+      "ready": false,
       "active": false,
       "dependencies": [
         "TASK-015"
@@ -386,14 +386,12 @@
       "preferred_agent": "codex",
       "selected_agent": "codex",
       "needs_review": true,
-      "ready": false,
+      "ready": true,
       "active": false,
       "dependencies": [
         "TASK-022"
       ],
-      "dependency_blockers": [
-        "TASK-022"
-      ],
+      "dependency_blockers": [],
       "task_path": "tasks/TASK-023.md"
     },
     {
@@ -682,5 +680,5 @@
       "approval_gate": false
     }
   ],
-  "checksum": "442276acb5ce79abbb7bf68c548cfed2e2595fce8a208894ee910b34c327b8d0"
+  "checksum": "e4f6b4515fb6a7074e6b290a21c866910e2ab317afa0879c14b5f48a0abac97a"
 }

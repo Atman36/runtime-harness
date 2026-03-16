@@ -1775,6 +1775,306 @@ def load_json_status(path: Path) -> tuple[dict, str | None]:
     return payload, None
 
 
+def empty_event_snapshot(project_root: Path, run_dir: Path) -> dict:
+    return {
+        "snapshot_version": 1,
+        "project": project_root.name,
+        "run_id": run_dir.name,
+        "run_path": run_dir.relative_to(project_root).as_posix(),
+        "updated_at": None,
+        "event_count": 0,
+        "last_event_type": None,
+        "last_event_at": None,
+        "queue_state": None,
+        "run_status": None,
+        "delivery_status": None,
+        "attempt_count": 0,
+    }
+
+
+def load_event_snapshot_status(project_root: Path, run_dir: Path) -> tuple[dict, dict[str, str]]:
+    snapshot_path = run_dir / "event_snapshot.json"
+    snapshot, snapshot_error = load_json_status(snapshot_path)
+    errors: dict[str, str] = {}
+
+    if snapshot_error is None:
+        return {**empty_event_snapshot(project_root, run_dir), **snapshot}, errors
+
+    errors["event_snapshot"] = snapshot_error
+    try:
+        derived = build_run_event_snapshot(project_root, run_dir)
+    except Exception as exc:
+        errors["events"] = str(exc)
+        derived = empty_event_snapshot(project_root, run_dir)
+    return {**empty_event_snapshot(project_root, run_dir), **derived}, errors
+
+
+def load_queue_projection(project_root: Path, run_id: str) -> tuple[dict, dict, dict[str, str]]:
+    queue = FileQueue(queue_root_for_project(project_root))
+    queue_state = queue.queue_state(run_id) or "unknown"
+    queue_projection = {"state": queue_state}
+    payload: dict = {}
+    errors: dict[str, str] = {}
+
+    queue_path = queue.find_job(run_id)
+    if queue_path is None:
+        return queue_projection, payload, errors
+
+    payload, queue_error = load_json_status(queue_path)
+    if queue_error is not None:
+        errors["queue"] = queue_error
+        return queue_projection, {}, errors
+
+    queue_payload = payload.get("queue") if isinstance(payload.get("queue"), dict) else {}
+    queue_projection.update(
+        {
+            "attempt_count": queue_payload.get("attempt_count"),
+            "max_attempts": queue_payload.get("max_attempts"),
+            "next_retry_at": queue_payload.get("next_retry_at"),
+            "retry_backoff_seconds": queue_payload.get("retry_backoff_seconds"),
+            "worker_id": queue_payload.get("worker_id"),
+            "last_worker_id": queue_payload.get("last_worker_id"),
+            "last_error": queue_payload.get("last_error"),
+            "updated_at": queue_payload.get("updated_at"),
+            "completed_at": queue_payload.get("completed_at"),
+            "history_length": len(queue_payload.get("history", [])) if isinstance(queue_payload.get("history"), list) else 0,
+        }
+    )
+    return queue_projection, payload, errors
+
+
+def load_checkpoint_status(run_dir: Path) -> tuple[dict | None, str | None]:
+    checkpoint_path = run_dir / "approval_checkpoint.json"
+    if not checkpoint_path.exists():
+        return None, None
+
+    payload, error = load_json_status(checkpoint_path)
+    if error is not None:
+        return None, error
+    return payload, None
+
+
+def latest_timestamp(*values: str | None) -> str | None:
+    latest_value: str | None = None
+    latest_parsed: datetime | None = None
+    for value in values:
+        parsed = parse_iso_timestamp(value)
+        if parsed is None:
+            continue
+        if latest_parsed is None or parsed > latest_parsed:
+            latest_parsed = parsed
+            latest_value = value
+    return latest_value
+
+
+def normalize_artifact_status(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized == "completed":
+        return "success"
+    return normalized
+
+
+def resolve_live_run_status(
+    *,
+    queue_state: str,
+    result_status: str | None,
+    meta_status: str | None,
+    event_snapshot: dict,
+    checkpoint: dict | None,
+) -> str:
+    if checkpoint is not None and str(checkpoint.get("status") or "").strip().lower() == "pending":
+        return "awaiting_approval"
+    if queue_state == "awaiting_approval":
+        return "awaiting_approval"
+    if queue_state == "running":
+        return "running"
+    if queue_state == "pending":
+        return normalize_artifact_status(event_snapshot.get("run_status")) or "queued"
+    if queue_state == "dead_letter":
+        return "dead_letter"
+    if queue_state == "failed":
+        return "failed"
+    if queue_state == "done":
+        return (
+            normalize_artifact_status(result_status)
+            or normalize_artifact_status(event_snapshot.get("run_status"))
+            or "success"
+        )
+    return (
+        normalize_artifact_status(event_snapshot.get("run_status"))
+        or normalize_artifact_status(result_status)
+        or normalize_artifact_status(meta_status)
+        or "unknown"
+    )
+
+
+def build_current_step(
+    *,
+    queue_state: str,
+    run_status: str,
+    event_snapshot: dict,
+    delivery: dict,
+    checkpoint: dict | None,
+    queue_projection: dict,
+) -> dict:
+    last_event_type = str(event_snapshot.get("last_event_type") or "").strip()
+    last_event_at = event_snapshot.get("last_event_at") or event_snapshot.get("updated_at")
+    step = {
+        "key": last_event_type or queue_state or run_status or "unknown",
+        "label": last_event_type or run_status or queue_state or "unknown",
+        "status": "unknown",
+        "updated_at": last_event_at,
+        "source": "event_snapshot" if last_event_type else "derived",
+    }
+
+    if checkpoint is not None and str(checkpoint.get("status") or "").strip().lower() == "pending":
+        context = checkpoint.get("context") if isinstance(checkpoint.get("context"), dict) else {}
+        step.update(
+            {
+                "key": "approval_checkpoint",
+                "label": str(context.get("step") or checkpoint.get("reason") or "Awaiting approval"),
+                "status": "blocked",
+                "updated_at": checkpoint.get("created_at") or last_event_at,
+                "source": "approval_checkpoint",
+                "checkpoint_id": checkpoint.get("checkpoint_id"),
+                "context": context,
+            }
+        )
+        return step
+
+    if queue_state == "pending":
+        label = "Queued"
+        if last_event_type == "job_retried":
+            label = "Queued for retry"
+        elif last_event_type == "approval_granted":
+            label = "Re-queued after approval"
+        step.update({"key": last_event_type or "run_enqueued", "label": label, "status": "pending"})
+        if queue_projection.get("next_retry_at"):
+            step["next_retry_at"] = queue_projection.get("next_retry_at")
+        return step
+
+    if queue_state == "running":
+        step.update({"key": last_event_type or "run_started", "label": "Agent running", "status": "active"})
+        return step
+
+    if queue_state == "awaiting_approval":
+        step.update({"key": "awaiting_approval", "label": "Awaiting approval", "status": "blocked", "source": "queue"})
+        return step
+
+    if queue_state == "dead_letter":
+        step.update({"key": "job_dead_letter", "label": "Moved to dead letter", "status": "failed"})
+        return step
+
+    delivery_status = str(delivery.get("status") or "").strip()
+    if delivery_status == "pending_delivery":
+        step.update({"key": "delivery_pending", "label": "Awaiting delivery", "status": "complete", "source": "delivery"})
+        return step
+    if delivery_status == "failed":
+        step.update({"key": "delivery_failed", "label": "Delivery failed", "status": "failed", "source": "delivery"})
+        return step
+    if delivery_status == "delivered":
+        step.update({"key": "delivery_sent", "label": "Delivered", "status": "complete", "source": "delivery"})
+        return step
+
+    if run_status == "success":
+        step.update({"key": last_event_type or "run_finished", "label": "Run finished", "status": "complete"})
+    elif run_status == "failed":
+        step.update({"key": last_event_type or "run_finished", "label": "Run failed", "status": "failed"})
+    return step
+
+
+def build_live_status_feed(project_root: Path, run_dir: Path, *, stream_limit: int = 10) -> dict:
+    meta, meta_error = load_json_status(run_dir / "meta.json")
+    result, result_error = load_json_status(run_dir / "result.json")
+    event_snapshot, snapshot_errors = load_event_snapshot_status(project_root, run_dir)
+    queue_projection, queue_payload, queue_errors = load_queue_projection(project_root, run_dir.name)
+    checkpoint, checkpoint_error = load_checkpoint_status(run_dir)
+
+    stream_tail = load_stream_tail(run_dir, limit=stream_limit)
+    result_status = normalize_artifact_status(result.get("status"))
+    meta_status = normalize_artifact_status(meta.get("status"))
+    run_status = resolve_live_run_status(
+        queue_state=str(queue_projection.get("state") or "unknown"),
+        result_status=result_status,
+        meta_status=meta_status,
+        event_snapshot=event_snapshot,
+        checkpoint=checkpoint,
+    )
+
+    started_at = result.get("started_at") or meta.get("started_at")
+    finished_at = result.get("finished_at") or result.get("completed_at") or meta.get("finished_at")
+    delivery = resolve_run_delivery(project_root, run_dir, meta=meta, result=result)
+    current_step = build_current_step(
+        queue_state=str(queue_projection.get("state") or "unknown"),
+        run_status=run_status,
+        event_snapshot=event_snapshot,
+        delivery=delivery,
+        checkpoint=checkpoint,
+        queue_projection=queue_projection,
+    )
+
+    report_path_abs = run_dir / "report.md"
+    report_path = ""
+    if report_path_abs.is_file():
+        try:
+            report_path = report_path_abs.relative_to(project_root).as_posix()
+        except ValueError:
+            report_path = str(report_path_abs)
+
+    job_task = queue_payload.get("task") if isinstance(queue_payload.get("task"), dict) else {}
+    artifact_errors: dict[str, str] = {}
+    if meta_error is not None:
+        artifact_errors["meta"] = meta_error
+    if result_error is not None:
+        artifact_errors["result"] = result_error
+    artifact_errors.update(snapshot_errors)
+    artifact_errors.update(queue_errors)
+    if checkpoint_error is not None:
+        artifact_errors["approval_checkpoint"] = checkpoint_error
+
+    payload = {
+        "feed_version": 1,
+        "project": meta.get("project") or project_root.name,
+        "run_id": result.get("run_id") or meta.get("run_id") or run_dir.name,
+        "run_path": run_dir.relative_to(project_root).as_posix(),
+        "status": run_status,
+        "run_status": run_status,
+        "meta_status": meta.get("status") or "unknown",
+        "result_status": result_status or "unknown",
+        "queue_state": queue_projection.get("state") or "unknown",
+        "queue": queue_projection,
+        "agent": result.get("agent") or meta.get("preferred_agent") or queue_payload.get("preferred_agent") or "",
+        "task_id": meta.get("task_id") or job_task.get("id"),
+        "task_title": meta.get("task_title") or job_task.get("title"),
+        "summary": result.get("summary") or meta.get("summary") or "",
+        "duration_seconds": duration_between(started_at, finished_at),
+        "current_step": current_step,
+        "stream_tail": stream_tail,
+        "validation": result.get("validation") or meta.get("validation") or {},
+        "hook": result.get("hook") or meta.get("hook") or {},
+        "delivery": delivery,
+        "guardrails": load_guardrail_snapshot(run_dir),
+        "event_snapshot": event_snapshot,
+        "checkpoint": checkpoint,
+        "report_path": report_path,
+        "updated_at": latest_timestamp(
+            current_step.get("updated_at"),
+            event_snapshot.get("updated_at"),
+            finished_at,
+            started_at,
+            stream_tail[-1]["ts"] if stream_tail else None,
+        ),
+    }
+    if artifact_errors:
+        payload["artifact_errors"] = artifact_errors
+        payload["errors"] = artifact_errors
+    return payload
+
+
 def resolve_run_delivery(project_root: Path, run_dir: Path, *, meta: dict | None = None, result: dict | None = None) -> dict:
     resolved_meta = meta or {}
     resolved_result = result or {}
@@ -2799,29 +3099,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"Run not found: {args.run_id}", file=sys.stderr)
         return 1
 
-    queue = FileQueue(queue_root_for_project(project_root))
-    queue_state = queue.queue_state(args.run_id)
-    meta, meta_error = load_json_status(run_dir / "meta.json")
-    result, result_error = load_json_status(run_dir / "result.json")
-    payload = {
-        "run_id": args.run_id,
-        "run_path": run_dir.relative_to(project_root).as_posix(),
-        "queue_state": queue_state,
-        "run_status": meta.get("status") or "unknown",
-        "result_status": result.get("status") or "unknown",
-        "agent": result.get("agent") or meta.get("preferred_agent"),
-        "project": meta.get("project"),
-        "task_id": meta.get("task_id"),
-        "guardrails": load_guardrail_snapshot(run_dir),
-        "delivery": resolve_run_delivery(project_root, run_dir, meta=meta, result=result),
-    }
-    errors = {}
-    if meta_error is not None:
-        errors["meta"] = meta_error
-    if result_error is not None:
-        errors["result"] = result_error
-    if errors:
-        payload["errors"] = errors
+    payload = build_live_status_feed(project_root, run_dir, stream_limit=args.stream_limit)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -4222,52 +4500,7 @@ def cmd_openclaw_summary(args: argparse.Namespace) -> int:
         _openclaw_error(f"Run not found: {args.run_id_or_path}", "NOT_FOUND")
         return 1
 
-    try:
-        result = read_json(run_dir / "result.json")
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        result = {}
-
-    try:
-        meta = read_json(run_dir / "meta.json")
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        meta = {}
-
-    run_id = result.get("run_id") or meta.get("run_id") or run_dir.name
-    status = result.get("status") or meta.get("status") or "unknown"
-    agent = result.get("agent") or meta.get("preferred_agent") or ""
-    summary_text = result.get("summary") or meta.get("summary") or ""
-
-    # Duration
-    duration_seconds: float | None = None
-    started_at = result.get("started_at") or meta.get("started_at")
-    finished_at = result.get("finished_at") or result.get("completed_at")
-    duration_seconds = duration_between(started_at, finished_at)
-    validation = result.get("validation") or {}
-    delivery = resolve_run_delivery(project_root, run_dir, meta=meta, result=result)
-    hook_status = result.get("hook") or meta.get("hook") or {}
-
-    # Report path
-    report_path_abs = run_dir / "report.md"
-    report_path = ""
-    if report_path_abs.is_file():
-        try:
-            report_path = report_path_abs.relative_to(project_root).as_posix()
-        except ValueError:
-            report_path = str(report_path_abs)
-
-    payload = {
-        "run_id": run_id,
-        "status": status,
-        "agent": agent,
-        "duration_seconds": duration_seconds,
-        "summary": summary_text,
-        "stream_tail": load_stream_tail(run_dir),
-        "validation": validation,
-        "hook": hook_status,
-        "delivery": delivery,
-        "report_path": report_path,
-        "event_snapshot": build_run_event_snapshot(project_root, run_dir),
-    }
+    payload = build_live_status_feed(project_root, run_dir, stream_limit=args.stream_limit)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -4554,9 +4787,10 @@ def build_parser() -> argparse.ArgumentParser:
     apply_patch.add_argument("--confirm", action="store_true", help="Actually apply patch.diff via git apply")
     apply_patch.set_defaults(func=cmd_apply_patch)
 
-    status = subcommands.add_parser("status", help="Show queue and run status for one run")
+    status = subcommands.add_parser("status", help="Show live status feed for one run")
     status.add_argument("project_root")
     status.add_argument("run_id")
+    status.add_argument("--stream-limit", type=int, default=10, help="Number of stream records to include (default: 10)")
     status.set_defaults(func=cmd_status)
 
     dashboard = subcommands.add_parser("dashboard", help="Show richer status for one or all projects")
@@ -4817,9 +5051,10 @@ def build_parser() -> argparse.ArgumentParser:
     oc_review_batch.add_argument("--dry-run", dest="dry_run", action="store_true")
     oc_review_batch.set_defaults(func=cmd_openclaw_review_batch)
 
-    oc_summary = openclaw_sub.add_parser("summary", help="Return structured summary of a run as JSON")
+    oc_summary = openclaw_sub.add_parser("summary", help="Show live status feed for a run as JSON")
     oc_summary.add_argument("project_path")
     oc_summary.add_argument("run_id_or_path")
+    oc_summary.add_argument("--stream-limit", type=int, default=10, help="Number of stream records to include (default: 10)")
     oc_summary.set_defaults(func=cmd_openclaw_summary)
 
     oc_replay_events = openclaw_sub.add_parser("replay-events", help="Replay append-only run events as JSON")

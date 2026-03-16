@@ -568,7 +568,7 @@ file exchange и transport extensibility. Сохраняем текущий пр
 filesystem остаётся source of truth, а transport state и resume handles живут в
 явных артефактах, а не в памяти процесса.
 
-- **TASK-022 `Live status feed for operators`**
+- **TASK-022 `Live status feed for operators`** ✅ done
   - CLI/polling feed поверх `events.jsonl`, `event_snapshot.json` и `agent_stream.jsonl`
   - оператор видит progress/status без ручного tail по run directory
   - первый slice без SSE/websocket; transport может poll-ить уже готовые артефакты

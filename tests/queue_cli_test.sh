@@ -91,7 +91,8 @@ python3 "$workspace/scripts/claw.py" status "$project_root" RUN-0001 > "$status_
 
 assert_contains "$status_path" '"run_id": "RUN-0001"'
 assert_contains "$status_path" '"queue_state": "done"'
-assert_contains "$status_path" '"run_status": "completed"'
+assert_contains "$status_path" '"run_status": "success"'
+assert_contains "$status_path" '"meta_status": "completed"'
 assert_contains "$status_path" "\"run_path\": \"runs/$today/RUN-0001\""
 
 echo "queue cli test: ok"
