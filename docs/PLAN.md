@@ -576,10 +576,10 @@ filesystem остаётся source of truth, а transport state и resume handle
   - нормализованный парсер директив `/agent`, `/project`, `@branch`
   - `ctx:` footer для reply-based context carry-over без hidden transport state
   - единые правила precedence: reply context > explicit directives > defaults
-- **TASK-024 `Operator session memory and resume handles`**
-  - file-backed session state per operator scope и engine
-  - auto-resume/new-thread semantics с явным reset path
-  - provider-neutral handle contract вместо жёсткой привязки к одному CLI resume format
+- **TASK-024 `Operator session memory and resume handles`** ✅ done
+  - repo-scoped operator session state per scope и engine с inspectable artifacts
+  - `openclaw session-status|session-update|session-reset|session-new-thread` + auto-resume resolution в `bind-context`
+  - provider-neutral handle contract с derived resume lines через agent registry templates
 - **TASK-025 `Safe file exchange for project roots`**
   - upload/download contract для файлов и директорий в active project/worktree
   - deny-globs, path normalization, atomic write и zip-on-fetch

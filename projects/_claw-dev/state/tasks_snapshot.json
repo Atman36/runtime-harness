@@ -1,7 +1,7 @@
 {
   "snapshot_version": 1,
   "project": "_claw-dev",
-  "updated_at": "2026-03-16T15:48:38Z",
+  "updated_at": "2026-03-16T16:07:03Z",
   "task_count": 26,
   "tasks": [
     {
@@ -350,7 +350,7 @@
     {
       "task_id": "TASK-024",
       "title": "Operator session memory and resume handles",
-      "status": "ready",
+      "status": "done",
       "priority": "medium",
       "dependencies": [
         "TASK-023"
@@ -358,7 +358,7 @@
       "dependency_blockers": [],
       "preferred_agent": "codex",
       "needs_review": true,
-      "ready": true,
+      "ready": false,
       "active": false,
       "task_path": "tasks/TASK-024.md"
     },
@@ -387,7 +387,6 @@
         "TASK-025"
       ],
       "dependency_blockers": [
-        "TASK-024",
         "TASK-025"
       ],
       "preferred_agent": "codex",
@@ -397,5 +396,5 @@
       "task_path": "tasks/TASK-026.md"
     }
   ],
-  "checksum": "66c19464e8a1d11885e5fee78767199ca537be307a29be2e6fb9bdd15bbc1cd5"
+  "checksum": "033a7cf54ca5b58d7719b96c6850e7d8bd22b5bc3fadde6e7c77c5a0302b5888"
 }

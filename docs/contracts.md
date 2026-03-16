@@ -14,6 +14,7 @@ Located in `_system/contracts/`:
 | `meta.schema.json` | `runs/**/meta.json` | `run_id`, `status`, `project`, `routing`, `execution` |
 | `task_claim.schema.json` | `projects/<slug>/state/claims/*.json` | `claim_version`, `task_id`, `status`, `owner`, `events` |
 | `session_state.schema.json` | `projects/<slug>/state/sessions/*.json` | `session_version`, `session_id`, `scope`, `resume`, `handoff` |
+| `operator_session_state.schema.json` | `state/operator_sessions/*.json` | `session_version`, `session_id`, `scope`, `engine`, `binding`, `resume`, `handoff` |
 | `workflow.schema.json` | `projects/<slug>/docs/WORKFLOW.md` front matter | `contract_version`, `project`, `approval_gates`, `retry_policy` |
 
 Schemas follow [JSON Schema draft 2020-12](https://json-schema.org/draft/2020-12/schema).

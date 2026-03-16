@@ -8,6 +8,7 @@ agents:
       - shell_glue
     command: codex
     args: exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -C {project_root}
+    resume_line_template: codex resume {handle}
     prompt_mode: arg
     cwd: project_root
     default_timeout_seconds: 3600
@@ -20,6 +21,7 @@ agents:
       - research
     command: claude
     args: -p --permission-mode bypassPermissions --output-format text
+    resume_line_template: claude --resume {handle}
     prompt_mode: arg
     cwd: project_root
     default_timeout_seconds: 3600

@@ -26,7 +26,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileQueue, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, enqueue_run, escalation_chain, execute_run_task, find_run_dir, load_org_graph, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
+from _system.engine import FileQueue, OperatorSessionStore, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, enqueue_run, escalation_chain, execute_run_task, find_run_dir, load_org_graph, operator_sessions_root_for_repo, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
 from _system.engine.budget_guardrails import evaluate_guardrails, extract_referenced_paths, summarize_project_guardrails  # noqa: E402
 from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
@@ -1129,6 +1129,30 @@ def _session_summary(payload: dict | None) -> dict | None:
         "status": payload.get("status"),
         "updated_at": payload.get("updated_at"),
         "resume": payload.get("resume"),
+        "handoff": payload.get("handoff") if isinstance(payload.get("handoff"), dict) else {},
+        "reset_count": payload.get("reset_count"),
+        "rotation_count": payload.get("rotation_count"),
+        "session_file": payload.get("session_file"),
+    }
+
+
+def _operator_session_summary(payload: dict | None) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    store = OperatorSessionStore(operator_sessions_root_for_repo(REPO_ROOT), repo_root=REPO_ROOT)
+    return {
+        "session_id": payload.get("session_id"),
+        "status": payload.get("status"),
+        "scope": payload.get("scope") if isinstance(payload.get("scope"), dict) else {},
+        "scope_key": payload.get("scope_key"),
+        "engine": payload.get("engine"),
+        "binding": payload.get("binding") if isinstance(payload.get("binding"), dict) else {},
+        "updated_at": payload.get("updated_at"),
+        "resume": payload.get("resume"),
+        "resume_line": store.derive_resume_line(
+            engine=str(payload.get("engine") or ""),
+            resume=payload.get("resume") if isinstance(payload.get("resume"), dict) else None,
+        ),
         "handoff": payload.get("handoff") if isinstance(payload.get("handoff"), dict) else {},
         "reset_count": payload.get("reset_count"),
         "rotation_count": payload.get("rotation_count"),
@@ -4279,6 +4303,64 @@ def _openclaw_error(message: str, code: str = "ERROR") -> None:
     sys.stderr.write("\n")
 
 
+def _binding_resume_matches(session_payload: dict | None, resolved: dict[str, Any] | None) -> bool:
+    if not isinstance(session_payload, dict) or not isinstance(resolved, dict):
+        return False
+    binding = session_payload.get("binding") if isinstance(session_payload.get("binding"), dict) else {}
+    stored_project = str(binding.get("project") or "").strip()
+    stored_agent = str(binding.get("agent") or "").strip()
+    stored_branch = str(binding.get("branch") or "").strip()
+    current_project = str(resolved.get("project") or "").strip()
+    current_agent = str(resolved.get("agent") or "").strip()
+    current_branch = str(resolved.get("branch") or "").strip()
+    return (
+        stored_project == current_project
+        and stored_agent == current_agent
+        and stored_branch == current_branch
+    )
+
+
+def _resolve_operator_continuation(
+    context_payload: dict[str, Any],
+    session_payload: dict[str, Any] | None,
+    *,
+    session_mode: str,
+) -> dict[str, Any]:
+    payload = {
+        "mode": "fresh",
+        "source": "missing_session",
+        "resume": None,
+        "resume_line": None,
+        "session_id": session_payload.get("session_id") if isinstance(session_payload, dict) else None,
+    }
+    if session_mode == "reset":
+        payload["source"] = "explicit_reset"
+        return payload
+    if session_mode == "new-thread":
+        payload["source"] = "explicit_new_thread"
+        return payload
+    if not isinstance(session_payload, dict):
+        return payload
+
+    resume = session_payload.get("resume") if isinstance(session_payload.get("resume"), dict) else None
+    if str(session_payload.get("status") or "").strip() != "active":
+        payload["source"] = "session_reset"
+        return payload
+    if not resume or not str(resume.get("handle") or "").strip():
+        payload["source"] = "missing_resume"
+        return payload
+    if not _binding_resume_matches(session_payload, context_payload.get("resolved")):
+        payload["source"] = "context_changed"
+        return payload
+
+    session_summary = _operator_session_summary(session_payload) or {}
+    payload["mode"] = "resume"
+    payload["source"] = "stored_session"
+    payload["resume"] = resume
+    payload["resume_line"] = session_summary.get("resume_line")
+    return payload
+
+
 def cmd_openclaw_status(args: argparse.Namespace) -> int:
     try:
         project_root = resolve_project_root(args.project_path)
@@ -4490,7 +4572,117 @@ def cmd_openclaw_bind_context(args: argparse.Namespace) -> int:
         _openclaw_error(str(exc), "CONTEXT_INVALID")
         return 1
 
+    session_scope = str(getattr(args, "session_scope", "") or "").strip()
+    if session_scope:
+        resolved = payload.get("resolved") if isinstance(payload.get("resolved"), dict) else {}
+        resolved_agent = str(resolved.get("agent") or "").strip()
+        session_payload = None
+        if resolved_agent:
+            store = OperatorSessionStore(operator_sessions_root_for_repo(REPO_ROOT), repo_root=REPO_ROOT)
+            session_payload = store.load_session(
+                scope_id=session_scope,
+                scope_kind=getattr(args, "session_scope_kind", "thread"),
+                engine=resolved_agent,
+            )
+        payload["operator_session"] = _operator_session_summary(session_payload)
+        payload["continuation"] = _resolve_operator_continuation(
+            payload,
+            session_payload,
+            session_mode=getattr(args, "session_mode", "auto"),
+        )
+
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_session_status(args: argparse.Namespace) -> int:
+    store = OperatorSessionStore(operator_sessions_root_for_repo(REPO_ROOT), repo_root=REPO_ROOT)
+    payload = store.load_session(
+        scope_id=args.scope,
+        scope_kind=args.scope_kind,
+        engine=args.engine,
+    )
+    if payload is None:
+        print(
+            json.dumps(
+                {
+                    "status": "not_found",
+                    "scope": {"kind": args.scope_kind, "id": args.scope},
+                    "engine": args.engine,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
+    summary = _operator_session_summary(payload) or payload
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_session_update(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+        resume_handle = _parse_resume_handle(args.resume_handle, args.resume_handle_json)
+        summary_text = _load_summary_text(args.summary, args.summary_file)
+    except (FileNotFoundError, ValueError) as exc:
+        _openclaw_error(str(exc), "SESSION_INVALID")
+        return 1
+
+    if resume_handle is None and summary_text is None and not args.note and not args.run_id and not args.run_path:
+        _openclaw_error("No operator session updates provided", "SESSION_INVALID")
+        return 1
+
+    store = OperatorSessionStore(operator_sessions_root_for_repo(REPO_ROOT), repo_root=REPO_ROOT)
+    payload = store.update(
+        scope_id=args.scope,
+        scope_kind=args.scope_kind,
+        engine=args.engine,
+        resume=resume_handle,
+        summary=summary_text,
+        note=args.note,
+        run_id=args.run_id,
+        run_path=args.run_path,
+        project=args.project or project_root.name,
+        project_root=str(project_root),
+        branch=args.branch,
+        workspace_mode=args.workspace_mode,
+    )
+    summary = _operator_session_summary(payload) or payload
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_session_reset(args: argparse.Namespace) -> int:
+    store = OperatorSessionStore(operator_sessions_root_for_repo(REPO_ROOT), repo_root=REPO_ROOT)
+    try:
+        payload = store.reset(
+            scope_id=args.scope,
+            scope_kind=args.scope_kind,
+            engine=args.engine,
+            note=args.note,
+        )
+    except ValueError as exc:
+        _openclaw_error(str(exc), "SESSION_INVALID")
+        return 1
+    summary = _operator_session_summary(payload) or payload
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_session_new_thread(args: argparse.Namespace) -> int:
+    store = OperatorSessionStore(operator_sessions_root_for_repo(REPO_ROOT), repo_root=REPO_ROOT)
+    try:
+        payload = store.rotate(
+            scope_id=args.scope,
+            scope_kind=args.scope_kind,
+            engine=args.engine,
+            note=args.note,
+        )
+    except ValueError as exc:
+        _openclaw_error(str(exc), "SESSION_INVALID")
+        return 1
+    summary = _operator_session_summary(payload) or payload
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -5100,7 +5292,55 @@ def build_parser() -> argparse.ArgumentParser:
     oc_bind_context.add_argument("--default-project", help="Ambient default project slug or path")
     oc_bind_context.add_argument("--default-agent", help="Ambient default agent id")
     oc_bind_context.add_argument("--default-branch", help="Ambient default branch name")
+    oc_bind_context.add_argument("--session-scope", help="Optional operator scope id for auto-resume lookup")
+    oc_bind_context.add_argument("--session-scope-kind", default="thread", help="Operator scope kind (default: thread)")
+    oc_bind_context.add_argument(
+        "--session-mode",
+        choices=("auto", "new-thread", "reset"),
+        default="auto",
+        help="Override auto-resume behavior for this bind result",
+    )
     oc_bind_context.set_defaults(func=cmd_openclaw_bind_context)
+
+    oc_session_status = openclaw_sub.add_parser("session-status", help="Show operator session continuity for one scope/engine")
+    oc_session_status.add_argument("project_path")
+    oc_session_status.add_argument("--scope", required=True, help="Operator scope id (e.g. transport/thread-42)")
+    oc_session_status.add_argument("--scope-kind", default="thread", help="Operator scope kind (default: thread)")
+    oc_session_status.add_argument("--engine", required=True, help="Engine/agent id (e.g. codex)")
+    oc_session_status.set_defaults(func=cmd_openclaw_session_status)
+
+    oc_session_update = openclaw_sub.add_parser("session-update", help="Update operator session resume handle or handoff summary")
+    oc_session_update.add_argument("project_path")
+    oc_session_update.add_argument("--scope", required=True, help="Operator scope id (e.g. transport/thread-42)")
+    oc_session_update.add_argument("--scope-kind", default="thread", help="Operator scope kind (default: thread)")
+    oc_session_update.add_argument("--engine", required=True, help="Engine/agent id (e.g. codex)")
+    oc_session_update.add_argument("--project", help="Bound project slug (defaults to the provided project path)")
+    oc_session_update.add_argument("--branch", help="Bound branch name for this operator session")
+    oc_session_update.add_argument("--workspace-mode", help="Optional workspace mode bound to this session")
+    oc_session_update.add_argument("--resume-handle", help="Opaque resume handle string")
+    oc_session_update.add_argument("--resume-handle-json", help="JSON object for provider-neutral resume handle")
+    oc_session_update.add_argument("--summary", help="Handoff summary text")
+    oc_session_update.add_argument("--summary-file", help="Read handoff summary from a file path")
+    oc_session_update.add_argument("--note", help="Optional update note")
+    oc_session_update.add_argument("--run-id", help="Optional run id associated with the update")
+    oc_session_update.add_argument("--run-path", help="Optional run path associated with the update")
+    oc_session_update.set_defaults(func=cmd_openclaw_session_update)
+
+    oc_session_reset = openclaw_sub.add_parser("session-reset", help="Reset stored continuity for one operator scope")
+    oc_session_reset.add_argument("project_path")
+    oc_session_reset.add_argument("--scope", required=True, help="Operator scope id (e.g. transport/thread-42)")
+    oc_session_reset.add_argument("--scope-kind", default="thread", help="Operator scope kind (default: thread)")
+    oc_session_reset.add_argument("--engine", required=True, help="Engine/agent id (e.g. codex)")
+    oc_session_reset.add_argument("--note", help="Optional reset note")
+    oc_session_reset.set_defaults(func=cmd_openclaw_session_reset)
+
+    oc_session_new_thread = openclaw_sub.add_parser("session-new-thread", help="Rotate operator session id and clear stored continuity")
+    oc_session_new_thread.add_argument("project_path")
+    oc_session_new_thread.add_argument("--scope", required=True, help="Operator scope id (e.g. transport/thread-42)")
+    oc_session_new_thread.add_argument("--scope-kind", default="thread", help="Operator scope kind (default: thread)")
+    oc_session_new_thread.add_argument("--engine", required=True, help="Engine/agent id (e.g. codex)")
+    oc_session_new_thread.add_argument("--note", help="Optional note for the new thread rotation")
+    oc_session_new_thread.set_defaults(func=cmd_openclaw_session_new_thread)
 
     oc_review_batch = openclaw_sub.add_parser("review-batch", help="Generate review batches and return JSON summary")
     oc_review_batch.add_argument("project_path")

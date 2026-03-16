@@ -6,6 +6,7 @@ from _system.engine.file_queue import ClaimedJob, DuplicateJobError, FileQueue, 
 from _system.engine.wake_queue import VALID_WAKE_REASONS, WakeQueue, wake_root_for_project
 from _system.engine.task_claims import TaskClaimStore, claims_root_for_project
 from _system.engine.session_store import SessionStore, sessions_root_for_project
+from _system.engine.operator_session_store import OperatorSessionStore, operator_sessions_root_for_repo
 from _system.engine.org_graph import DelegationCheck, OrgGraphError, delegation_targets, escalation_chain, load_org_graph, validate_delegation
 from _system.engine.operator_context import bind_operator_context, extract_ctx_footer, parse_message_directives, render_ctx_footer
 from _system.engine.task_planner import ExecutionPlan, RoutingDecision, TaskRunPlan, plan_task_run, plan_to_dict
@@ -42,6 +43,7 @@ __all__ = [
     "VALID_WAKE_REASONS",
     "TaskClaimStore",
     "SessionStore",
+    "OperatorSessionStore",
     "OrgGraphError",
     "DelegationCheck",
     "load_org_graph",
@@ -71,4 +73,5 @@ __all__ = [
     "wake_root_for_project",
     "claims_root_for_project",
     "sessions_root_for_project",
+    "operator_sessions_root_for_repo",
 ]

@@ -52,6 +52,7 @@ QUEUE_STATE_DIRS = {"pending", "running", "awaiting_approval", "done", "failed",
 WAKE_SCHEMA = "wake_item.schema.json"
 CLAIM_SCHEMA = "task_claim.schema.json"
 SESSION_SCHEMA = "session_state.schema.json"
+OPERATOR_SESSION_SCHEMA = "operator_session_state.schema.json"
 
 
 def load_schema(schema_filename: str) -> dict:
@@ -158,6 +159,13 @@ def validate_file(artifact_path: Path) -> list[str]:
             and artifact_path.parent.parent.parent.name == "state"
         ):
             schema_filename = SESSION_SCHEMA
+        elif artifact_path.parent.name == "operator_sessions" and artifact_path.parent.parent.name == "state":
+            schema_filename = OPERATOR_SESSION_SCHEMA
+        elif (
+            artifact_path.parent.parent.name == "operator_sessions"
+            and artifact_path.parent.parent.parent.name == "state"
+        ):
+            schema_filename = OPERATOR_SESSION_SCHEMA
     if not schema_filename:
         known = ', '.join(list(ARTIFACT_SCHEMAS) + list(OPTIONAL_ARTIFACT_SCHEMAS))
         return [f"No schema registered for '{artifact_path.name}' (expected one of: {known} or a queue item JSON)"]
