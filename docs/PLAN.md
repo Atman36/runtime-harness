@@ -580,10 +580,10 @@ filesystem остаётся source of truth, а transport state и resume handle
   - repo-scoped operator session state per scope и engine с inspectable artifacts
   - `openclaw session-status|session-update|session-reset|session-new-thread` + auto-resume resolution в `bind-context`
   - provider-neutral handle contract с derived resume lines через agent registry templates
-- **TASK-025 `Safe file exchange for project roots`**
-  - upload/download contract для файлов и директорий в active project/worktree
-  - deny-globs, path normalization, atomic write и zip-on-fetch
-  - transport layer получает безопасный файловый шлюз без прямого raw FS доступа
+- **TASK-025 `Safe file exchange for project roots`** ✅ done
+  - `openclaw file-put|file-fetch` добавляют upload/download contract для файлов и директорий в active project/worktree
+  - deny-globs, path normalization, atomic write и zip-on-fetch зафиксированы в reusable engine helper
+  - worktree-targeted exchange требует явный `--run`, чтобы transport не адресовал произвольные raw FS paths
 - **TASK-026 `Transport plugin surface and setup checks`**
   - transport/command backend contract вместо hardcoded единственного ingress path
   - setup/doctor checks для конфигурации transport layer

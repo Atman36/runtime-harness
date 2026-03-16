@@ -26,7 +26,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileQueue, OperatorSessionStore, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, enqueue_run, escalation_chain, execute_run_task, find_run_dir, load_org_graph, operator_sessions_root_for_repo, plan_task_run, plan_to_dict, queue_root_for_project, read_json, resolve_project_root, run_command, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
+from _system.engine import FileExchangeError, FileQueue, OperatorSessionStore, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, enqueue_run, escalation_chain, execute_run_task, fetch_path, find_run_dir, load_file_exchange_policy, load_org_graph, operator_sessions_root_for_repo, plan_task_run, plan_to_dict, put_file, queue_root_for_project, read_json, resolve_project_root, run_command, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
 from _system.engine.budget_guardrails import evaluate_guardrails, extract_referenced_paths, summarize_project_guardrails  # noqa: E402
 from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
@@ -3253,6 +3253,90 @@ def _load_text_option(value: str | None, file_path: str | None, *, option_name: 
     return None
 
 
+def _read_project_state(project_root: Path) -> dict[str, Any]:
+    state_path = project_root / "state" / "project.yaml"
+    if not state_path.is_file():
+        return {}
+    loaded = yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(loaded, dict):
+        return {}
+    return dict(loaded)
+
+
+def _load_context_json_option(raw_value: str | None, file_path: str | None) -> dict | None:
+    return _parse_context_json(_load_text_option(raw_value, file_path, option_name="context-json"))
+
+
+def _resolve_openclaw_run_dir(project_root: Path, run_id_or_path: str | None) -> Path | None:
+    raw_value = str(run_id_or_path or "").strip()
+    if not raw_value:
+        return None
+
+    run_dir = resolve_run_dir(project_root, raw_value)
+    if run_dir is None:
+        raise FileExchangeError(f"Run not found: {raw_value}")
+
+    resolved_run_dir = run_dir.resolve()
+    if project_root not in resolved_run_dir.parents:
+        raise FileExchangeError(f"Run does not belong to project root: {raw_value}")
+    return resolved_run_dir
+
+
+def _file_exchange_workspace_mode(project_root: Path, context_payload: dict | None, run_dir: Path | None) -> str:
+    resolved = context_payload.get("resolved") if isinstance(context_payload, dict) and isinstance(context_payload.get("resolved"), dict) else {}
+    context_mode = str(resolved.get("workspace_mode") or "").strip()
+    if context_mode:
+        return "project_root" if context_mode in {"shared_project", "project_root"} else context_mode
+
+    if run_dir is not None:
+        try:
+            job = read_json(run_dir / "job.json")
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            job = {}
+        execution = job.get("execution") if isinstance(job.get("execution"), dict) else {}
+        run_mode = str(execution.get("workspace_mode") or "").strip()
+        if run_mode:
+            return "project_root" if run_mode in {"shared_project", "project_root"} else run_mode
+
+    project_state = _read_project_state(project_root)
+    execution = project_state.get("execution") if isinstance(project_state.get("execution"), dict) else {}
+    project_mode = str(execution.get("workspace_mode") or "").strip()
+    if project_mode:
+        return "project_root" if project_mode in {"shared_project", "project_root"} else project_mode
+    return "project_root"
+
+
+def _resolve_file_exchange_target(project_root: Path, context_payload: dict | None, run_id_or_path: str | None) -> tuple[Path, str, Path | None]:
+    resolved = context_payload.get("resolved") if isinstance(context_payload, dict) and isinstance(context_payload.get("resolved"), dict) else {}
+    context_project_root = str(resolved.get("project_root") or "").strip()
+    if context_project_root and Path(context_project_root).expanduser().resolve() != project_root:
+        raise FileExchangeError("Context project_root does not match the requested project path")
+
+    run_dir = _resolve_openclaw_run_dir(project_root, run_id_or_path)
+    workspace_mode = _file_exchange_workspace_mode(project_root, context_payload, run_dir)
+    if workspace_mode == "project_root":
+        return project_root, workspace_mode, run_dir
+
+    if run_dir is None:
+        raise FileExchangeError(
+            f"Workspace mode '{workspace_mode}' requires --run so file exchange can target the active worktree"
+        )
+
+    if workspace_mode == "git_worktree":
+        from execute_job import ensure_git_worktree  # noqa: PLC0415
+
+        workspace = ensure_git_worktree(project_root, run_dir)
+        return workspace.project_root, workspace.mode, run_dir
+
+    if workspace_mode == "isolated_checkout":
+        from execute_job import ensure_isolated_checkout  # noqa: PLC0415
+
+        workspace = ensure_isolated_checkout(project_root, run_dir)
+        return workspace.project_root, workspace.mode, run_dir
+
+    raise FileExchangeError(f"Unsupported workspace mode for file exchange: {workspace_mode}")
+
+
 def cmd_wake_enqueue(args: argparse.Namespace) -> int:
     project_root = resolve_project_root(args.project_root)
     try:
@@ -4595,6 +4679,74 @@ def cmd_openclaw_bind_context(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_openclaw_file_put(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+        context_payload = _load_context_json_option(getattr(args, "context_json", None), getattr(args, "context_json_file", None))
+        target_root, workspace_mode, run_dir = _resolve_file_exchange_target(project_root, context_payload, getattr(args, "run", None))
+        policy = load_file_exchange_policy(project_root)
+        result = put_file(
+            target_root,
+            args.relative_path,
+            Path(args.source_file),
+            deny_globs=policy["deny_globs"],
+        )
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+    except FileExchangeError as exc:
+        _openclaw_error(str(exc), exc.code)
+        return 1
+    except ValueError as exc:
+        _openclaw_error(str(exc), "FILE_EXCHANGE_INVALID")
+        return 1
+
+    payload = {
+        "status": "ok",
+        "project": project_root.name,
+        "workspace_mode": workspace_mode,
+        "target_root": str(target_root),
+        "run_id": run_dir.name if run_dir is not None else None,
+        **result,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_openclaw_file_fetch(args: argparse.Namespace) -> int:
+    try:
+        project_root = resolve_project_root(args.project_path)
+        context_payload = _load_context_json_option(getattr(args, "context_json", None), getattr(args, "context_json_file", None))
+        target_root, workspace_mode, run_dir = _resolve_file_exchange_target(project_root, context_payload, getattr(args, "run", None))
+        policy = load_file_exchange_policy(project_root)
+        result = fetch_path(
+            target_root,
+            args.relative_path,
+            Path(args.output_file),
+            deny_globs=policy["deny_globs"],
+        )
+    except FileNotFoundError as exc:
+        _openclaw_error(str(exc), "NOT_FOUND")
+        return 1
+    except FileExchangeError as exc:
+        _openclaw_error(str(exc), exc.code)
+        return 1
+    except ValueError as exc:
+        _openclaw_error(str(exc), "FILE_EXCHANGE_INVALID")
+        return 1
+
+    payload = {
+        "status": "ok",
+        "project": project_root.name,
+        "workspace_mode": workspace_mode,
+        "target_root": str(target_root),
+        "run_id": run_dir.name if run_dir is not None else None,
+        **result,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_openclaw_session_status(args: argparse.Namespace) -> int:
     store = OperatorSessionStore(operator_sessions_root_for_repo(REPO_ROOT), repo_root=REPO_ROOT)
     payload = store.load_session(
@@ -5301,6 +5453,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override auto-resume behavior for this bind result",
     )
     oc_bind_context.set_defaults(func=cmd_openclaw_bind_context)
+
+    oc_file_put = openclaw_sub.add_parser("file-put", help="Safely upload a file into a project root or active worktree")
+    oc_file_put.add_argument("project_path")
+    oc_file_put.add_argument("relative_path", help="Relative destination path inside the active project/worktree root")
+    oc_file_put.add_argument("--source-file", required=True, help="Local source file to upload")
+    oc_file_put.add_argument("--context-json", help="Optional bind-context JSON payload as a string")
+    oc_file_put.add_argument("--context-json-file", help="Read bind-context JSON payload from a file")
+    oc_file_put.add_argument("--run", help="Optional run id or run path used to resolve worktree-backed targets")
+    oc_file_put.set_defaults(func=cmd_openclaw_file_put)
+
+    oc_file_fetch = openclaw_sub.add_parser("file-fetch", help="Safely fetch a file or directory from a project root or active worktree")
+    oc_file_fetch.add_argument("project_path")
+    oc_file_fetch.add_argument("relative_path", help="Relative source path inside the active project/worktree root")
+    oc_file_fetch.add_argument("--output-file", required=True, help="Local file path to write the fetched payload")
+    oc_file_fetch.add_argument("--context-json", help="Optional bind-context JSON payload as a string")
+    oc_file_fetch.add_argument("--context-json-file", help="Read bind-context JSON payload from a file")
+    oc_file_fetch.add_argument("--run", help="Optional run id or run path used to resolve worktree-backed targets")
+    oc_file_fetch.set_defaults(func=cmd_openclaw_file_fetch)
 
     oc_session_status = openclaw_sub.add_parser("session-status", help="Show operator session continuity for one scope/engine")
     oc_session_status.add_argument("project_path")

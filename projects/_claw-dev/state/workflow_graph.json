@@ -1,7 +1,7 @@
 {
   "artifact_version": 1,
   "project": "_claw-dev",
-  "generated_at": "2026-03-16T16:07:03Z",
+  "generated_at": "2026-03-16T16:49:59Z",
   "node_count": 26,
   "edge_count": 28,
   "nodes": [
@@ -415,12 +415,12 @@
       "node_id": "TASK-025",
       "node_type": "task",
       "title": "Safe file exchange for project roots",
-      "status": "ready",
+      "status": "done",
       "priority": "medium",
       "preferred_agent": "codex",
       "selected_agent": "codex",
       "needs_review": true,
-      "ready": true,
+      "ready": false,
       "active": false,
       "dependencies": [
         "TASK-023"
@@ -437,15 +437,13 @@
       "preferred_agent": "codex",
       "selected_agent": "codex",
       "needs_review": true,
-      "ready": false,
+      "ready": true,
       "active": false,
       "dependencies": [
         "TASK-024",
         "TASK-025"
       ],
-      "dependency_blockers": [
-        "TASK-025"
-      ],
+      "dependency_blockers": [],
       "task_path": "tasks/TASK-026.md"
     }
   ],
@@ -675,5 +673,5 @@
       "approval_gate": false
     }
   ],
-  "checksum": "e1a4e8d94ea22b5516da0fe53e000b6f75f3052c8e11241cdce0a72db9b5cc35"
+  "checksum": "cf72e420eab09a93425949ebbcef0dcc5c2b40687f3d3880cab6647de93b02e3"
 }
