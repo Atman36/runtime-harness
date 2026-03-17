@@ -177,6 +177,11 @@ new_project_workflow="$workspace/projects/wf-scaffold-project/docs/WORKFLOW.md"
 [ -f "$new_project_workflow" ] || fail "Test 7: new project missing docs/WORKFLOW.md"
 grep -q "wf-scaffold-project" "$new_project_workflow" || fail "Test 7: slug not substituted in new project WORKFLOW.md"
 grep -q "^commands:" "$new_project_workflow" || fail "Test 7: new project WORKFLOW.md missing commands block"
+[ -f "$workspace/projects/wf-scaffold-project/.codex/config.toml" ] || fail "Test 7: new project missing .codex/config.toml"
+[ -f "$workspace/projects/wf-scaffold-project/.codex/agents/project-explorer.toml" ] || fail "Test 7: new project missing Codex subagent"
+[ -f "$workspace/projects/wf-scaffold-project/.claude/agents/project-explorer.md" ] || fail "Test 7: new project missing Claude subagent"
+grep -q "wf-scaffold-project" "$workspace/projects/wf-scaffold-project/.codex/agents/project-explorer.toml" || fail "Test 7: Codex subagent placeholder not substituted"
+grep -q "wf-scaffold-project" "$workspace/projects/wf-scaffold-project/.claude/agents/project-explorer.md" || fail "Test 7: Claude subagent placeholder not substituted"
 pass "new project scaffold includes WORKFLOW.md with slug substituted"
 
 # ── Test 8: claw.py worker reads contract (lease-seconds from WORKFLOW.md) ────

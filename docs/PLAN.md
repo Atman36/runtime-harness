@@ -646,3 +646,26 @@ Epic 15 закрыт: transport/session operator surface теперь покры
 - не потерять completion signal
 - посмотреть status run без ручного поиска по каталогу
 - собрать review batch по cadence и risk triggers
+
+---
+
+## Enablement slice (2026-03-17) — native subagents + onboarding
+
+**Статус:** ✅ завершён
+
+### Что добавлено
+
+- repo-scoped starter packs для Codex subagents: `.codex/config.toml`, `.codex/agents/*`
+- repo-scoped starter packs для Claude subagents: `.claude/agents/*`
+- template-scoped starter packs для новых `create-project` / `import-project` scaffold'ов
+- документация по decision rule: когда использовать tool-native subagents,
+  Claude agent teams и сам `claw`
+- первый запуск теперь задокументирован как chat onboarding flow: спросить,
+  какие CLI есть у пользователя, проверить наличие бинарей, затем сузить policy
+
+### DoD
+
+- в репозитории есть готовые project-scoped subagent definitions для Codex и Claude
+- новые scaffold/imported projects наследуют starter packs автоматически
+- `README.md`, `AGENTS.md`, `CLAUDE.md` и `docs/SUBAGENTS.md` объясняют,
+  когда native subagents ускоряют работу, а когда нужен именно `claw`

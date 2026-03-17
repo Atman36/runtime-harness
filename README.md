@@ -89,6 +89,53 @@ run-checks / validation / review-batch / openclaw wake
 Если в задаче указан `preferred_agent: auto`, выбор делает routing policy из
 `_system/registry/routing_rules.yaml`.
 
+## Native Subagents
+
+Нативные субагенты в Codex и Claude ускоряют работу внутри одного родительского
+сеанса, но **не заменяют `claw`**.
+
+- **Субагенты Codex / Claude**: локальная делегация, изоляция контекста,
+  короткие read-only review/explorer slices, bounded implementation fan-out.
+- **`claw`**: долговечные run artifacts, queue, retries, approvals, hooks,
+  review cadence, scheduler и cross-run state.
+
+Что добавлено в репозиторий:
+
+- `.codex/config.toml` и `.codex/agents/` — project-scoped starter pack для Codex
+- `.claude/agents/` — project-scoped starter pack для Claude Code
+- `projects/_template/.codex/` и `projects/_template/.claude/` — те же starter
+  packs для новых scaffold/imported projects
+
+Когда что использовать:
+
+- **Codex subagents**: когда уже работаешь в Codex и нужен явный fan-out на
+  bounded implementation / explorer / reviewer подзадачи.
+- **Claude subagents**: когда уже работаешь в Claude Code и нужен изолированный
+  helper внутри одной сессии.
+- **Claude agent teams**: когда нужны несколько параллельных Claude-session
+  workers, а не просто subagent внутри одной сессии.
+- **`claw` orchestration**: когда задача должна переживать процесс, идти через
+  queue/review/approval/hook pipeline и оставлять inspectable artifacts на диске.
+
+Подробности и примеры prompts: [`docs/SUBAGENTS.md`](docs/SUBAGENTS.md).
+
+## First-Run Onboarding
+
+Рекомендуемый onboarding не должен гадать молча. Лучше сначала спросить в чате,
+какой CLI у человека реально есть и чем он уже пользуется.
+
+Рекомендуемый flow:
+
+1. Спросить: `codex`, `claude`, оба или пока ни одного.
+2. Проверить локально наличие бинарей: `command -v codex`, `command -v claude`.
+3. Если доступен только один CLI, сузить policy до него и не предлагать второй
+   как обязательный.
+4. Если доступны оба, оставить `preferred_agent: auto`: Codex использовать для
+   clear implementation, Claude — для ambiguity/review.
+5. Если человек не уверен насчёт подписки или auth, не угадывать по косвенным
+   признакам: сделать дешёвый capability probe (`codex --help`, `claude --help`)
+   и подтвердить выбор в чате одной короткой репликой.
+
 ## Run artifacts
 
 Каждый запуск создаёт неизменяемый каталог:
@@ -190,6 +237,7 @@ claw/
 | [`docs/contracts.md`](docs/contracts.md) | Schema contracts и validator tooling |
 | [`docs/CONTRACT_VERSIONING.md`](docs/CONTRACT_VERSIONING.md) | Versioning и migration story для артефактов |
 | [`docs/PARALLEL_EXECUTION.md`](docs/PARALLEL_EXECUTION.md) | Worktree isolation и правила параллельного исполнения |
+| [`docs/SUBAGENTS.md`](docs/SUBAGENTS.md) | Когда использовать tool-native subagents, Claude agent teams и сам `claw` |
 | [`docs/AUTONOMY_GAPS_PLAN.md`](docs/AUTONOMY_GAPS_PLAN.md) | Исторический план закрытия autonomy gaps; читать как record, не как текущий статус |
 
 ## Требования
@@ -197,6 +245,8 @@ claw/
 - Python 3.9+
 - Bash
 - `codex` и/или `claude` CLI в `PATH`
+- одного CLI уже достаточно для работы; оба вместе дают лучший split:
+  Codex для implementation, Claude для ambiguity/review
 
 ## License
 

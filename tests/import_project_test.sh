@@ -29,6 +29,11 @@ grep -q "slug: $SLUG" "projects/$SLUG/state/project.yaml" || { echo "FAIL: slug 
 [ -f "projects/$SLUG/docs/WORKFLOW.md" ] || { echo "FAIL: WORKFLOW.md not created"; exit 1; }
 grep -q "docs\|src\|tests" "projects/$SLUG/docs/WORKFLOW.md" || { echo "FAIL: edit_scope not populated"; exit 1; }
 grep -qv "{{PROJECT_SLUG}}" "projects/$SLUG/docs/WORKFLOW.md" || { echo "FAIL: placeholder not replaced"; exit 1; }
+[ -f "projects/$SLUG/.codex/config.toml" ] || { echo "FAIL: Codex config not created"; exit 1; }
+[ -f "projects/$SLUG/.codex/agents/project-explorer.toml" ] || { echo "FAIL: Codex subagent not created"; exit 1; }
+[ -f "projects/$SLUG/.claude/agents/project-explorer.md" ] || { echo "FAIL: Claude subagent not created"; exit 1; }
+grep -q "$SLUG" "projects/$SLUG/.codex/agents/project-explorer.toml" || { echo "FAIL: Codex subagent placeholder not replaced"; exit 1; }
+grep -q "$SLUG" "projects/$SLUG/.claude/agents/project-explorer.md" || { echo "FAIL: Claude subagent placeholder not replaced"; exit 1; }
 
 if python3 scripts/claw.py import-project --slug "$SLUG" --path "$FAKE_REPO" 2>/dev/null; then
     echo "FAIL: duplicate slug should have been rejected"

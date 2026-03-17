@@ -215,3 +215,25 @@ E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8
 - `feat: persist operator session memory and resume handles`
 - `feat: add safe file exchange for active project roots`
 - `feat: add transport plugin contract and setup checks`
+
+---
+
+## Epic 16 — Native Subagent Enablement
+**Приоритет:** P2
+**Статус:** ✅ done
+
+Источник: официальный релиз tool-native subagents в Codex и Claude Code.
+
+| # | Задача | Зависит от | Phase | Параллельность |
+|---|--------|------------|-------|----------------|
+| 16.1 | ✅ Добавить repo-scoped Codex starter pack (`.codex/config.toml`, `.codex/agents/*`) | — | 16 | done |
+| 16.2 | ✅ Добавить repo-scoped Claude starter pack (`.claude/agents/*`) | — | 16 | done |
+| 16.3 | ✅ Добавить template-scoped starter packs для новых scaffold/imported projects | 16.1, 16.2 | 16 | done |
+| 16.4 | ✅ Задокументировать decision rules: subagents vs Claude agent teams vs `claw` orchestration | 16.1, 16.2 | 16 | done |
+| 16.5 | ✅ Задокументировать first-run chat onboarding для выбора доступных CLI | 16.4 | 16 | done |
+
+**Предлагаемые GitHub issue titles:**
+- `feat: add project-scoped Codex subagent starter pack`
+- `feat: add project-scoped Claude subagent starter pack`
+- `docs: clarify when to use subagents, Claude agent teams, and claw orchestration`
+- `docs: add first-run CLI onboarding flow`

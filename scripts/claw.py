@@ -2486,6 +2486,19 @@ def cmd_create_project(args: argparse.Namespace) -> int:
     return completed.returncode
 
 
+def substitute_project_slug_placeholders(project_root: Path, slug: str) -> None:
+    for file_path in sorted(project_root.rglob("*")):
+        if not file_path.is_file() or file_path.name == ".gitkeep":
+            continue
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if "{{PROJECT_SLUG}}" not in content:
+            continue
+        file_path.write_text(content.replace("{{PROJECT_SLUG}}", slug), encoding="utf-8")
+
+
 def cmd_import_project(args: argparse.Namespace) -> int:
     slug = args.slug
     source_path = Path(args.path).expanduser().resolve()
@@ -2527,6 +2540,7 @@ def cmd_import_project(args: argparse.Namespace) -> int:
 
     template_root = REPO_ROOT / "projects" / "_template"
     shutil.copytree(str(template_root), str(project_root))
+    substitute_project_slug_placeholders(project_root, slug)
 
     project_yaml = {
         "slug": slug,
