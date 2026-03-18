@@ -39,3 +39,11 @@ instead of treating the other as required.
 - Tests live in `tests/` — run `bash tests/run_all.sh` before committing
 - New projects must be created from `projects/_template/`
 - Never edit files inside `runs/` — they are generated artifacts
+- For cross-agent handoff, always check task-scoped shared files first:
+  `python3 scripts/claw.py session-files <project_root> --task-id TASK-XXX`
+- If Claude receives a task after another agent, read relevant handoff files via
+  `session-file-fetch` before continuing
+- Before handing work back to Codex or stopping with unfinished progress, write
+  a short handoff note into `state/session_docs/<TASK>/` via `session-file-put`
+- Use `session_docs` only for session continuity and handoff; durable specs,
+  PRDs, and contracts still belong in normal project files under git

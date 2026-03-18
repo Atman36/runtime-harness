@@ -35,6 +35,37 @@ select task → gather context → implement → validate → fix → mark done 
 - Делать разумные локальные предположения; записывать их в `docs/STATUS.md`.
 - Если board/issue sync не работает — логировать и продолжать. Это не блокер.
 
+## Session handoff между агентами
+
+Для задач, которые могут переходить между Claude и Codex, использовать
+task-scoped shared files в `projects/<slug>/state/session_docs/<TASK>/`.
+
+Обязательное поведение:
+
+1. В начале работы по задаче сначала проверить, есть ли handoff-файлы:
+   `python3 scripts/claw.py session-files <project_root> --task-id TASK-XXX`
+2. Если handoff-файлы есть — прочитать релевантные (`session-file-fetch`) и
+   учитывать их как часть контекста задачи.
+3. Если по ходу работы появились важные решения, план, ограничения, открытые
+   вопросы или незавершённый прогресс — записать их в `session_docs`, а не
+   оставлять только в истории чата.
+4. Перед завершением задачи или передачей другому агенту записать короткий
+   handoff-файл, например:
+   - `handoff/summary.md`
+   - `handoff/next-steps.md`
+   - `notes/implementation.md`
+
+Команды:
+
+```bash
+python3 scripts/claw.py session-files <project_root> --task-id TASK-XXX
+python3 scripts/claw.py session-file-put <project_root> --task-id TASK-XXX handoff/summary.md --source-file /tmp/summary.md --author codex
+python3 scripts/claw.py session-file-fetch <project_root> --task-id TASK-XXX handoff/summary.md --output-file /tmp/summary.md
+```
+
+Это узкий канал handoff. Долговечные project artifacts (`spec`, `PRD`,
+контракты, roadmap) по-прежнему должны жить в обычных файлах под git.
+
 ## Правила выбора агента
 
 ### Claude — когда
