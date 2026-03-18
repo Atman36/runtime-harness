@@ -6,6 +6,7 @@ from _system.engine.file_queue import ClaimedJob, DuplicateJobError, FileQueue, 
 from _system.engine.wake_queue import VALID_WAKE_REASONS, WakeQueue, wake_root_for_project
 from _system.engine.task_claims import TaskClaimStore, claims_root_for_project
 from _system.engine.session_store import SessionStore, sessions_root_for_project
+from _system.engine.session_docs import SessionDocsStore, session_docs_root_for_project
 from _system.engine.operator_session_store import OperatorSessionStore, operator_sessions_root_for_repo
 from _system.engine.operator_transport import TransportConfigError, describe_transport_backends, load_transport_backend, run_transport_doctor
 from _system.engine.org_graph import DelegationCheck, OrgGraphError, delegation_targets, escalation_chain, load_org_graph, validate_delegation
@@ -45,6 +46,7 @@ __all__ = [
     "VALID_WAKE_REASONS",
     "TaskClaimStore",
     "SessionStore",
+    "SessionDocsStore",
     "OperatorSessionStore",
     "TransportConfigError",
     "OrgGraphError",
@@ -83,5 +85,6 @@ __all__ = [
     "wake_root_for_project",
     "claims_root_for_project",
     "sessions_root_for_project",
+    "session_docs_root_for_project",
     "operator_sessions_root_for_repo",
 ]

@@ -14,6 +14,7 @@ Located in `_system/contracts/`:
 | `meta.schema.json` | `runs/**/meta.json` | `run_id`, `status`, `project`, `routing`, `execution` |
 | `task_claim.schema.json` | `projects/<slug>/state/claims/*.json` | `claim_version`, `task_id`, `status`, `owner`, `events` |
 | `session_state.schema.json` | `projects/<slug>/state/sessions/*.json` | `session_version`, `session_id`, `scope`, `resume`, `handoff` |
+| `session_docs_manifest.schema.json` | `projects/<slug>/state/session_docs/<TASK>/manifest.json` | `session_docs_version`, `task_id`, `project`, `documents` |
 | `operator_session_state.schema.json` | `state/operator_sessions/*.json` | `session_version`, `session_id`, `scope`, `engine`, `binding`, `resume`, `handoff` |
 | `workflow.schema.json` | `projects/<slug>/docs/WORKFLOW.md` front matter | `contract_version`, `project`, `approval_gates`, `retry_policy` |
 
@@ -76,6 +77,45 @@ Current control fields include:
 The validator treats a missing workflow contract as optional. If the file
 exists, it must satisfy the schema and field-level validation performed by
 `_system/engine/workflow_contract.py`.
+
+## Shared Session Files
+
+`projects/<slug>/state/session_docs/<TASK>/` is a task-scoped handoff area for
+cross-agent notes that should survive process restarts but do not belong in the
+immutable run artifacts.
+
+Shape:
+
+```json
+{
+  "session_docs_version": 1,
+  "task_id": "TASK-001",
+  "project": "demo-project",
+  "created_at": "2026-03-18T10:00:00Z",
+  "updated_at": "2026-03-18T10:05:00Z",
+  "documents": [
+    {
+      "path": "handoff/plan.md",
+      "bytes": 123,
+      "sha256": "…",
+      "updated_at": "2026-03-18T10:05:00Z",
+      "author": "claude",
+      "note": "initial plan"
+    }
+  ]
+}
+```
+
+CLI surface:
+
+```bash
+python3 scripts/claw.py session-file-put projects/my-project --task-id TASK-001 handoff/plan.md --source-file /tmp/plan.md --author claude
+python3 scripts/claw.py session-files projects/my-project --task-id TASK-001
+python3 scripts/claw.py session-file-fetch projects/my-project --task-id TASK-001 handoff/plan.md --output-file /tmp/plan.md
+```
+
+This layer is intentionally narrow: specs/PRDs still belong in normal project
+paths under version control when they become durable source material.
 
 ## Task Graph Snapshot
 

@@ -1,9 +1,9 @@
 {
   "artifact_version": 1,
   "project": "_claw-dev",
-  "generated_at": "2026-03-16T17:06:00Z",
-  "node_count": 26,
-  "edge_count": 28,
+  "generated_at": "2026-03-18T12:10:22Z",
+  "node_count": 27,
+  "edge_count": 30,
   "nodes": [
     {
       "node_id": "TASK-001",
@@ -445,6 +445,24 @@
       ],
       "dependency_blockers": [],
       "task_path": "tasks/TASK-026.md"
+    },
+    {
+      "node_id": "TASK-027",
+      "node_type": "task",
+      "title": "Shared session files for cross-agent handoff",
+      "status": "done",
+      "priority": "medium",
+      "preferred_agent": "codex",
+      "selected_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "dependencies": [
+        "TASK-019",
+        "TASK-025"
+      ],
+      "dependency_blockers": [],
+      "task_path": "tasks/TASK-027.md"
     }
   ],
   "edges": [
@@ -671,7 +689,23 @@
       "trigger": "dependency_resolved",
       "reason_code": "dependency",
       "approval_gate": false
+    },
+    {
+      "from": "TASK-027",
+      "to": "TASK-019",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
+    },
+    {
+      "from": "TASK-027",
+      "to": "TASK-025",
+      "edge_type": "sequence",
+      "trigger": "dependency_resolved",
+      "reason_code": "dependency",
+      "approval_gate": false
     }
   ],
-  "checksum": "6c50af0f93b6b433060dcded25ba883bee15a03331d8e7e0d377c4c1b0039a67"
+  "checksum": "ed7e27be94aa1822a8816d4e9e10da1d6d705ad0be00e8cc67f0f7b4fbfd552e"
 }

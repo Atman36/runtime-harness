@@ -1,8 +1,8 @@
 {
   "snapshot_version": 1,
   "project": "_claw-dev",
-  "updated_at": "2026-03-16T17:06:00Z",
-  "task_count": 26,
+  "updated_at": "2026-03-18T12:10:22Z",
+  "task_count": 27,
   "tasks": [
     {
       "task_id": "TASK-001",
@@ -392,7 +392,23 @@
       "ready": false,
       "active": false,
       "task_path": "tasks/TASK-026.md"
+    },
+    {
+      "task_id": "TASK-027",
+      "title": "Shared session files for cross-agent handoff",
+      "status": "done",
+      "priority": "medium",
+      "dependencies": [
+        "TASK-019",
+        "TASK-025"
+      ],
+      "dependency_blockers": [],
+      "preferred_agent": "codex",
+      "needs_review": true,
+      "ready": false,
+      "active": false,
+      "task_path": "tasks/TASK-027.md"
     }
   ],
-  "checksum": "5e89c6632c74a5962a516bf6366ed06921afbe233da422e021758924ed51908d"
+  "checksum": "77a5b164e4ee93fa444f0588aa51a8f62230cdd5082607daa384143b1421a871"
 }

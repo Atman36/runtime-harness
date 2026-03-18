@@ -597,6 +597,15 @@ filesystem остаётся source of truth, а transport state и resume handle
 
 Epic 15 закрыт: transport/session operator surface теперь покрывает status feed, context binding, session continuity, safe file exchange и explicit transport plugin/setup contract.
 
+### Epic 17 — shared session handoff files (2026-03-18)
+
+- **TASK-027 `Shared session files for cross-agent handoff`** — ✅ сделано
+  - добавлен task-scoped shared handoff layer `state/session_docs/<TASK>/`
+  - `manifest.json` фиксирует `author`, `note`, `sha256`, `bytes`, `updated_at`
+  - добавлены CLI-команды `session-files`, `session-file-put`, `session-file-fetch`
+  - `session-status` теперь показывает `shared_files`, чтобы Claude/Codex могли находить handoff artifacts без ручного поиска
+  - добавлен schema contract `_system/contracts/session_docs_manifest.schema.json` и regression coverage `tests/session_docs_test.sh`
+
 ---
 
 ## Отчёт сессии (2026-03-14) — Epic 12 закрыт, хук верифицирован

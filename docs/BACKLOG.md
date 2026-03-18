@@ -237,3 +237,19 @@ E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8
 - `feat: add project-scoped Claude subagent starter pack`
 - `docs: clarify when to use subagents, Claude agent teams, and claw orchestration`
 - `docs: add first-run CLI onboarding flow`
+
+---
+
+## Epic 17 — Shared Session Handoff Files
+**Приоритет:** P2
+**Статус:** ✅ done
+
+Источник: user-requested personal AGI workflow with Claude/Codex handoff
+through file-backed session artifacts.
+
+| # | Задача | Зависит от | Phase | Параллельность |
+|---|--------|------------|-------|----------------|
+| 17.1 | ✅ Добавить task-scoped shared session files + manifest + CLI (`session-file-put/list/fetch`) | 14.3, 15.4 | 17 | done |
+
+**Предлагаемые GitHub issue titles:**
+- `feat: add shared session files for cross-agent handoff`

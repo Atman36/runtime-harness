@@ -26,7 +26,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileExchangeError, FileQueue, OperatorSessionStore, OrgGraphError, QueueEmpty, SessionStore, TaskClaimStore, TransportConfigError, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, describe_transport_backends, enqueue_run, escalation_chain, execute_run_task, fetch_path, find_run_dir, load_file_exchange_policy, load_org_graph, operator_sessions_root_for_repo, plan_task_run, plan_to_dict, put_file, queue_root_for_project, read_json, resolve_project_root, run_command, run_transport_doctor, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
+from _system.engine import FileExchangeError, FileQueue, OperatorSessionStore, OrgGraphError, QueueEmpty, SessionDocsStore, SessionStore, TaskClaimStore, TransportConfigError, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, describe_transport_backends, enqueue_run, escalation_chain, execute_run_task, fetch_path, find_run_dir, load_file_exchange_policy, load_org_graph, operator_sessions_root_for_repo, plan_task_run, plan_to_dict, put_file, queue_root_for_project, read_json, resolve_project_root, run_command, run_transport_doctor, session_docs_root_for_project, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
 from _system.engine.budget_guardrails import evaluate_guardrails, extract_referenced_paths, summarize_project_guardrails  # noqa: E402
 from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
@@ -1133,6 +1133,21 @@ def _session_summary(payload: dict | None) -> dict | None:
         "reset_count": payload.get("reset_count"),
         "rotation_count": payload.get("rotation_count"),
         "session_file": payload.get("session_file"),
+    }
+
+
+def _session_docs_summary(project_root: Path, task_id: str) -> dict | None:
+    store = SessionDocsStore(session_docs_root_for_project(project_root))
+    payload = store.load_manifest(task_id=task_id)
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "task_id": payload.get("task_id"),
+        "document_count": payload.get("document_count"),
+        "updated_at": payload.get("updated_at"),
+        "manifest_file": payload.get("manifest_file"),
+        "files_root": payload.get("files_root"),
+        "documents": payload.get("documents") if isinstance(payload.get("documents"), list) else [],
     }
 
 
@@ -3600,6 +3615,7 @@ def cmd_session_status(args: argparse.Namespace) -> int:
     if payload is None:
         print(json.dumps({"status": "not_found", "agent": args.agent, "task_id": args.task_id}, ensure_ascii=False))
         return 1
+    payload["shared_files"] = _session_docs_summary(project_root, str(args.task_id).strip())
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -3672,6 +3688,56 @@ def cmd_session_rotate(args: argparse.Namespace) -> int:
         project=project_root.name,
         task_path=task_rel,
     )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_session_files(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    store = SessionDocsStore(session_docs_root_for_project(project_root))
+    try:
+        payload = store.list_documents(task_id=args.task_id)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    if payload is None:
+        print(json.dumps({"status": "not_found", "task_id": args.task_id}, ensure_ascii=False))
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_session_file_put(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    store = SessionDocsStore(session_docs_root_for_project(project_root))
+    try:
+        payload = store.put_document(
+            task_id=args.task_id,
+            relative_path=args.relative_path,
+            source_file=Path(args.source_file),
+            project=project_root.name,
+            author=args.author,
+            note=args.note,
+        )
+    except (FileNotFoundError, FileExchangeError, ValueError, TimeoutError) as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_session_file_fetch(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    store = SessionDocsStore(session_docs_root_for_project(project_root))
+    try:
+        payload = store.fetch_document(
+            task_id=args.task_id,
+            relative_path=args.relative_path,
+            output_file=Path(args.output_file),
+        )
+    except (FileNotFoundError, FileExchangeError, ValueError) as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        return 1
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -5390,6 +5456,27 @@ def build_parser() -> argparse.ArgumentParser:
     session_rotate.add_argument("--task-id", required=True, help="Task id (e.g. TASK-001)")
     session_rotate.add_argument("--note", help="Optional rotation note")
     session_rotate.set_defaults(func=cmd_session_rotate)
+
+    session_files = subcommands.add_parser("session-files", help="List shared session files for a task scope")
+    session_files.add_argument("project_root")
+    session_files.add_argument("--task-id", required=True, help="Task id (e.g. TASK-001)")
+    session_files.set_defaults(func=cmd_session_files)
+
+    session_file_put = subcommands.add_parser("session-file-put", help="Write a shared session file for a task scope")
+    session_file_put.add_argument("project_root")
+    session_file_put.add_argument("--task-id", required=True, help="Task id (e.g. TASK-001)")
+    session_file_put.add_argument("relative_path", help="Relative path inside the task-scoped shared session files root")
+    session_file_put.add_argument("--source-file", required=True, help="Local source file path to store")
+    session_file_put.add_argument("--author", help="Optional author/agent label")
+    session_file_put.add_argument("--note", help="Optional note attached to the file entry")
+    session_file_put.set_defaults(func=cmd_session_file_put)
+
+    session_file_fetch = subcommands.add_parser("session-file-fetch", help="Fetch a shared session file for a task scope")
+    session_file_fetch.add_argument("project_root")
+    session_file_fetch.add_argument("--task-id", required=True, help="Task id (e.g. TASK-001)")
+    session_file_fetch.add_argument("relative_path", help="Relative path inside the task-scoped shared session files root")
+    session_file_fetch.add_argument("--output-file", required=True, help="Local output file path")
+    session_file_fetch.set_defaults(func=cmd_session_file_fetch)
 
     workflow_graph = subcommands.add_parser("workflow-graph", help="Generate and write portable workflow graph artifact")
     workflow_graph.add_argument("project_root")
