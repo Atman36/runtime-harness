@@ -1,7 +1,7 @@
 {
   "snapshot_version": 1,
   "project": "_claw-dev",
-  "updated_at": "2026-03-18T12:10:22Z",
+  "updated_at": "2026-03-19T02:53:10Z",
   "task_count": 27,
   "tasks": [
     {
@@ -14,7 +14,7 @@
       "preferred_agent": "claude",
       "needs_review": false,
       "ready": false,
-      "active": true,
+      "active": false,
       "task_path": "tasks/TASK-001.md"
     },
     {
@@ -410,5 +410,5 @@
       "task_path": "tasks/TASK-027.md"
     }
   ],
-  "checksum": "77a5b164e4ee93fa444f0588aa51a8f62230cdd5082607daa384143b1421a871"
+  "checksum": "d2abf4c460cd434dbff71899c7e789b959114c0d66a6b895c9379c584ceb51d7"
 }

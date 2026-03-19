@@ -44,6 +44,7 @@ cp -R "$repo_root/projects" "$workspace/projects"
 mkdir -p "$workspace/scripts"
 cp "$repo_root/scripts/run_task.sh" "$workspace/scripts/run_task.sh"
 cp "$repo_root/scripts/build_run.py" "$workspace/scripts/build_run.py"
+cp "$repo_root/scripts/hooklib.py" "$workspace/scripts/hooklib.py"
 rm -rf "$workspace/projects/demo-project/runs" "$workspace/projects/demo-project/state/queue"
 mkdir -p "$workspace/projects/demo-project/runs" "$workspace/projects/demo-project/state/queue"/{pending,running,done,failed,awaiting_approval}
 
@@ -214,6 +215,7 @@ cp -R "$repo_root/projects" "$invalid_project_slug_workspace/projects"
 mkdir -p "$invalid_project_slug_workspace/scripts"
 cp "$repo_root/scripts/run_task.sh" "$invalid_project_slug_workspace/scripts/run_task.sh"
 cp "$repo_root/scripts/build_run.py" "$invalid_project_slug_workspace/scripts/build_run.py"
+cp "$repo_root/scripts/hooklib.py" "$invalid_project_slug_workspace/scripts/hooklib.py"
 rm -rf "$invalid_project_slug_workspace/projects/demo-project/runs" "$invalid_project_slug_workspace/projects/demo-project/state/queue"
 mkdir -p "$invalid_project_slug_workspace/projects/demo-project/runs" "$invalid_project_slug_workspace/projects/demo-project/state/queue"/{pending,running,done,failed,awaiting_approval}
 

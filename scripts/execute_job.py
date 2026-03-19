@@ -24,6 +24,7 @@ from hooklib import (
     build_hook_payload,
     build_hook_snapshot,
     dispatch_hook_file,
+    has_pending_approval_checkpoint,
     read_json,
     trim_text,
     utc_now,
@@ -630,22 +631,6 @@ def validate_advisory_artifacts(run_dir: Path) -> dict[str, list[str]]:
         "present": present,
         "warnings": warnings,
     }
-
-def has_pending_approval_checkpoint(run_dir: Path) -> bool:
-    path = run_dir / "approval_checkpoint.json"
-    if not path.is_file():
-        return False
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, dict):
-        return False
-    status = payload.get("status")
-    if not isinstance(status, str):
-        return False
-    return status.strip().lower() == "pending"
-
 
 def main() -> int:
     if len(sys.argv) != 2:

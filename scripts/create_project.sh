@@ -46,7 +46,7 @@ cp -R "$template_root" "$project_root"
 
 while IFS= read -r file_path; do
   tmp_path="${file_path}.tmp"
-  sed "s/{{PROJECT_SLUG}}/$project_slug/g" "$file_path" > "$tmp_path"
+  sed "s|{{PROJECT_SLUG}}|$project_slug|g" "$file_path" > "$tmp_path"
   mv "$tmp_path" "$file_path"
 done < <(find "$project_root" -type f ! -name '.gitkeep' | sort)
 

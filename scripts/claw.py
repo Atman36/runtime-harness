@@ -42,9 +42,11 @@ from hooklib import (
     build_delivery_snapshot,
     deliver_hook_via_callback_bridge,
     dispatch_hook_file,
+    has_pending_approval_checkpoint,
     hook_command,
     iter_hook_files,
     trim_text,
+    utc_now,
 )  # noqa: E402
 
 
@@ -66,10 +68,6 @@ TASK_BLOCKED_STATUSES = {"blocked", "cancelled"}
 PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
 def utc_after_seconds(seconds: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=max(1, int(seconds)))).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -89,22 +87,6 @@ def duration_between(started_at: str | None, finished_at: str | None) -> float |
     if start is None or finish is None:
         return None
     return round((finish - start).total_seconds(), 1)
-
-def has_pending_approval_checkpoint(run_dir: Path) -> bool:
-    checkpoint_path = run_dir / "approval_checkpoint.json"
-    if not checkpoint_path.is_file():
-        return False
-    try:
-        payload = read_json(checkpoint_path)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return False
-    if not isinstance(payload, dict):
-        return False
-    status = payload.get("status")
-    if not isinstance(status, str):
-        return False
-    return status.strip().lower() == "pending"
-
 
 def listener_log_path(project_root: Path) -> Path:
     return project_root / "state" / LISTENER_LOG_FILE
@@ -511,7 +493,7 @@ def next_task_id(project_root: Path) -> str:
     return f"TASK-{max_index + 1:03d}"
 
 
-def resolve_follow_up_spec_reference(project_root: Path, meta: dict) -> str:
+def resolve_follow_up_spec_reference(project_root: Path, meta: dict) -> str | None:
     task_rel_path = str(meta.get("task_path") or "").strip()
     if task_rel_path:
         source_task = (project_root / task_rel_path).resolve()
@@ -525,7 +507,7 @@ def resolve_follow_up_spec_reference(project_root: Path, meta: dict) -> str:
     if spec_rel_path:
         tasks_root = project_root / "tasks"
         return os.path.relpath(project_root / spec_rel_path, tasks_root)
-    return "../specs/SPEC-001.md"
+    return None
 
 
 def find_follow_up_task(project_root: Path, *, review_id: str, action_id: str) -> Path | None:
@@ -1587,7 +1569,7 @@ def build_project_dashboard(project_root: Path, *, recent_limit: int = 5, ready_
                 "title": task["title"],
                 "priority": task["priority"],
                 "selected_agent": task.get("selected_agent"),
-                "task_path": task["task_path_rel"],
+                "task_path_rel": task["task_path_rel"],
             }
             for task in ready_tasks
         ],
@@ -2466,7 +2448,7 @@ def maybe_execute_pending_reviews(project_root: Path) -> list[dict]:
             continue
 
         if completed.stdout:
-            sys.stderr.write(completed.stdout)
+            sys.stdout.write(completed.stdout)
         if completed.stderr:
             sys.stderr.write(completed.stderr)
 
@@ -4054,6 +4036,12 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
             ready_tasks = select_ready_tasks(project_root, limit=1)
             if not ready_tasks:
                 last_status = "idle"
+                state = load_orchestration_state(project_root)
+                if state.get("consecutive_failures", 0) > 0:
+                    state["consecutive_failures"] = 0
+                    state["last_decision"] = "all_done"
+                    state["last_updated_at"] = utc_now()
+                    save_orchestration_state(project_root, state)
                 break
             next_task = ready_tasks[0]
 

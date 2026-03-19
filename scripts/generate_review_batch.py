@@ -34,6 +34,11 @@ from uuid import uuid4
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from hooklib import utc_now  # noqa: E402
+
 POLICY_PATH = REPO_ROOT / "_system" / "registry" / "reviewer_policy.yaml"
 AGENTS_REGISTRY_PATH = REPO_ROOT / "_system" / "registry" / "agents.yaml"
 
@@ -41,10 +46,6 @@ DEFAULT_IMMEDIATE_STATUS_TRIGGERS = {"failed"}
 DEFAULT_IMMEDIATE_FLAG_TRIGGERS = {"risky_area", "uncertainty", "large_diff"}
 DEFAULT_IMMEDIATE_TRIGGERS = ["failed", "needs_review", "risky_area", "uncertainty", "large_diff"]
 KNOWN_IMMEDIATE_TRIGGERS = set(DEFAULT_IMMEDIATE_TRIGGERS)
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def load_agents_registry(path: Path) -> set[str]:

@@ -68,6 +68,22 @@ def write_json_atomic(path: Path, payload: dict) -> None:
             temp_path.unlink()
 
 
+def has_pending_approval_checkpoint(run_dir: Path) -> bool:
+    checkpoint_path = run_dir / "approval_checkpoint.json"
+    if not checkpoint_path.is_file():
+        return False
+    try:
+        payload = read_json(checkpoint_path)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    status = payload.get("status")
+    if not isinstance(status, str):
+        return False
+    return status.strip().lower() == "pending"
+
+
 def trim_text(text: str, limit: int = 1200) -> str:
     compact = (text or "").strip()
     if not compact:

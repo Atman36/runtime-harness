@@ -104,7 +104,7 @@
     },
     "project": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "pattern": "^[_a-z][a-z0-9_-]*$",
       "description": "Project slug — must match the project directory name."
     },
     "preferred_agent": {

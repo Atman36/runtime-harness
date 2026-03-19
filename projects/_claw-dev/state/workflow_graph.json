@@ -1,7 +1,7 @@
 {
   "artifact_version": 1,
   "project": "_claw-dev",
-  "generated_at": "2026-03-18T12:10:22Z",
+  "generated_at": "2026-03-19T02:53:10Z",
   "node_count": 27,
   "edge_count": 30,
   "nodes": [
@@ -15,7 +15,7 @@
       "selected_agent": "claude",
       "needs_review": false,
       "ready": false,
-      "active": true,
+      "active": false,
       "dependencies": [],
       "dependency_blockers": [],
       "task_path": "tasks/TASK-001.md"
@@ -707,5 +707,5 @@
       "approval_gate": false
     }
   ],
-  "checksum": "ed7e27be94aa1822a8816d4e9e10da1d6d705ad0be00e8cc67f0f7b4fbfd552e"
+  "checksum": "313ec76e8a945415eeb5da810a43e0e0e0692e0173956baab1080ed8c1edecee"
 }
