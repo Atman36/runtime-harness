@@ -238,4 +238,53 @@ assert payload["orchestration"]["failure_budget_exhausted"] is False, payload
 assert state["consecutive_failures"] == 0, state
 PY
 
+reset_project
+
+python3 - "$project_root" <<'PY'
+from pathlib import Path
+import sys
+
+project_root = Path(sys.argv[1])
+for task_path in (project_root / "tasks").glob("TASK-*.md"):
+    text = task_path.read_text(encoding="utf-8")
+    text = text.replace("status: todo", "status: done", 1)
+    task_path.write_text(text, encoding="utf-8")
+
+blocked = project_root / "tasks" / "TASK-002.md"
+blocked.write_text(blocked.read_text(encoding="utf-8").replace("status: done", "status: blocked", 1), encoding="utf-8")
+PY
+
+python3 - "$project_root/state/orchestration_state.json" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+path = Path(sys.argv[1])
+path.write_text(json.dumps({
+    "consecutive_failures": 2,
+    "last_run_id": "RUN-0099",
+    "last_decision": "failure_budget_exhausted",
+    "last_updated_at": "2026-03-19T00:00:00Z",
+}, indent=2) + "\n", encoding="utf-8")
+PY
+
+blocked_out="$workspace/blocked-idle.json"
+python3 "$workspace/scripts/claw.py" orchestrate "$project_root" --max-steps 1 --skip-review --failure-budget 2 >"$blocked_out"
+
+python3 - "$blocked_out" "$project_root" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+project_root = Path(sys.argv[2])
+state = json.loads((project_root / "state" / "orchestration_state.json").read_text(encoding="utf-8"))
+
+assert payload["status"] == "idle", payload
+assert payload["orchestration"]["consecutive_failures"] == 2, payload
+assert payload["orchestration"]["last_decision"] == "failure_budget_exhausted", payload
+assert state["consecutive_failures"] == 2, state
+assert state["last_decision"] == "failure_budget_exhausted", state
+PY
+
 echo "orchestration autonomy test: ok"

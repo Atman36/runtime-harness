@@ -1332,6 +1332,10 @@ def select_ready_tasks(project_root: Path, *, limit: int = 3) -> list[dict]:
     return selected
 
 
+def project_has_incomplete_tasks(project_root: Path) -> bool:
+    return any(record.get("status") not in TASK_DONE_STATUSES for record in collect_task_records(project_root))
+
+
 def count_retry_backlog(project_root: Path) -> int:
     queue = FileQueue(queue_root_for_project(project_root))
     waiting = 0
@@ -4037,7 +4041,7 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
             if not ready_tasks:
                 last_status = "idle"
                 state = load_orchestration_state(project_root)
-                if state.get("consecutive_failures", 0) > 0:
+                if state.get("consecutive_failures", 0) > 0 and not project_has_incomplete_tasks(project_root):
                     state["consecutive_failures"] = 0
                     state["last_decision"] = "all_done"
                     state["last_updated_at"] = utc_now()

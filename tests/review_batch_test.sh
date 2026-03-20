@@ -7,6 +7,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/claw-review-batch-test.XXXXXX")"
 generator="$repo_root/scripts/generate_review_batch.py"
+workspace="$tmp_root/workspace"
 
 cleanup() {
   rm -rf "$tmp_root"
@@ -297,5 +298,73 @@ assert types == {"immediate", "cadence"}, f"Expected both trigger types, got {ty
 PY
 
 echo "  ok: test10 — mix of immediate and cadence batches"
+
+# ── Test 11: copied entrypoint runs without hooklib.py in workspace ──────────
+
+rm -rf "$workspace"
+mkdir -p "$workspace/scripts"
+cp -R "$repo_root/_system" "$workspace/_system"
+cp "$repo_root/scripts/generate_review_batch.py" "$workspace/scripts/generate_review_batch.py"
+
+project_root="$workspace/test-project"
+mkdir -p "$project_root/runs" "$project_root/reviews" "$project_root/state"
+cat > "$project_root/state/project.yaml" <<'EOF'
+slug: test-project
+EOF
+
+run_dir="$project_root/runs/2024-01-01/RUN-0001"
+mkdir -p "$run_dir"
+cat > "$run_dir/meta.json" <<'EOF'
+{
+  "run_id": "RUN-0001",
+  "run_date": "2024-01-01",
+  "status": "failed",
+  "project": "test-project",
+  "task_id": "TASK-001",
+  "task_title": "Copied entrypoint task",
+  "preferred_agent": "codex"
+}
+EOF
+
+cat > "$run_dir/result.json" <<'EOF'
+{
+  "run_id": "RUN-0001",
+  "status": "failed",
+  "agent": "codex"
+}
+EOF
+
+cat > "$run_dir/job.json" <<'EOF'
+{
+  "job_version": 1,
+  "run_id": "RUN-0001",
+  "run_path": "runs/2024-01-01/RUN-0001",
+  "created_at": "2024-01-01T00:00:00Z",
+  "project": "test-project",
+  "preferred_agent": "codex",
+  "task": {
+    "id": "TASK-001",
+    "title": "Copied entrypoint task",
+    "needs_review": false,
+    "risk_flags": []
+  },
+  "spec": {"source_path": "specs/SPEC-001.md", "copied_path": "spec.md"},
+  "artifacts": {
+    "prompt_path": "prompt.txt",
+    "meta_path": "meta.json",
+    "report_path": "report.md",
+    "result_path": "result.json",
+    "stdout_path": "stdout.log",
+    "stderr_path": "stderr.log"
+  }
+}
+EOF
+
+python3 "$workspace/scripts/generate_review_batch.py" "$project_root" >/dev/null
+
+n="$(find "$project_root/reviews" -maxdepth 1 -name "REVIEW-*.json" | wc -l | tr -d ' ')"
+[ "$n" -eq 1 ] || { echo "FAIL test11: copied generate_review_batch.py should work without hooklib.py, got $n batches" >&2; exit 1; }
+
+echo "  ok: test11 — copied generate_review_batch.py does not require hooklib.py"
 
 echo "review batch test: ok"
