@@ -44,6 +44,11 @@ cp "$repo_root/scripts/validate_artifacts.py" "$workspace/scripts/validate_artif
 project_one="$workspace/projects/demo-project"
 project_two="$workspace/projects/second-project"
 cp -R "$project_one" "$project_two"
+find "$workspace/projects" -mindepth 1 -maxdepth 1 -type d \
+  ! -name '_*' \
+  ! -name 'demo-project' \
+  ! -name 'second-project' \
+  -exec rm -rf {} +
 
 WORKSPACE="$workspace" python3 - <<'PY'
 import os

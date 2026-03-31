@@ -475,6 +475,17 @@ def update_task_status(task_path: Path, status: str) -> None:
     write_front_matter(task_path, front_matter, body)
 
 
+def manual_completions_root(project_root: Path) -> Path:
+    return project_root / "state" / "manual_completions"
+
+
+def write_manual_completion_receipt(project_root: Path, task_id: str, payload: dict) -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    receipt_path = manual_completions_root(project_root) / f"{task_id}--{timestamp}.json"
+    write_json_atomic(receipt_path, payload)
+    return receipt_path
+
+
 def resolve_project_root_or_slug(argument: str) -> Path:
     project_slug_root = REPO_ROOT / "projects" / argument
     if project_slug_root.is_dir() and (project_slug_root / "state" / "project.yaml").is_file():
@@ -2557,13 +2568,44 @@ def cmd_import_project(args: argparse.Namespace) -> int:
 
     workflow_path = project_root / "docs" / "WORKFLOW.md"
     workflow_content = workflow_path.read_text(encoding="utf-8").replace("{{PROJECT_SLUG}}", slug)
-    if edit_scope:
-        scope_yaml_lines = "\n".join(f"    - {directory}" for directory in edit_scope)
-        workflow_content = workflow_content.replace(
-            "  edit_scope: []",
-            "  edit_scope:\n" + scope_yaml_lines,
-        )
     workflow_path.write_text(workflow_content, encoding="utf-8")
+
+    workflow_front_matter, workflow_body = read_front_matter(workflow_path)
+    scope_config = workflow_front_matter.get("scope")
+    if not isinstance(scope_config, dict):
+        scope_config = {}
+    scope_config["edit_scope"] = edit_scope
+    workflow_front_matter["scope"] = scope_config
+
+    commands_config = workflow_front_matter.get("commands")
+    if not isinstance(commands_config, dict):
+        commands_config = {}
+    package_json_path = source_path / "package.json"
+    package_scripts: dict[str, str] = {}
+    if package_json_path.is_file():
+        try:
+            package_payload = json.loads(package_json_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            package_payload = {}
+        scripts = package_payload.get("scripts") if isinstance(package_payload, dict) else {}
+        if isinstance(scripts, dict):
+            package_scripts = {
+                str(name).strip(): str(command).strip()
+                for name, command in scripts.items()
+                if str(name).strip() and str(command).strip()
+            }
+
+    for command_name in ("test", "lint", "build"):
+        if command_name in package_scripts:
+            commands_config[command_name] = f"npm run {command_name}"
+    if "smoke" in package_scripts:
+        commands_config["smoke"] = "npm run smoke"
+    elif "typecheck" in package_scripts:
+        commands_config["smoke"] = "npm run typecheck"
+    elif (source_path / "tsconfig.json").is_file():
+        commands_config["smoke"] = "npx tsc --noEmit"
+    workflow_front_matter["commands"] = commands_config
+    write_front_matter(workflow_path, workflow_front_matter, workflow_body)
 
     payload = {
         "status": "created",
@@ -3589,6 +3631,75 @@ def cmd_task_release(args: argparse.Namespace) -> int:
         "task_path": task_rel,
         "claim": result.get("claim"),
         "claim_file": claim_file,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_mark_done(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    task_id = str(args.task_id).strip()
+    task_path = resolve_task_path_for_id(project_root, task_id)
+    if task_path is None:
+        print(json.dumps({"status": "not_found", "task_id": task_id}, ensure_ascii=False))
+        return 1
+
+    front_matter, _body = read_front_matter(task_path)
+    previous_status = str(front_matter.get("status") or "todo").strip().lower()
+    needs_review = bool(front_matter.get("needs_review", False))
+    reviewer = str(args.reviewer).strip() if args.reviewer else None
+    commit = str(args.commit).strip() if args.commit else None
+    notes = str(args.notes).strip() if args.notes else None
+
+    if previous_status in TASK_DONE_STATUSES:
+        payload = {
+            "status": "already_done",
+            "task_id": task_id,
+            "task_path": task_path.relative_to(project_root).as_posix(),
+            "previous_status": previous_status,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if needs_review and not reviewer:
+        payload = {
+            "status": "review_required",
+            "task_id": task_id,
+            "task_path": task_path.relative_to(project_root).as_posix(),
+            "previous_status": previous_status,
+            "message": "Task requires reviewer identity before it can be marked done manually.",
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 1
+
+    update_task_status(task_path, "done")
+    refresh_task_snapshot(project_root)
+
+    receipt_payload = {
+        "artifact_version": 1,
+        "source": "manual_completion",
+        "recorded_at": utc_now(),
+        "project": project_root.name,
+        "task_id": task_id,
+        "task_path": task_path.relative_to(project_root).as_posix(),
+        "previous_status": previous_status,
+        "new_status": "done",
+        "needs_review": needs_review,
+        "reviewer": reviewer,
+        "commit": commit,
+        "notes": notes,
+    }
+    receipt_path = write_manual_completion_receipt(project_root, task_id, receipt_payload)
+
+    payload = {
+        "status": "done",
+        "task_id": task_id,
+        "task_path": task_path.relative_to(project_root).as_posix(),
+        "previous_status": previous_status,
+        "reviewer": reviewer,
+        "commit": commit,
+        "notes": notes,
+        "receipt_path": receipt_path.relative_to(project_root).as_posix(),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
@@ -5377,6 +5488,14 @@ def build_parser() -> argparse.ArgumentParser:
     task_release.add_argument("--reason", help="Optional release reason")
     task_release.add_argument("--note", help="Optional release note")
     task_release.set_defaults(func=cmd_task_release)
+
+    mark_done = subcommands.add_parser("mark-done", help="Manually mark a task as done and record a completion receipt")
+    mark_done.add_argument("project_root")
+    mark_done.add_argument("task_id", help="Task id (e.g. TASK-001)")
+    mark_done.add_argument("--reviewer", help="Reviewer identity for tasks with needs_review=true")
+    mark_done.add_argument("--commit", help="Optional commit sha or reference for the manual completion")
+    mark_done.add_argument("--notes", help="Optional completion notes")
+    mark_done.set_defaults(func=cmd_mark_done)
 
     task_delegate = subcommands.add_parser("task-delegate", help="Delegate a task to another agent")
     task_delegate.add_argument("project_root")

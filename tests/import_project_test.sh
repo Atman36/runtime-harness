@@ -9,6 +9,23 @@ SLUG="test-import-$$"
 FAKE_REPO="$(mktemp -d)"
 
 mkdir -p "$FAKE_REPO/src" "$FAKE_REPO/docs" "$FAKE_REPO/tests" "$FAKE_REPO/.git"
+cat > "$FAKE_REPO/package.json" <<'EOF'
+{
+  "name": "fake-project",
+  "scripts": {
+    "test": "vitest run",
+    "lint": "eslint .",
+    "build": "vite build"
+  }
+}
+EOF
+cat > "$FAKE_REPO/tsconfig.json" <<'EOF'
+{
+  "compilerOptions": {
+    "target": "ES2022"
+  }
+}
+EOF
 
 cleanup() {
     rm -rf "$FAKE_REPO"
@@ -29,6 +46,24 @@ grep -q "slug: $SLUG" "projects/$SLUG/state/project.yaml" || { echo "FAIL: slug 
 [ -f "projects/$SLUG/docs/WORKFLOW.md" ] || { echo "FAIL: WORKFLOW.md not created"; exit 1; }
 grep -q "docs\|src\|tests" "projects/$SLUG/docs/WORKFLOW.md" || { echo "FAIL: edit_scope not populated"; exit 1; }
 grep -qv "{{PROJECT_SLUG}}" "projects/$SLUG/docs/WORKFLOW.md" || { echo "FAIL: placeholder not replaced"; exit 1; }
+python3 - "projects/$SLUG/docs/WORKFLOW.md" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+import yaml
+
+workflow_path = Path(sys.argv[1])
+text = workflow_path.read_text(encoding="utf-8")
+match = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+assert match, "missing front matter"
+front_matter = yaml.safe_load(match.group(1))
+commands = front_matter["commands"]
+assert commands["test"] == "npm run test", commands
+assert commands["lint"] == "npm run lint", commands
+assert commands["build"] == "npm run build", commands
+assert commands["smoke"] == "npx tsc --noEmit", commands
+PY
 [ -f "projects/$SLUG/.codex/config.toml" ] || { echo "FAIL: Codex config not created"; exit 1; }
 [ -f "projects/$SLUG/.codex/agents/project-explorer.toml" ] || { echo "FAIL: Codex subagent not created"; exit 1; }
 [ -f "projects/$SLUG/.claude/agents/project-explorer.md" ] || { echo "FAIL: Claude subagent not created"; exit 1; }
