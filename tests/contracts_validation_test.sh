@@ -400,6 +400,83 @@ cat > "$bad_meta_execution_run/meta.json" <<'EOF'
 EOF
 assert_invalid "meta.json execution.edit_scope must be an array" "$bad_meta_execution_run/meta.json"
 
+# ── orchestration_state.json ──────────────────────────────────────────────────
+
+state_dir="$tmp_root/state"
+mkdir -p "$state_dir"
+cat > "$state_dir/orchestration_state.json" <<'EOF'
+{
+  "state_version": 2,
+  "consecutive_failures": 1,
+  "last_run_id": "RUN-0001",
+  "last_decision": "accept",
+  "last_updated_at": "2026-03-31T10:00:00Z",
+  "tasks": {
+    "a12345678": {
+      "id": "a12345678",
+      "task_id": "TASK-001",
+      "task_path": "tasks/TASK-001.md",
+      "type": "local_agent",
+      "status": "running",
+      "description": "Validate task lifecycle",
+      "startTime": "2026-03-31T09:59:00Z",
+      "endTime": null,
+      "outputFile": "runs/2026-03-31/RUN-0001/agent_stream.jsonl",
+      "outputOffset": 128,
+      "notified": false,
+      "controlFile": "runs/2026-03-31/RUN-0001/task_control.json",
+      "stop": {
+        "supported": true,
+        "requested": false,
+        "requested_at": null,
+        "requested_by": null,
+        "note": null,
+        "signal": null,
+        "force": false,
+        "completed_at": null,
+        "outcome": null
+      },
+      "selected_agent": "codex",
+      "run_id": "RUN-0001",
+      "run_path": "runs/2026-03-31/RUN-0001",
+      "workflow_status": "todo",
+      "updated_at": "2026-03-31T10:00:00Z"
+    }
+  },
+  "agentRegistry": {
+    "codex": {
+      "active_task_ids": ["a12345678"],
+      "last_task_id": "a12345678",
+      "updated_at": "2026-03-31T10:00:00Z"
+    }
+  },
+  "dream": {
+    "last_started_at": null,
+    "last_completed_at": null,
+    "last_checked_at": null,
+    "last_result": null,
+    "last_run_count": 0,
+    "last_files_touched": []
+  }
+}
+EOF
+assert_valid "valid orchestration_state.json" "$state_dir/orchestration_state.json"
+
+bad_state_root="$tmp_root/bad_state_root/state"
+mkdir -p "$bad_state_root"
+cat > "$bad_state_root/orchestration_state.json" <<'EOF'
+{
+  "state_version": 2,
+  "consecutive_failures": -1,
+  "last_run_id": "RUN-0001",
+  "last_decision": "accept",
+  "last_updated_at": "2026-03-31T10:00:00Z",
+  "tasks": {},
+  "agentRegistry": {}
+}
+EOF
+assert_invalid "orchestration_state.json missing dream and invalid failures" "$bad_state_root/orchestration_state.json"
+
 # ── run directory validation ──────────────────────────────────────────────────
 
 full_run="$tmp_root/full_run"

@@ -31,6 +31,8 @@ from hooklib import (
     write_hook_payload,
     write_json,
 )
+from _system.engine.project_memory import extract_run_knowledge
+from _system.engine.runtime_control import finalize_stop_state, initialize_run_control, load_run_control, record_agent_process
 from _system.engine.trusted_command import command_display, parse_trusted_argv
 
 ADVISORY_ARTIFACTS = ("advice.md", "patch.diff", "review_findings.json")
@@ -799,6 +801,7 @@ def main() -> int:
     proc_env = os.environ.copy()
     if advisory_mode:
         proc_env["CLAW_ADVISORY"] = "1"
+    initialize_run_control(run_dir, run_id=str(job.get("run_id") or run_dir.name))
 
     try:
         proc = subprocess.Popen(
@@ -810,7 +813,9 @@ def main() -> int:
             cwd=working_directory,
             bufsize=1,
             env=proc_env,
+            start_new_session=True,
         )
+        record_agent_process(run_dir, pid=proc.pid, pgid=os.getpgid(proc.pid))
         stdout_text, stderr_text = stream_agent_output(
             proc,
             stream_path,
@@ -910,6 +915,18 @@ def main() -> int:
             **advisory_artifacts,
         }
 
+    control_payload = load_run_control(run_dir)
+    if isinstance(control_payload, dict):
+        stop = control_payload.get("stop") if isinstance(control_payload.get("stop"), dict) else {}
+        if stop.get("requested"):
+            finalize_stop_state(run_dir, outcome="killed", completed_at=finished_at)
+            updated_control = load_run_control(run_dir) or {}
+            final_result["stop"] = updated_control.get("stop") if isinstance(updated_control.get("stop"), dict) else stop
+            meta["stop"] = final_result["stop"]
+        else:
+            final_result["stop"] = stop
+            meta["stop"] = stop
+
     final_result["hook"] = {}
     meta["hook"] = {}
     final_result["delivery"] = {}
@@ -952,6 +969,20 @@ def main() -> int:
             "last_error": str(exc),
         }
         meta["delivery"] = dict(final_result["delivery"])
+
+    try:
+        knowledge_snapshot = extract_run_knowledge(
+            source_project_root,
+            run_dir,
+            job=job,
+            meta=meta,
+            result=final_result,
+        )
+        final_result["knowledge"] = knowledge_snapshot
+        meta["knowledge"] = knowledge_snapshot
+    except Exception as exc:  # pragma: no cover - knowledge extraction must not fail the run
+        final_result["knowledge"] = {"status": "error", "error": str(exc)}
+        meta["knowledge"] = dict(final_result["knowledge"])
 
     write_json(result_path, final_result)
     write_json(meta_path, meta)

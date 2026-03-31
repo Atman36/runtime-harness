@@ -56,6 +56,7 @@ OPERATOR_SESSION_SCHEMA = "operator_session_state.schema.json"
 OPERATOR_JOB_SCHEMA = "operator_job_state.schema.json"
 SESSION_DOCS_SCHEMA = "session_docs_manifest.schema.json"
 REVIEW_DECISION_SCHEMA = "review_decision.schema.json"
+ORCHESTRATION_STATE_SCHEMA = "orchestration_state.schema.json"
 
 
 def load_schema(schema_filename: str) -> dict:
@@ -180,6 +181,8 @@ def validate_file(artifact_path: Path) -> list[str]:
             schema_filename = SESSION_DOCS_SCHEMA
         elif artifact_path.parent.name == "decisions" and artifact_path.parent.parent.name == "reviews":
             schema_filename = REVIEW_DECISION_SCHEMA
+        elif artifact_path.name == "orchestration_state.json" and artifact_path.parent.name == "state":
+            schema_filename = ORCHESTRATION_STATE_SCHEMA
     if not schema_filename:
         known = ', '.join(list(ARTIFACT_SCHEMAS) + list(OPTIONAL_ARTIFACT_SCHEMAS))
         return [f"No schema registered for '{artifact_path.name}' (expected one of: {known} or a queue item JSON)"]

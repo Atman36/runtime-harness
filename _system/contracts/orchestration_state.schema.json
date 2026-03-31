@@ -1,0 +1,305 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Orchestration State",
+  "type": "object",
+  "required": [
+    "state_version",
+    "consecutive_failures",
+    "last_run_id",
+    "last_decision",
+    "last_updated_at",
+    "tasks",
+    "agentRegistry",
+    "dream"
+  ],
+  "properties": {
+    "state_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "consecutive_failures": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "last_run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_decision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_updated_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tasks": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "task_path",
+          "type",
+          "status",
+          "description",
+          "startTime",
+          "endTime",
+          "outputFile",
+          "outputOffset",
+          "notified",
+          "controlFile",
+          "stop"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "task_path": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "local_bash",
+              "local_agent",
+              "remote_agent",
+              "dream"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "completed",
+              "failed",
+              "killed"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "startTime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "endTime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outputFile": {
+            "type": "string"
+          },
+          "outputOffset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "notified": {
+            "type": "boolean"
+          },
+          "controlFile": {
+            "type": "string"
+          },
+          "selected_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workflow_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stop": {
+            "type": "object",
+            "required": [
+              "supported",
+              "requested",
+              "requested_at",
+              "requested_by",
+              "note",
+              "signal",
+              "force",
+              "completed_at",
+              "outcome"
+            ],
+            "properties": {
+              "supported": {
+                "type": "boolean"
+              },
+              "requested": {
+                "type": "boolean"
+              },
+              "requested_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requested_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "signal": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "force": {
+                "type": "boolean"
+              },
+              "completed_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  null,
+                  "requested",
+                  "killed",
+                  "not_running",
+                  "unsupported",
+                  "failed"
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "agentRegistry": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "active_task_ids",
+          "last_task_id",
+          "updated_at"
+        ],
+        "properties": {
+          "active_task_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "last_task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "dream": {
+      "type": "object",
+      "required": [
+        "last_started_at",
+        "last_completed_at",
+        "last_checked_at",
+        "last_result",
+        "last_run_count",
+        "last_files_touched"
+      ],
+      "properties": {
+        "last_started_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_completed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_checked_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_result": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_run_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_files_touched": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

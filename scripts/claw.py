@@ -34,6 +34,9 @@ from _system.engine.error_codes import build_error_envelope  # noqa: E402
 from _system.engine.guardrails import run_guardrails  # noqa: E402
 from _system.engine.handoff_notes import validate_compact_handoff_text  # noqa: E402
 from _system.engine.listener_dispatch import dispatch_event_listeners  # noqa: E402
+from _system.engine.orchestration_state import default_dream_state, default_orchestration_state, read_orchestration_state, validate_orchestration_state, write_orchestration_state  # noqa: E402
+from _system.engine.project_memory import extract_run_knowledge, run_project_dream  # noqa: E402
+from _system.engine.runtime_control import load_run_control, request_stop_signal, run_control_path  # noqa: E402
 from _system.engine.task_lifecycle import (
     generate_task_runtime_id,
     is_terminal_task_status,
@@ -41,6 +44,8 @@ from _system.engine.task_lifecycle import (
     normalize_task_state_entry,
     normalize_task_type,
     output_offset_for_file,
+    supports_task_stop,
+    utc_now_timestamp,
 )
 from _system.engine.workflow_contract import contract_summary, load_workflow_contract  # noqa: E402
 from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
@@ -304,74 +309,14 @@ def append_approval_requested_decision(project_root: Path, approval: dict) -> No
 
 
 def load_orchestration_state(project_root: Path) -> dict:
-    path = project_root / "state" / ORCHESTRATION_STATE_FILE
-    default_state = {
-        "state_version": 2,
-        "consecutive_failures": 0,
-        "last_run_id": None,
-        "last_decision": None,
-        "last_updated_at": None,
-        "tasks": {},
-        "agentRegistry": {},
-    }
-    try:
-        payload = read_json(path)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return dict(default_state)
-    if not isinstance(payload, dict):
-        return dict(default_state)
-    state = dict(payload)
-    try:
-        consecutive_failures = max(0, int(state.get("consecutive_failures", 0)))
-    except (TypeError, ValueError):
-        consecutive_failures = 0
-    raw_tasks = state.get("tasks")
-    normalized_tasks: dict[str, dict] = {}
-    if isinstance(raw_tasks, dict):
-        for runtime_id, raw_entry in raw_tasks.items():
-            if not isinstance(raw_entry, dict):
-                continue
-            try:
-                entry = normalize_task_state_entry(str(runtime_id), raw_entry)
-            except ValueError:
-                continue
-            normalized_tasks[entry["id"]] = entry
-    state["state_version"] = 2
-    state["consecutive_failures"] = consecutive_failures
-    state["last_run_id"] = state.get("last_run_id")
-    state["last_decision"] = state.get("last_decision")
-    state["last_updated_at"] = state.get("last_updated_at")
-    state["tasks"] = normalized_tasks
-    state["agentRegistry"] = normalize_agent_registry(state.get("agentRegistry"))
-    return state
+    return read_orchestration_state(project_root / "state" / ORCHESTRATION_STATE_FILE)
 
 
 def save_orchestration_state(project_root: Path, state: dict) -> None:
-    payload = dict(state or {})
-    raw_tasks = payload.get("tasks")
-    normalized_tasks: dict[str, dict] = {}
-    if isinstance(raw_tasks, dict):
-        for runtime_id, raw_entry in raw_tasks.items():
-            if not isinstance(raw_entry, dict):
-                continue
-            try:
-                entry = normalize_task_state_entry(str(runtime_id), raw_entry)
-            except ValueError:
-                continue
-            normalized_tasks[entry["id"]] = entry
-    write_json_atomic(
-        project_root / "state" / ORCHESTRATION_STATE_FILE,
-        {
-            **payload,
-            "state_version": 2,
-            "consecutive_failures": max(0, int(payload.get("consecutive_failures", 0))),
-            "last_run_id": payload.get("last_run_id"),
-            "last_decision": payload.get("last_decision"),
-            "last_updated_at": payload.get("last_updated_at"),
-            "tasks": normalized_tasks,
-            "agentRegistry": normalize_agent_registry(payload.get("agentRegistry")),
-        },
-    )
+    normalized = write_orchestration_state(project_root / "state" / ORCHESTRATION_STATE_FILE, state)
+    errors = validate_orchestration_state(normalized)
+    if errors:
+        raise ValueError(f"Invalid orchestration state: {'; '.join(errors[:5])}")
 
 
 def hook_counts(project_root: Path) -> dict[str, int]:
@@ -577,6 +522,86 @@ def _sync_agent_registry_entry(state: dict, task_state: dict) -> None:
     state["agentRegistry"] = registry
 
 
+def _task_control_file_for_run(project_root: Path, run_dir: Path | None) -> str:
+    if run_dir is None:
+        return ""
+    try:
+        return run_control_path(run_dir).relative_to(project_root).as_posix()
+    except ValueError:
+        return str(run_control_path(run_dir))
+
+
+def persist_runtime_task_entry(
+    project_root: Path,
+    *,
+    runtime_id: str,
+    task_type: str,
+    runtime_status: str,
+    description: str,
+    task_id: str = "",
+    task_path: str = "",
+    run_dir: Path | None = None,
+    selected_agent: str | None = None,
+    notified: bool | None = None,
+    stop: dict | None = None,
+) -> dict:
+    state = load_orchestration_state(project_root)
+    previous_entry = state.get("tasks", {}).get(runtime_id, {})
+    now = utc_now()
+    if runtime_status in {"pending", "running"}:
+        start_time = str(previous_entry.get("startTime") or now)
+        end_time = None
+    else:
+        start_time = str(previous_entry.get("startTime") or now)
+        end_time = now
+
+    output_file = str(previous_entry.get("outputFile") or "")
+    output_offset = int(previous_entry.get("outputOffset") or 0)
+    run_id = str(previous_entry.get("run_id") or "").strip() or None
+    run_path = str(previous_entry.get("run_path") or "").strip() or None
+    control_file = str(previous_entry.get("controlFile") or "").strip()
+
+    if run_dir is not None:
+        output_file, output_offset = resolve_run_output_file(project_root, run_dir)
+        run_id = run_dir.name
+        run_path = run_dir.relative_to(project_root).as_posix()
+        control_file = _task_control_file_for_run(project_root, run_dir)
+
+    if notified is None:
+        effective_notified = bool(previous_entry.get("notified", False)) if is_terminal_task_status(runtime_status) else False
+    else:
+        effective_notified = bool(notified)
+
+    entry = normalize_task_state_entry(
+        runtime_id,
+        {
+            "task_id": task_id,
+            "task_path": task_path,
+            "type": task_type,
+            "status": runtime_status,
+            "description": description,
+            "startTime": start_time,
+            "endTime": end_time,
+            "outputFile": output_file,
+            "outputOffset": output_offset,
+            "notified": effective_notified,
+            "controlFile": control_file,
+            "stop": stop if isinstance(stop, dict) else previous_entry.get("stop"),
+            "selected_agent": selected_agent or previous_entry.get("selected_agent"),
+            "run_id": run_id,
+            "run_path": run_path,
+            "workflow_status": previous_entry.get("workflow_status"),
+            "updated_at": now,
+        },
+    )
+    state.setdefault("tasks", {})
+    state["tasks"][runtime_id] = entry
+    state["last_updated_at"] = now
+    _sync_agent_registry_entry(state, entry)
+    save_orchestration_state(project_root, state)
+    return entry
+
+
 def persist_task_lifecycle(
     task_path: Path,
     *,
@@ -607,11 +632,14 @@ def persist_task_lifecycle(
         output_offset = int(previous_entry.get("outputOffset") or 0)
     run_id = str(previous_entry.get("run_id") or "").strip() or None
     run_path = str(previous_entry.get("run_path") or "").strip() or None
+    control_file = str(front_matter.get("controlFile") or "").strip() or str(previous_entry.get("controlFile") or "")
+    stop_state = previous_entry.get("stop") if isinstance(previous_entry.get("stop"), dict) else {}
 
     if run_dir is not None:
         output_file, output_offset = resolve_run_output_file(project_root, run_dir)
         run_id = run_dir.name
         run_path = run_dir.relative_to(project_root).as_posix()
+        control_file = _task_control_file_for_run(project_root, run_dir)
 
     if runtime_status in {"pending", "running"}:
         start_time = existing_start or now
@@ -639,6 +667,8 @@ def persist_task_lifecycle(
             "outputFile": output_file,
             "outputOffset": output_offset,
             "notified": effective_notified,
+            "controlFile": control_file,
+            "stop": stop_state,
             "selected_agent": effective_selected_agent,
             "run_id": run_id,
             "run_path": run_path,
@@ -692,6 +722,97 @@ def mark_task_lifecycle_notified(task_path: Path, *, notified: bool = True) -> d
     front_matter["notified"] = updated["notified"]
     write_front_matter(task_path, front_matter, body)
     return updated
+
+
+def sync_runtime_stop_state(project_root: Path, runtime_id: str, stop_payload: dict | None) -> dict | None:
+    normalized_runtime_id = str(runtime_id or "").strip()
+    if not normalized_runtime_id:
+        return None
+    state = load_orchestration_state(project_root)
+    existing_entry = state.get("tasks", {}).get(normalized_runtime_id)
+    if not isinstance(existing_entry, dict):
+        return None
+    updated = normalize_task_state_entry(
+        normalized_runtime_id,
+        {
+            **existing_entry,
+            "stop": stop_payload if isinstance(stop_payload, dict) else existing_entry.get("stop"),
+            "updated_at": utc_now(),
+        },
+    )
+    state["tasks"][normalized_runtime_id] = updated
+    state["last_updated_at"] = updated["updated_at"]
+    _sync_agent_registry_entry(state, updated)
+    save_orchestration_state(project_root, state)
+    return updated
+
+
+def stop_runtime_task(
+    project_root: Path,
+    *,
+    runtime_id: str,
+    requested_by: str,
+    note: str | None = None,
+    force: bool = False,
+) -> dict:
+    state = load_orchestration_state(project_root)
+    entry = state.get("tasks", {}).get(str(runtime_id or "").strip())
+    if not isinstance(entry, dict):
+        return {"status": "not_found", "runtime_id": runtime_id}
+    if is_terminal_task_status(entry.get("status")):
+        return {
+            "status": "not_running",
+            "runtime_id": runtime_id,
+            "task_type": entry.get("type"),
+            "runtime_status": entry.get("status"),
+        }
+
+    task_type = str(entry.get("type") or "").strip()
+    if not supports_task_stop(task_type):
+        updated = sync_runtime_stop_state(
+            project_root,
+            str(runtime_id),
+            {
+                **(entry.get("stop") if isinstance(entry.get("stop"), dict) else {}),
+                "supported": False,
+                "requested": True,
+                "requested_at": utc_now(),
+                "requested_by": requested_by,
+                "note": (note or "").strip() or None,
+                "signal": None,
+                "force": bool(force),
+                "completed_at": utc_now(),
+                "outcome": "unsupported",
+            },
+        )
+        return {
+            "status": "unsupported",
+            "runtime_id": runtime_id,
+            "task_type": task_type,
+            "task_id": entry.get("task_id"),
+            "stop": updated.get("stop") if isinstance(updated, dict) else {},
+        }
+
+    run_path = str(entry.get("run_path") or "").strip()
+    if not run_path:
+        return {
+            "status": "missing_run",
+            "runtime_id": runtime_id,
+            "task_type": task_type,
+        }
+    run_dir = (project_root / run_path).resolve()
+    result = request_stop_signal(run_dir, requested_by=requested_by, note=note, force=force)
+    control = load_run_control(run_dir) or {}
+    updated = sync_runtime_stop_state(project_root, str(runtime_id), control.get("stop") if isinstance(control.get("stop"), dict) else None)
+    return {
+        "status": result.get("status"),
+        "runtime_id": runtime_id,
+        "task_type": task_type,
+        "task_id": entry.get("task_id"),
+        "run_id": entry.get("run_id"),
+        "signal": result.get("signal"),
+        "stop": updated.get("stop") if isinstance(updated, dict) else {},
+    }
 
 
 def update_task_status(task_path: Path, status: str) -> None:
@@ -1474,6 +1595,8 @@ def derive_operator_job_status(feed: dict) -> str:
         return "queued"
     if queue_state == "running" or run_status == "running":
         return "running"
+    if result_status in {"cancelled", "killed"} or run_status == "cancelled":
+        return "cancelled"
     if result_status == "success" or run_status == "success":
         return "completed"
     if run_status in {"failed", "dead_letter", "guardrail_blocked"} or queue_state in {"failed", "dead_letter"}:
@@ -2416,6 +2539,24 @@ def normalize_artifact_status(value: str | None) -> str | None:
     return normalized
 
 
+def resolve_effective_result_status(meta: dict, result: dict, run_dir: Path | None = None) -> str | None:
+    stop = result.get("stop") if isinstance(result.get("stop"), dict) else {}
+    if not stop and isinstance(meta.get("stop"), dict):
+        stop = meta.get("stop")
+    outcome = str(stop.get("outcome") or "").strip().lower()
+    if outcome == "killed":
+        return "cancelled"
+    if outcome == "requested":
+        return "cancel_requested"
+    control = load_run_control(run_dir) if run_dir is not None else None
+    if isinstance(control, dict):
+        control_stop = control.get("stop") if isinstance(control.get("stop"), dict) else {}
+        control_outcome = str(control_stop.get("outcome") or "").strip().lower()
+        if control_outcome == "killed":
+            return "cancelled"
+    return normalize_artifact_status(result.get("status"))
+
+
 def resolve_live_run_status(
     *,
     queue_state: str,
@@ -2435,6 +2576,8 @@ def resolve_live_run_status(
     if queue_state == "dead_letter":
         return "dead_letter"
     if queue_state == "failed":
+        if result_status == "cancelled":
+            return "cancelled"
         return "failed"
     if queue_state == "done":
         return (
@@ -2533,7 +2676,7 @@ def build_live_status_feed(project_root: Path, run_dir: Path, *, stream_limit: i
     checkpoint, checkpoint_error = load_checkpoint_status(run_dir)
 
     stream_tail = load_stream_tail(run_dir, limit=stream_limit)
-    result_status = normalize_artifact_status(result.get("status"))
+    result_status = resolve_effective_result_status(meta, result, run_dir)
     meta_status = normalize_artifact_status(meta.get("status"))
     run_status = resolve_live_run_status(
         queue_state=str(queue_projection.get("state") or "unknown"),
@@ -3419,7 +3562,9 @@ def cmd_worker(args: argparse.Namespace) -> int:
         )
         result_status = "failed"
         try:
-            result_status = read_json(run_dir / "result.json").get("status") or result_status
+            result_payload_for_status = read_json(run_dir / "result.json")
+            meta_payload_for_status, _meta_status_error = load_json_status(run_dir / "meta.json")
+            result_status = resolve_effective_result_status(meta_payload_for_status, result_payload_for_status, run_dir) or result_status
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             result_status = "success" if completed.returncode == 0 else "failed"
         finalize_guardrails(project_root, run_dir, executed=completed.returncode in (0, 2))
@@ -3427,7 +3572,16 @@ def cmd_worker(args: argparse.Namespace) -> int:
         next_retry_at = None
         retry_backoff_seconds = None
         review_execution: list[dict] = []
-        if completed.returncode == 0:
+        if result_status in {"cancelled", "killed"}:
+            error_text = summarize_worker_error(completed, heartbeat_warnings) or "cancelled by operator"
+            queue.fail(
+                claimed,
+                result_status=result_status,
+                exit_code=completed.returncode,
+                error=error_text,
+            )
+            queue_state = "failed"
+        elif completed.returncode == 0:
             queue.ack(claimed, result_status=result_status, exit_code=completed.returncode)
             queue_state = "done"
         elif completed.returncode == 2 and has_pending_approval_checkpoint(run_dir):
@@ -3531,6 +3685,8 @@ def cmd_worker(args: argparse.Namespace) -> int:
             task_runtime_status = "completed" if result_status == "success" else "failed"
         elif queue_state == "dead_letter":
             task_runtime_status = "failed"
+        elif result_status in {"cancelled", "killed"}:
+            task_runtime_status = "killed"
 
         task_rel = str(meta_payload.get("task_path") or "").strip() if isinstance(meta_payload, dict) else ""
         if task_rel:
@@ -3544,7 +3700,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
                     notified=queue_state in {"done", "dead_letter"},
                 )
 
-        if review_policy is not None and queue_state != "awaiting_approval":
+        if review_policy is not None and queue_state != "awaiting_approval" and result_status not in {"cancelled", "killed"}:
             maybe_trigger_review(project_root, run_dir, result_status, review_policy)
             review_execution = maybe_execute_pending_reviews(project_root)
 
@@ -4762,18 +4918,54 @@ def cmd_operator_cancel(args: argparse.Namespace) -> int:
     queue = FileQueue(queue_root_for_project(project_root))
     queue_state = queue.queue_state(args.job_id)
     if queue_state == "running":
-        print(
-            json.dumps(
-                {
-                    "status": "unsupported",
-                    "job_id": args.job_id,
-                    "queue_state": queue_state,
-                    "message": "Running jobs cannot be cancelled safely without process-level kill support.",
-                },
-                ensure_ascii=False,
+        run_dir = find_run_dir(project_root, args.job_id)
+        if run_dir is None:
+            print(json.dumps({"status": "not_found", "job_id": args.job_id, "queue_state": queue_state}, ensure_ascii=False))
+            return 1
+        meta, _error = load_json_status(run_dir / "meta.json")
+        task_rel = str(meta.get("task_path") or "")
+        runtime_id = ""
+        if task_rel:
+            task_path = (project_root / task_rel).resolve()
+            if task_path.is_file():
+                front_matter, _body = read_front_matter(task_path)
+                runtime_id = str(front_matter.get("runtime_task_id") or "").strip()
+        if not runtime_id:
+            print(
+                json.dumps(
+                    {
+                        "status": "missing_runtime",
+                        "job_id": args.job_id,
+                        "queue_state": queue_state,
+                    },
+                    ensure_ascii=False,
+                )
             )
+            return 1
+
+        stop_result = stop_runtime_task(
+            project_root,
+            runtime_id=runtime_id,
+            requested_by="operator_cancel",
+            note=args.note,
+            force=False,
         )
-        return 1
+        if stop_result.get("status") not in {"requested", "not_running"}:
+            print(json.dumps({"status": stop_result.get("status"), "job_id": args.job_id, "queue_state": queue_state, "runtime": stop_result}, ensure_ascii=False))
+            return 1
+
+        updated = store.update(
+            job_id=args.job_id,
+            status="running",
+            phase="cancelling",
+            queue_state="running",
+            result_status="cancel_requested",
+            note=args.note,
+            event="cancel_requested",
+        )
+        refresh_metrics_snapshot(project_root)
+        print(json.dumps(OperatorJobStore.summarize(updated), ensure_ascii=False, indent=2))
+        return 0
 
     if queue_state not in {"pending", "awaiting_approval", "failed"}:
         print(
@@ -4822,6 +5014,20 @@ def cmd_operator_cancel(args: argparse.Namespace) -> int:
     refresh_metrics_snapshot(project_root)
     print(json.dumps(OperatorJobStore.summarize(updated), ensure_ascii=False, indent=2))
     return 0
+
+
+def cmd_stop_task(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    result = stop_runtime_task(
+        project_root,
+        runtime_id=args.runtime_id,
+        requested_by="stop_task",
+        note=args.note,
+        force=bool(args.force),
+    )
+    status = str(result.get("status") or "")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if status in {"requested", "not_running"} else 1
 
 
 def cmd_review_gate(args: argparse.Namespace) -> int:
@@ -5062,6 +5268,8 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
             last_status = "failure_budget_exhausted" if budget_state["failure_budget_exhausted"] else "awaiting_approval"
             break
 
+    auto_dream = run_project_dream(project_root, auto=True)
+
     _STATUS_REASON_CODE: dict[str, str | None] = {
         "idle": "queue_empty",
         "awaiting_approval": "approval_pending",
@@ -5101,9 +5309,74 @@ def cmd_orchestrate(args: argparse.Namespace) -> int:
         "task_graph_issues": graph_issues,
         "contract": contract_summary(workflow_contract),
         "test_command": workflow_contract.commands.test,
+        "auto_dream": auto_dream,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if last_status != "error" else 1
+
+
+def cmd_dream(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    runtime_id = generate_task_runtime_id("dream")
+    entry = persist_runtime_task_entry(
+        project_root,
+        runtime_id=runtime_id,
+        task_type="dream",
+        runtime_status="running",
+        description="Background project memory consolidation",
+        task_id="dream",
+        task_path="",
+        selected_agent="claw",
+        notified=False,
+    )
+    try:
+        result = run_project_dream(project_root, force=bool(args.force), auto=False)
+    except Exception as exc:
+        persist_runtime_task_entry(
+            project_root,
+            runtime_id=runtime_id,
+            task_type="dream",
+            runtime_status="failed",
+            description=entry["description"],
+            task_id="dream",
+            task_path="",
+            selected_agent="claw",
+            notified=True,
+        )
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "runtime_id": runtime_id,
+                    "project": project_root.name,
+                    "error": str(exc),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 1
+
+    terminal_status = "completed" if result.get("status") == "completed" else "failed"
+    persist_runtime_task_entry(
+        project_root,
+        runtime_id=runtime_id,
+        task_type="dream",
+        runtime_status=terminal_status,
+        description=entry["description"],
+        task_id="dream",
+        task_path="",
+        selected_agent="claw",
+        notified=True,
+    )
+    payload = {
+        "status": result.get("status"),
+        "runtime_id": runtime_id,
+        "project": project_root.name,
+        **result,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") == "completed" else 1
 
 
 def cmd_run_checks(args: argparse.Namespace) -> int:
@@ -6307,6 +6580,11 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Stop when scope is complete (e.g. 'epic:12')")
     orchestrate.set_defaults(func=cmd_orchestrate)
 
+    dream = subcommands.add_parser("dream", help="Consolidate project memory from recent run knowledge")
+    dream.add_argument("project_root")
+    dream.add_argument("--force", action="store_true", help="Bypass manual gating and run consolidation immediately")
+    dream.set_defaults(func=cmd_dream)
+
     epic_status = subcommands.add_parser(
         "epic-status",
         help="Show completion status for tasks grouped by epic tag"
@@ -6361,6 +6639,13 @@ def build_parser() -> argparse.ArgumentParser:
     operator_cancel.add_argument("job_id")
     operator_cancel.add_argument("--note", help="Optional cancellation note")
     operator_cancel.set_defaults(func=cmd_operator_cancel)
+
+    stop_task = subcommands.add_parser("stop-task", help="Request stop/kill for a runtime task by lifecycle id")
+    stop_task.add_argument("project_root")
+    stop_task.add_argument("runtime_id")
+    stop_task.add_argument("--note", help="Optional stop note")
+    stop_task.add_argument("--force", action="store_true", help="Escalate directly to SIGKILL when supported")
+    stop_task.set_defaults(func=cmd_stop_task)
 
     task_delegate = subcommands.add_parser("task-delegate", help="Delegate a task to another agent")
     task_delegate.add_argument("project_root")

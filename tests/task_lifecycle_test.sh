@@ -147,5 +147,8 @@ print("ok")
 PY
 pass "worker updates terminal lifecycle state and clears active registry"
 
+python3 "$workspace/scripts/validate_artifacts.py" "$project_root/state/orchestration_state.json" --quiet >/dev/null
+pass "orchestration_state schema validates"
+
 echo ""
 echo "task_lifecycle_test: all tests passed"

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import secrets
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 TASK_POLL_INTERVAL_MS = 1000
+TASK_STOPPED_DISPLAY_MS = 3_000
 TASK_PANEL_GRACE_MS = 30_000
 
 VALID_TASK_TYPES = (
@@ -28,6 +30,8 @@ TASK_ID_PREFIXES = {
     "dream": "d",
 }
 TASK_ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+STOP_SUPPORTED_TASK_TYPES = {"local_bash", "local_agent"}
+VALID_STOP_OUTCOMES = ("requested", "killed", "not_running", "unsupported", "failed")
 
 
 def normalize_task_type(value: str | None, *, default: str = "local_agent") -> str:
@@ -49,6 +53,10 @@ def is_terminal_task_status(status: str | None) -> bool:
     return normalized in {"completed", "failed", "killed"}
 
 
+def supports_task_stop(task_type: str | None) -> bool:
+    return normalize_task_type(task_type) in STOP_SUPPORTED_TASK_TYPES
+
+
 def generate_task_runtime_id(task_type: str) -> str:
     normalized_type = normalize_task_type(task_type)
     prefix = TASK_ID_PREFIXES.get(normalized_type, "x")
@@ -59,6 +67,52 @@ def generate_task_runtime_id(task_type: str) -> str:
 def output_offset_for_file(path: Path | None) -> int:
     if path is None:
         return 0
+    try:
+        return max(0, int(path.stat().st_size))
+    except OSError:
+        return 0
+
+
+def parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def utc_now_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def normalize_task_stop_contract(payload: Any, *, task_type: str | None = None) -> dict[str, Any]:
+    normalized_type = normalize_task_type(task_type)
+    raw = payload if isinstance(payload, dict) else {}
+    outcome = str(raw.get("outcome") or "").strip().lower() or None
+    if outcome not in VALID_STOP_OUTCOMES:
+        outcome = None
+    signal = str(raw.get("signal") or "").strip() or None
+    if signal and not signal.startswith("SIG"):
+        signal = f"SIG{signal.upper()}"
+    return {
+        "supported": bool(raw.get("supported", supports_task_stop(normalized_type))),
+        "requested": bool(raw.get("requested", False)),
+        "requested_at": str(raw.get("requested_at") or "").strip() or None,
+        "requested_by": str(raw.get("requested_by") or "").strip() or None,
+        "note": str(raw.get("note") or "").strip() or None,
+        "signal": signal,
+        "force": bool(raw.get("force", False)),
+        "completed_at": str(raw.get("completed_at") or "").strip() or None,
+        "outcome": outcome,
+    }
+
+
+def task_terminal_grace_ms(task_type: str | None) -> int:
+    normalized_type = normalize_task_type(task_type)
+    if normalized_type == "local_bash":
+        return TASK_STOPPED_DISPLAY_MS
+    return TASK_PANEL_GRACE_MS
     try:
         return max(0, int(path.stat().st_size))
     except OSError:
@@ -83,11 +137,13 @@ def normalize_task_state_entry(task_id: str, payload: dict[str, Any]) -> dict[st
     except (TypeError, ValueError):
         output_offset = 0
 
+    normalized_type = normalize_task_type(payload.get("type"))
+
     return {
         "id": normalized_id,
         "task_id": str(payload.get("task_id") or "").strip(),
         "task_path": str(payload.get("task_path") or "").strip(),
-        "type": normalize_task_type(payload.get("type")),
+        "type": normalized_type,
         "status": normalize_task_status(payload.get("status")),
         "description": str(payload.get("description") or "").strip(),
         "startTime": str(start_time).strip() if isinstance(start_time, str) and str(start_time).strip() else None,
@@ -95,6 +151,8 @@ def normalize_task_state_entry(task_id: str, payload: dict[str, Any]) -> dict[st
         "outputFile": str(payload.get("outputFile") or "").strip(),
         "outputOffset": output_offset,
         "notified": bool(payload.get("notified", False)),
+        "controlFile": str(payload.get("controlFile") or "").strip(),
+        "stop": normalize_task_stop_contract(payload.get("stop"), task_type=normalized_type),
         "selected_agent": selected_agent,
         "run_id": run_id,
         "run_path": run_path,
