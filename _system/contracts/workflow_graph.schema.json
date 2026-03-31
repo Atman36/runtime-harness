@@ -69,7 +69,15 @@
             "items": {"type": "string"}
           },
           "task_path": {"type": "string"},
-          "parse_error": {"type": "string"}
+          "parse_error": {"type": "string"},
+          "runtime_task_id": {"type": ["string", "null"]},
+          "runtime_type": {"type": ["string", "null"]},
+          "runtime_status": {"type": ["string", "null"]},
+          "startTime": {"type": ["string", "null"]},
+          "endTime": {"type": ["string", "null"]},
+          "outputFile": {"type": ["string", "null"]},
+          "outputOffset": {"type": "integer"},
+          "notified": {"type": "boolean"}
         },
         "additionalProperties": false
       }

@@ -34,6 +34,14 @@ from _system.engine.error_codes import build_error_envelope  # noqa: E402
 from _system.engine.guardrails import run_guardrails  # noqa: E402
 from _system.engine.handoff_notes import validate_compact_handoff_text  # noqa: E402
 from _system.engine.listener_dispatch import dispatch_event_listeners  # noqa: E402
+from _system.engine.task_lifecycle import (
+    generate_task_runtime_id,
+    is_terminal_task_status,
+    normalize_agent_registry,
+    normalize_task_state_entry,
+    normalize_task_type,
+    output_offset_for_file,
+)
 from _system.engine.workflow_contract import contract_summary, load_workflow_contract  # noqa: E402
 from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
 from _system.engine.decomposer import decompose_epic as _decompose_epic  # noqa: E402
@@ -298,10 +306,13 @@ def append_approval_requested_decision(project_root: Path, approval: dict) -> No
 def load_orchestration_state(project_root: Path) -> dict:
     path = project_root / "state" / ORCHESTRATION_STATE_FILE
     default_state = {
+        "state_version": 2,
         "consecutive_failures": 0,
         "last_run_id": None,
         "last_decision": None,
         "last_updated_at": None,
+        "tasks": {},
+        "agentRegistry": {},
     }
     try:
         payload = read_json(path)
@@ -309,26 +320,56 @@ def load_orchestration_state(project_root: Path) -> dict:
         return dict(default_state)
     if not isinstance(payload, dict):
         return dict(default_state)
+    state = dict(payload)
     try:
-        consecutive_failures = max(0, int(payload.get("consecutive_failures", 0)))
+        consecutive_failures = max(0, int(state.get("consecutive_failures", 0)))
     except (TypeError, ValueError):
         consecutive_failures = 0
-    return {
-        "consecutive_failures": consecutive_failures,
-        "last_run_id": payload.get("last_run_id"),
-        "last_decision": payload.get("last_decision"),
-        "last_updated_at": payload.get("last_updated_at"),
-    }
+    raw_tasks = state.get("tasks")
+    normalized_tasks: dict[str, dict] = {}
+    if isinstance(raw_tasks, dict):
+        for runtime_id, raw_entry in raw_tasks.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            try:
+                entry = normalize_task_state_entry(str(runtime_id), raw_entry)
+            except ValueError:
+                continue
+            normalized_tasks[entry["id"]] = entry
+    state["state_version"] = 2
+    state["consecutive_failures"] = consecutive_failures
+    state["last_run_id"] = state.get("last_run_id")
+    state["last_decision"] = state.get("last_decision")
+    state["last_updated_at"] = state.get("last_updated_at")
+    state["tasks"] = normalized_tasks
+    state["agentRegistry"] = normalize_agent_registry(state.get("agentRegistry"))
+    return state
 
 
 def save_orchestration_state(project_root: Path, state: dict) -> None:
+    payload = dict(state or {})
+    raw_tasks = payload.get("tasks")
+    normalized_tasks: dict[str, dict] = {}
+    if isinstance(raw_tasks, dict):
+        for runtime_id, raw_entry in raw_tasks.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            try:
+                entry = normalize_task_state_entry(str(runtime_id), raw_entry)
+            except ValueError:
+                continue
+            normalized_tasks[entry["id"]] = entry
     write_json_atomic(
         project_root / "state" / ORCHESTRATION_STATE_FILE,
         {
-            "consecutive_failures": max(0, int(state.get("consecutive_failures", 0))),
-            "last_run_id": state.get("last_run_id"),
-            "last_decision": state.get("last_decision"),
-            "last_updated_at": state.get("last_updated_at"),
+            **payload,
+            "state_version": 2,
+            "consecutive_failures": max(0, int(payload.get("consecutive_failures", 0))),
+            "last_run_id": payload.get("last_run_id"),
+            "last_decision": payload.get("last_decision"),
+            "last_updated_at": payload.get("last_updated_at"),
+            "tasks": normalized_tasks,
+            "agentRegistry": normalize_agent_registry(payload.get("agentRegistry")),
         },
     )
 
@@ -468,6 +509,189 @@ def write_front_matter(path: Path, front_matter: dict, body: str) -> None:
         rendered += "\n"
     rendered += body
     path.write_text(rendered, encoding="utf-8")
+
+
+def resolve_task_project_root(task_path: Path) -> Path:
+    for ancestor in [task_path.parent, *task_path.parents]:
+        if (ancestor / "state" / "project.yaml").is_file():
+            return ancestor
+    raise FileNotFoundError(f"Expected project root with state/project.yaml for task: {task_path}")
+
+
+def infer_task_lifecycle_type(selected_agent: str | None, existing_type: str | None = None) -> str:
+    if existing_type:
+        return normalize_task_type(existing_type)
+    normalized_agent = str(selected_agent or "").strip().lower()
+    if normalized_agent.startswith("remote"):
+        return "remote_agent"
+    return "local_agent"
+
+
+def resolve_run_output_file(project_root: Path, run_dir: Path) -> tuple[str, int]:
+    job, _job_error = load_json_status(run_dir / "job.json")
+    artifacts = job.get("artifacts") if isinstance(job.get("artifacts"), dict) else {}
+    relative_candidates = [
+        str(artifacts.get("stream_path") or "").strip(),
+        str(artifacts.get("stdout_path") or "").strip(),
+    ]
+    selected_path: Path | None = None
+    for candidate in relative_candidates:
+        if not candidate:
+            continue
+        selected_path = (run_dir / candidate).resolve()
+        if selected_path.exists():
+            break
+    if selected_path is None:
+        selected_path = (run_dir / "agent_stream.jsonl").resolve()
+    try:
+        output_file = selected_path.relative_to(project_root).as_posix()
+    except ValueError:
+        output_file = str(selected_path)
+    return output_file, output_offset_for_file(selected_path)
+
+
+def _sync_agent_registry_entry(state: dict, task_state: dict) -> None:
+    registry = normalize_agent_registry(state.get("agentRegistry"))
+    runtime_id = str(task_state.get("id") or "").strip()
+    selected_agent = str(task_state.get("selected_agent") or "").strip()
+    updated_at = str(task_state.get("updated_at") or "").strip() or utc_now()
+    terminal = is_terminal_task_status(task_state.get("status"))
+
+    for agent_name, entry in registry.items():
+        active_ids = [item for item in entry.get("active_task_ids", []) if item != runtime_id]
+        entry["active_task_ids"] = active_ids
+        if not active_ids and not entry.get("last_task_id"):
+            entry["updated_at"] = updated_at
+        registry[agent_name] = entry
+
+    if selected_agent:
+        entry = registry.get(selected_agent, {"active_task_ids": [], "last_task_id": None, "updated_at": None})
+        active_ids = [item for item in entry.get("active_task_ids", []) if item != runtime_id]
+        if not terminal:
+            active_ids.append(runtime_id)
+        entry["active_task_ids"] = active_ids
+        entry["last_task_id"] = runtime_id
+        entry["updated_at"] = updated_at
+        registry[selected_agent] = entry
+
+    state["agentRegistry"] = registry
+
+
+def persist_task_lifecycle(
+    task_path: Path,
+    *,
+    runtime_status: str,
+    run_dir: Path | None = None,
+    selected_agent: str | None = None,
+    task_type: str | None = None,
+    force_new_runtime: bool = False,
+    notified: bool | None = None,
+) -> dict:
+    project_root = resolve_task_project_root(task_path)
+    front_matter, body = read_front_matter(task_path)
+    workflow_status = str(front_matter.get("status") or "todo").strip().lower() or "todo"
+    task_id = str(front_matter.get("id") or task_path.stem).strip()
+    title = str(front_matter.get("title") or task_id).strip() or task_id
+    existing_runtime_id = str(front_matter.get("runtime_task_id") or "").strip()
+    runtime_type = infer_task_lifecycle_type(selected_agent, task_type or front_matter.get("type"))
+    runtime_id = existing_runtime_id if existing_runtime_id and not force_new_runtime else generate_task_runtime_id(runtime_type)
+    now = utc_now()
+
+    state = load_orchestration_state(project_root)
+    previous_entry = state.get("tasks", {}).get(runtime_id, {})
+    existing_start = str(front_matter.get("startTime") or "").strip() or previous_entry.get("startTime")
+    output_file = str(front_matter.get("outputFile") or "").strip() or str(previous_entry.get("outputFile") or "")
+    try:
+        output_offset = max(0, int(front_matter.get("outputOffset", previous_entry.get("outputOffset", 0)) or 0))
+    except (TypeError, ValueError):
+        output_offset = int(previous_entry.get("outputOffset") or 0)
+    run_id = str(previous_entry.get("run_id") or "").strip() or None
+    run_path = str(previous_entry.get("run_path") or "").strip() or None
+
+    if run_dir is not None:
+        output_file, output_offset = resolve_run_output_file(project_root, run_dir)
+        run_id = run_dir.name
+        run_path = run_dir.relative_to(project_root).as_posix()
+
+    if runtime_status in {"pending", "running"}:
+        start_time = existing_start or now
+        end_time = None
+    else:
+        start_time = existing_start or now
+        end_time = now
+
+    if notified is None:
+        effective_notified = bool(previous_entry.get("notified", False)) if is_terminal_task_status(runtime_status) else False
+    else:
+        effective_notified = bool(notified)
+
+    effective_selected_agent = str(selected_agent or previous_entry.get("selected_agent") or "").strip() or None
+    entry = normalize_task_state_entry(
+        runtime_id,
+        {
+            "task_id": task_id,
+            "task_path": task_path.relative_to(project_root).as_posix(),
+            "type": runtime_type,
+            "status": runtime_status,
+            "description": title,
+            "startTime": start_time,
+            "endTime": end_time,
+            "outputFile": output_file,
+            "outputOffset": output_offset,
+            "notified": effective_notified,
+            "selected_agent": effective_selected_agent,
+            "run_id": run_id,
+            "run_path": run_path,
+            "workflow_status": workflow_status,
+            "updated_at": now,
+        },
+    )
+    state.setdefault("tasks", {})
+    state["tasks"][runtime_id] = entry
+    state["last_updated_at"] = now
+    _sync_agent_registry_entry(state, entry)
+    save_orchestration_state(project_root, state)
+
+    front_matter["runtime_task_id"] = entry["id"]
+    front_matter["type"] = entry["type"]
+    front_matter["runtime_status"] = entry["status"]
+    front_matter["startTime"] = entry["startTime"]
+    front_matter["endTime"] = entry["endTime"]
+    front_matter["outputFile"] = entry["outputFile"]
+    front_matter["outputOffset"] = entry["outputOffset"]
+    front_matter["notified"] = entry["notified"]
+    write_front_matter(task_path, front_matter, body)
+    return entry
+
+
+def mark_task_lifecycle_notified(task_path: Path, *, notified: bool = True) -> dict | None:
+    project_root = resolve_task_project_root(task_path)
+    front_matter, body = read_front_matter(task_path)
+    runtime_id = str(front_matter.get("runtime_task_id") or "").strip()
+    if not runtime_id:
+        return None
+
+    state = load_orchestration_state(project_root)
+    existing_entry = state.get("tasks", {}).get(runtime_id)
+    if not isinstance(existing_entry, dict):
+        return None
+
+    updated = normalize_task_state_entry(
+        runtime_id,
+        {
+            **existing_entry,
+            "notified": bool(notified),
+            "updated_at": utc_now(),
+        },
+    )
+    state["tasks"][runtime_id] = updated
+    state["last_updated_at"] = updated["updated_at"]
+    _sync_agent_registry_entry(state, updated)
+    save_orchestration_state(project_root, state)
+
+    front_matter["notified"] = updated["notified"]
+    write_front_matter(task_path, front_matter, body)
+    return updated
 
 
 def update_task_status(task_path: Path, status: str) -> None:
@@ -779,6 +1003,7 @@ def resolve_approval_request(project_root: Path, approval_id: str, *, decision: 
                 update_task_status(task_path, "todo")
             elif decision == "approved" and payload.get("requested_action") == "accept":
                 update_task_status(task_path, "done")
+                persist_task_lifecycle(task_path, runtime_status="completed", notified=True)
             elif payload.get("requested_action") == "run":
                 if decision == "approved":
                     queue = FileQueue(queue_root_for_project(project_root))
@@ -788,6 +1013,8 @@ def resolve_approval_request(project_root: Path, approval_id: str, *, decision: 
                         if run_dir is not None:
                             enqueue_run(run_dir, state="pending")
                     update_task_status(task_path, "queued")
+                    run_dir = find_run_dir(project_root, str(payload.get("run_id") or ""))
+                    persist_task_lifecycle(task_path, runtime_status="pending", run_dir=run_dir)
                 elif decision == "rejected":
                     update_task_status(task_path, "blocked")
 
@@ -959,6 +1186,12 @@ def pause_run_for_guardrail(
     task_path = guardrail_task_path(project_root, meta)
     if task_path is not None:
         update_task_status(task_path, "awaiting_approval")
+        persist_task_lifecycle(
+            task_path,
+            runtime_status="pending",
+            run_dir=run_dir,
+            selected_agent=str(meta.get("preferred_agent") or "").strip() or None,
+        )
 
     primary_reason = str((snapshot.get("reason_codes") or ["guardrail_pause"])[0])
     approval = create_approval_request(
@@ -1017,6 +1250,8 @@ def collect_task_records(project_root: Path) -> list[dict]:
     tasks_root = project_root / "tasks"
     queue = FileQueue(queue_root_for_project(project_root))
     active_task_ids = collect_active_task_ids(queue)
+    orchestration_state = load_orchestration_state(project_root)
+    lifecycle_entries = orchestration_state.get("tasks", {}) if isinstance(orchestration_state.get("tasks"), dict) else {}
     records: list[dict] = []
 
     for task_path in sorted(tasks_root.glob("TASK-*.md")):
@@ -1039,6 +1274,12 @@ def collect_task_records(project_root: Path) -> list[dict]:
             continue
         task_id = str(front_matter.get("id") or task_path.stem).strip()
         status = str(front_matter.get("status") or "todo").strip().lower()
+        runtime_task_id = str(front_matter.get("runtime_task_id") or "").strip()
+        lifecycle = lifecycle_entries.get(runtime_task_id, {}) if runtime_task_id else {}
+        try:
+            output_offset = int(lifecycle.get("outputOffset") or front_matter.get("outputOffset") or 0)
+        except (TypeError, ValueError):
+            output_offset = 0
         dependencies = parse_task_dependencies(front_matter)
         spec_ref = str(front_matter.get("spec") or "").strip()
         spec_path = None
@@ -1067,6 +1308,14 @@ def collect_task_records(project_root: Path) -> list[dict]:
                 "needs_review": bool(front_matter.get("needs_review", False)),
                 "shared_files": front_matter.get("shared_files", False),
                 "active": task_id in active_task_ids,
+                "runtime_task_id": runtime_task_id or None,
+                "type": str(lifecycle.get("type") or front_matter.get("type") or "").strip() or None,
+                "runtime_status": str(lifecycle.get("status") or front_matter.get("runtime_status") or "").strip() or None,
+                "startTime": lifecycle.get("startTime") or front_matter.get("startTime"),
+                "endTime": lifecycle.get("endTime") or front_matter.get("endTime"),
+                "outputFile": str(lifecycle.get("outputFile") or front_matter.get("outputFile") or "").strip() or None,
+                "outputOffset": output_offset,
+                "notified": bool(lifecycle.get("notified", front_matter.get("notified", False))),
             }
         )
 
@@ -1757,6 +2006,17 @@ def enqueue_task_path(task_path: Path) -> tuple[Path, dict]:
     run_dir = execute_run_task(REPO_ROOT, str(task_path), execute=False)
     payload = enqueue_run(run_dir, state="pending")
     project_root = run_dir.parent.parent.parent
+    meta, _meta_error = load_json_status(run_dir / "meta.json")
+    job, _job_error = load_json_status(run_dir / "job.json")
+    routing = job.get("routing") if isinstance(job.get("routing"), dict) else {}
+    selected_agent = str(routing.get("selected_agent") or meta.get("preferred_agent") or "").strip() or None
+    persist_task_lifecycle(
+        task_path.resolve(),
+        runtime_status="pending",
+        run_dir=run_dir,
+        selected_agent=selected_agent,
+        force_new_runtime=True,
+    )
     append_routing_decision(project_root, run_dir, source="orchestrate")
     sync_operator_job_record(project_root, run_dir, source="worker", event="enqueued")
     refresh_metrics_snapshot(project_root)
@@ -1770,6 +2030,14 @@ def accept_run(project_root: Path, run_dir: Path) -> None:
         task_path = (project_root / task_rel_path).resolve()
         if task_path.is_file():
             update_task_status(task_path, "done")
+            persist_task_lifecycle(
+                task_path,
+                runtime_status="completed",
+                run_dir=run_dir,
+                selected_agent=str(meta.get("preferred_agent") or "").strip() or None,
+                notified=True,
+            )
+            mark_task_lifecycle_notified(task_path, notified=True)
 
 
 def resolve_review_gate_reviewer(run_agent: str, reviewer_policy: str | None) -> str:
@@ -2385,6 +2653,14 @@ def build_task_snapshot(project_root: Path, *, records: list[dict] | None = None
             "ready": r["ready"],
             "active": r["active"],
             "task_path": r["task_path_rel"],
+            "runtime_task_id": r.get("runtime_task_id"),
+            "type": r.get("type"),
+            "runtime_status": r.get("runtime_status"),
+            "startTime": r.get("startTime"),
+            "endTime": r.get("endTime"),
+            "outputFile": r.get("outputFile"),
+            "outputOffset": r.get("outputOffset"),
+            "notified": bool(r.get("notified", False)),
         }
         for r in records
     ]
@@ -2418,6 +2694,14 @@ def build_workflow_graph(project_root: Path, *, records: list[dict] | None = Non
             "dependencies": list(record["dependencies"]),
             "dependency_blockers": list(record["dependency_blockers"]),
             "task_path": record["task_path_rel"],
+            "runtime_task_id": record.get("runtime_task_id"),
+            "runtime_type": record.get("type"),
+            "runtime_status": record.get("runtime_status"),
+            "startTime": record.get("startTime"),
+            "endTime": record.get("endTime"),
+            "outputFile": record.get("outputFile"),
+            "outputOffset": record.get("outputOffset"),
+            "notified": bool(record.get("notified", False)),
         }
         if record.get("_parse_error"):
             node["parse_error"] = str(record["_parse_error"])
@@ -2873,6 +3157,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.enqueue:
         queue_state = "awaiting_approval" if args.awaiting_approval else "pending"
         payload = enqueue_run(run_dir, state=queue_state)
+        meta, _meta_error = load_json_status(run_dir / "meta.json")
+        job, _job_error = load_json_status(run_dir / "job.json")
+        task_rel = str(meta.get("task_path") or "").strip()
+        if task_rel:
+            task_path = (project_root / task_rel).resolve()
+            if task_path.is_file():
+                routing = job.get("routing") if isinstance(job.get("routing"), dict) else {}
+                selected_agent = str(routing.get("selected_agent") or meta.get("preferred_agent") or "").strip() or None
+                persist_task_lifecycle(
+                    task_path,
+                    runtime_status="pending",
+                    run_dir=run_dir,
+                    selected_agent=selected_agent,
+                    force_new_runtime=True,
+                )
         append_routing_decision(project_root, run_dir, source="cmd.run")
         append_run_event(
             run_dir,
@@ -2894,6 +3193,23 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         return 0
     if args.execute:
+        meta, _meta_error = load_json_status(run_dir / "meta.json")
+        job, _job_error = load_json_status(run_dir / "job.json")
+        task_rel = str(meta.get("task_path") or "").strip()
+        task_path = None
+        if task_rel:
+            candidate = (project_root / task_rel).resolve()
+            if candidate.is_file():
+                task_path = candidate
+                routing = job.get("routing") if isinstance(job.get("routing"), dict) else {}
+                selected_agent = str(routing.get("selected_agent") or meta.get("preferred_agent") or "").strip() or None
+                persist_task_lifecycle(
+                    task_path,
+                    runtime_status="running",
+                    run_dir=run_dir,
+                    selected_agent=selected_agent,
+                    force_new_runtime=True,
+                )
         guardrail_snapshot = preflight_guardrails(project_root, run_dir, source="cmd.run")
         if guardrail_snapshot.get("decision") == "pause":
             approval = pause_run_for_guardrail(project_root, run_dir, guardrail_snapshot, source="cmd.run")
@@ -2938,6 +3254,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             task_id=task_id,
             ts=event.get("recorded_at"),
         )
+        if task_path is not None:
+            persist_task_lifecycle(
+                task_path,
+                runtime_status="completed" if str(result.get("status") or "success") == "success" else "failed",
+                run_dir=run_dir,
+                selected_agent=str(meta.get("preferred_agent") or "").strip() or None,
+                notified=True,
+            )
         sync_operator_job_record(project_root, run_dir, source="manual", event="finished")
     refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "created", "run_dir": str(run_dir)}, ensure_ascii=False))
@@ -2949,6 +3273,21 @@ def cmd_enqueue(args: argparse.Namespace) -> int:
     run_dir = execute_run_task(REPO_ROOT, args.task_path, execute=False)
     payload = enqueue_run(run_dir, state=queue_state)
     project_root = run_dir.parent.parent.parent
+    meta, _meta_error = load_json_status(run_dir / "meta.json")
+    job, _job_error = load_json_status(run_dir / "job.json")
+    task_rel = str(meta.get("task_path") or "").strip()
+    if task_rel:
+        task_path = (project_root / task_rel).resolve()
+        if task_path.is_file():
+            routing = job.get("routing") if isinstance(job.get("routing"), dict) else {}
+            selected_agent = str(routing.get("selected_agent") or meta.get("preferred_agent") or "").strip() or None
+            persist_task_lifecycle(
+                task_path,
+                runtime_status="pending",
+                run_dir=run_dir,
+                selected_agent=selected_agent,
+                force_new_runtime=True,
+            )
     append_routing_decision(project_root, run_dir, source="cmd.enqueue")
     append_run_event(
         run_dir,
@@ -3057,6 +3396,19 @@ def cmd_worker(args: argparse.Namespace) -> int:
             task_id=str(payload.get("task", {}).get("id") or ""),
             ts=started_event.get("recorded_at"),
         )
+        started_meta, _started_meta_error = load_json_status(run_dir / "meta.json")
+        started_task_rel = str(started_meta.get("task_path") or "").strip()
+        if started_task_rel:
+            started_task_path = (project_root / started_task_rel).resolve()
+            if started_task_path.is_file():
+                routing = payload.get("routing") if isinstance(payload.get("routing"), dict) else {}
+                selected_agent = str(routing.get("selected_agent") or started_meta.get("preferred_agent") or "").strip() or None
+                persist_task_lifecycle(
+                    started_task_path,
+                    runtime_status="running",
+                    run_dir=run_dir,
+                    selected_agent=selected_agent,
+                )
         sync_operator_job_record(project_root, run_dir, event="started")
         completed, heartbeat_warnings = run_job_with_lease_heartbeat(
             queue,
@@ -3173,6 +3525,24 @@ def cmd_worker(args: argparse.Namespace) -> int:
                     "attempt_count": claimed.attempt_count,
                 },
             )
+
+        task_runtime_status = "pending"
+        if queue_state == "done":
+            task_runtime_status = "completed" if result_status == "success" else "failed"
+        elif queue_state == "dead_letter":
+            task_runtime_status = "failed"
+
+        task_rel = str(meta_payload.get("task_path") or "").strip() if isinstance(meta_payload, dict) else ""
+        if task_rel:
+            task_path = (project_root / task_rel).resolve()
+            if task_path.is_file():
+                persist_task_lifecycle(
+                    task_path,
+                    runtime_status=task_runtime_status,
+                    run_dir=run_dir,
+                    selected_agent=str(meta_payload.get("preferred_agent") or "").strip() or None,
+                    notified=queue_state in {"done", "dead_letter"},
+                )
 
         if review_policy is not None and queue_state != "awaiting_approval":
             maybe_trigger_review(project_root, run_dir, result_status, review_policy)
@@ -3959,6 +4329,7 @@ def cmd_mark_done(args: argparse.Namespace) -> int:
             return 1
 
     update_task_status(task_path, "done")
+    persist_task_lifecycle(task_path, runtime_status="completed", notified=True)
     refresh_task_snapshot(project_root)
 
     receipt_payload = {
@@ -4436,6 +4807,7 @@ def cmd_operator_cancel(args: argparse.Namespace) -> int:
             task_path = (project_root / task_rel).resolve()
             if task_path.is_file():
                 update_task_status(task_path, "cancelled")
+                persist_task_lifecycle(task_path, runtime_status="killed", run_dir=run_dir, notified=True)
 
     updated = store.update(
         job_id=args.job_id,
