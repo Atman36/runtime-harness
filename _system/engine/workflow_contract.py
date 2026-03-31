@@ -82,6 +82,13 @@ class GuardrailPolicy:
 
 
 @dataclass(frozen=True)
+class ReviewGatePolicy:
+    enabled: bool = False
+    mode: str = "advisory"
+    reviewer: str = "opposite"
+
+
+@dataclass(frozen=True)
 class WorkflowContract:
     contract_version: int = _DEFAULT_CONTRACT_VERSION
     project: str = ""
@@ -91,6 +98,7 @@ class WorkflowContract:
     scope: WorkflowScope = field(default_factory=WorkflowScope)
     commands: Commands = field(default_factory=Commands)
     guardrails: GuardrailPolicy = field(default_factory=GuardrailPolicy)
+    review_gate: ReviewGatePolicy = field(default_factory=ReviewGatePolicy)
     source: str = "defaults"
 
 
@@ -280,6 +288,25 @@ def _parse_guardrails(raw: Any) -> GuardrailPolicy:
     )
 
 
+def _parse_review_gate(raw: Any) -> ReviewGatePolicy:
+    if raw is None:
+        return ReviewGatePolicy()
+    if not isinstance(raw, dict):
+        raise WorkflowLoadError(f"review_gate must be a mapping, got {type(raw).__name__}")
+
+    enabled = _require_bool(raw, "enabled", False)
+    mode = str(raw.get("mode", "advisory") or "advisory").strip().lower()
+    if mode not in {"advisory", "blocking"}:
+        raise WorkflowLoadError(f"review_gate.mode must be advisory or blocking, got {mode!r}")
+
+    reviewer = str(raw.get("reviewer", "opposite") or "opposite").strip().lower()
+    if reviewer not in {"opposite", "claude", "codex", "human"}:
+        raise WorkflowLoadError(
+            f"review_gate.reviewer must be one of ['opposite', 'claude', 'codex', 'human'], got {reviewer!r}"
+        )
+    return ReviewGatePolicy(enabled=enabled, mode=mode, reviewer=reviewer)
+
+
 def load_workflow_contract(project_root: Path) -> WorkflowContract:
     path = _workflow_path(project_root)
     if not path.is_file():
@@ -309,6 +336,7 @@ def load_workflow_contract(project_root: Path) -> WorkflowContract:
         scope=_parse_scope(fm.get("scope")),
         commands=_parse_commands(fm.get("commands")),
         guardrails=_parse_guardrails(fm.get("guardrails")),
+        review_gate=_parse_review_gate(fm.get("review_gate")),
         source=str(path),
     )
 
@@ -342,6 +370,7 @@ def load_workflow_contract_from_dict(data: dict[str, Any]) -> WorkflowContract:
         scope=_parse_scope(data.get("scope")),
         commands=_parse_commands(data.get("commands")),
         guardrails=_parse_guardrails(data.get("guardrails")),
+        review_gate=_parse_review_gate(data.get("review_gate")),
         source="dict",
     )
 
@@ -364,6 +393,7 @@ def contract_summary(contract: WorkflowContract | dict[str, Any] | None) -> dict
         "allowed_agents": (data.get("scope") or {}).get("allowed_agents"),
         "commands": data.get("commands"),
         "guardrails": data.get("guardrails"),
+        "review_gate": data.get("review_gate"),
         "source": data.get("source"),
         "contract_errors": [],
     }

@@ -159,13 +159,46 @@ def classify_stream_line(line: str) -> str:
     return "message"
 
 
-def append_stream_record(stream_path: Path, state: dict[str, int], record_type: str, text: str) -> None:
+def default_stream_phase(record_type: str, text: str) -> str:
+    if record_type == "status":
+        return str(text or "").strip() or "status"
+    if record_type == "stderr":
+        return "stderr"
+    return record_type
+
+
+def append_stream_record(
+    stream_path: Path,
+    state: dict[str, int],
+    record_type: str,
+    text: str,
+    *,
+    job_id: str | None = None,
+    run_id: str | None = None,
+    thread_id: str | None = None,
+    turn_id: str | None = None,
+    phase: str | None = None,
+    stderr_message: str | None = None,
+    log_title: str | None = None,
+    log_body: str | None = None,
+) -> None:
     state["seq"] += 1
+    timestamp = utc_now()
     record = {
-        "ts": utc_now(),
+        "ts": timestamp,
+        "at": timestamp,
         "seq": state["seq"],
         "type": record_type,
         "text": text,
+        "message": text,
+        "phase": phase or default_stream_phase(record_type, text),
+        "job_id": job_id,
+        "run_id": run_id,
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "stderr_message": stderr_message,
+        "log_title": log_title,
+        "log_body": log_body if log_body is not None else text,
     }
     with stream_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False))
@@ -178,6 +211,8 @@ def stream_agent_output(
     timeout_seconds: int,
     *,
     command_input: str | None = None,
+    job_id: str | None = None,
+    run_id: str | None = None,
 ) -> tuple[str, str]:
     stream_path.parent.mkdir(parents=True, exist_ok=True)
     stream_path.write_text("", encoding="utf-8")
@@ -186,10 +221,22 @@ def stream_agent_output(
     stderr_lines: list[str] = []
     stream_state = {"seq": 0}
     stream_lock = threading.Lock()
+    thread_id = os.environ.get("CLAW_AGENT_THREAD_ID")
+    turn_id = os.environ.get("CLAW_AGENT_TURN_ID")
 
-    def _append_record(record_type: str, text: str) -> None:
+    def _append_record(record_type: str, text: str, **extra: str | None) -> None:
         with stream_lock:
-            append_stream_record(stream_path, stream_state, record_type, text)
+            append_stream_record(
+                stream_path,
+                stream_state,
+                record_type,
+                text,
+                job_id=job_id,
+                run_id=run_id,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                **extra,
+            )
 
     def _drain_stdout(pipe: object) -> None:
         if pipe is None:
@@ -200,7 +247,12 @@ def stream_agent_output(
                 if line == "":
                     break
                 stdout_lines.append(line)
-                _append_record(classify_stream_line(line), line.rstrip("\r\n"))
+                stripped = line.rstrip("\r\n")
+                _append_record(
+                    classify_stream_line(line),
+                    stripped,
+                    log_title="stdout",
+                )
         finally:
             pipe.close()
 
@@ -213,6 +265,13 @@ def stream_agent_output(
                 if line == "":
                     break
                 stderr_lines.append(line)
+                stripped = line.rstrip("\r\n")
+                _append_record(
+                    "stderr",
+                    stripped,
+                    stderr_message=stripped,
+                    log_title="stderr",
+                )
         finally:
             pipe.close()
 
@@ -221,7 +280,7 @@ def stream_agent_output(
     stdout_thread.start()
     stderr_thread.start()
 
-    _append_record("status", "run_start")
+    _append_record("status", "run_start", phase="run_start", log_title="status")
 
     try:
         if command_input is not None and proc.stdin is not None:
@@ -246,10 +305,10 @@ def stream_agent_output(
         stderr_thread.join()
         exc.stdout = "".join(stdout_lines)
         exc.stderr = "".join(stderr_lines)
-        _append_record("status", "run_end")
+        _append_record("status", "run_end", phase="run_end", log_title="status")
         raise
 
-    _append_record("status", "run_end")
+    _append_record("status", "run_end", phase="run_end", log_title="status")
     return "".join(stdout_lines), "".join(stderr_lines)
 
 
@@ -757,6 +816,8 @@ def main() -> int:
             stream_path,
             timeout_seconds,
             command_input=command_input,
+            job_id=str(job.get("run_id") or ""),
+            run_id=str(job.get("run_id") or ""),
         )
         exit_code = proc.returncode if proc.returncode is not None else 1
         status = "success" if exit_code == 0 else "failed"

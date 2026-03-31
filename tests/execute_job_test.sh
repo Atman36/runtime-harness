@@ -140,8 +140,13 @@ assert records[-1]["text"] == "run_end", records
 assert any(record["type"] == "message" and "FAKE SUCCESS" in record["text"] for record in records), records
 for index, record in enumerate(records, start=1):
     assert isinstance(record["ts"], str) and record["ts"], record
-    assert record["type"] in {"message", "reasoning", "command", "status"}, record
+    assert isinstance(record["at"], str) and record["at"], record
+    assert record["type"] in {"message", "reasoning", "command", "status", "stderr"}, record
     assert isinstance(record["text"], str), record
+    assert isinstance(record["message"], str), record
+    assert isinstance(record["phase"], str) and record["phase"], record
+    assert record["job_id"] == "RUN-0001", record
+    assert record["run_id"] == "RUN-0001", record
     assert record["seq"] == index, records
 PY
 
@@ -163,6 +168,18 @@ assert_contains "$run_two/stderr.log" 'FAKE FAILURE'
 assert_contains "$run_two/report.md" '- Status: failed'
 assert_contains "$run_two/report.md" '- Exit code: 7'
 assert_contains "$run_two/report.md" 'inspect stderr.log'
+assert_file "$run_two/agent_stream.jsonl"
+
+python3 - "$run_two/agent_stream.jsonl" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+records = [json.loads(line) for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines() if line.strip()]
+assert any(record["type"] == "stderr" and "FAKE FAILURE" in record["text"] for record in records), records
+assert records[-1]["type"] == "status", records
+assert records[-1]["text"] == "run_end", records
+PY
 
 cat > "$workspace/_system/registry/agents.yaml" <<'EOF'
 agents:

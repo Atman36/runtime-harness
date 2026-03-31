@@ -26,7 +26,7 @@ REPO_ROOT = repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from _system.engine import FileExchangeError, FileQueue, OperatorSessionStore, OrgGraphError, QueueEmpty, SessionDocsStore, SessionStore, TaskClaimStore, TransportConfigError, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, describe_transport_backends, enqueue_run, escalation_chain, execute_run_task, fetch_path, find_run_dir, load_file_exchange_policy, load_org_graph, operator_sessions_root_for_repo, plan_task_run, plan_to_dict, put_file, queue_root_for_project, read_json, resolve_project_root, run_command, run_transport_doctor, session_docs_root_for_project, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
+from _system.engine import FileExchangeError, FileQueue, OperatorJobStore, OperatorSessionStore, OrgGraphError, QueueEmpty, SessionDocsStore, SessionStore, TaskClaimStore, TransportConfigError, VALID_WAKE_REASONS, WakeQueue, bind_operator_context, build_agent_command, claims_root_for_project, delegation_targets, describe_transport_backends, enqueue_run, escalation_chain, execute_run_task, fetch_path, find_run_dir, load_file_exchange_policy, load_org_graph, operator_jobs_root_for_project, operator_sessions_root_for_repo, plan_task_run, plan_to_dict, put_file, queue_root_for_project, read_json, resolve_project_root, run_command, run_transport_doctor, session_docs_root_for_project, sessions_root_for_project, validate_delegation, wake_root_for_project  # noqa: E402
 from _system.engine.budget_guardrails import evaluate_guardrails, extract_referenced_paths, summarize_project_guardrails  # noqa: E402
 from _system.engine.decision_log import append_decision, format_decision_for_display, read_decisions  # noqa: E402
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
@@ -1168,6 +1168,138 @@ def _operator_session_summary(payload: dict | None) -> dict | None:
     }
 
 
+def _task_resume_line(agent: str, resume: dict | None) -> str | None:
+    store = OperatorSessionStore(operator_sessions_root_for_repo(REPO_ROOT), repo_root=REPO_ROOT)
+    return store.derive_resume_line(engine=agent, resume=resume)
+
+
+def _task_session_candidate(project_root: Path, *, agent: str, task_id: str) -> dict:
+    store = SessionStore(sessions_root_for_project(project_root))
+    payload = store.load_session(agent=agent, task_id=task_id)
+    shared_files = _session_docs_summary(project_root, task_id)
+    if payload is None:
+        return {
+            "status": "not_found",
+            "agent": agent,
+            "task_id": task_id,
+            "continuation": {
+                "mode": "fresh",
+                "source": "no_session",
+                "resume_line": None,
+                "resume": None,
+            },
+            "shared_files": shared_files,
+        }
+
+    resume = payload.get("resume") if isinstance(payload.get("resume"), dict) else None
+    status = str(payload.get("status") or "active")
+    mode = "resume" if status == "active" and resume else "fresh"
+    source = "stored_session" if mode == "resume" else "session_reset"
+    return {
+        "status": "found",
+        "agent": agent,
+        "task_id": task_id,
+        "session": payload,
+        "continuation": {
+            "mode": mode,
+            "source": source,
+            "resume_line": _task_resume_line(agent, resume) if mode == "resume" else None,
+            "resume": resume,
+            "session_id": payload.get("session_id"),
+            "handoff": payload.get("handoff") if isinstance(payload.get("handoff"), dict) else {},
+        },
+        "shared_files": shared_files,
+    }
+
+
+def operator_job_store(project_root: Path) -> OperatorJobStore:
+    return OperatorJobStore(operator_jobs_root_for_project(project_root))
+
+
+def derive_operator_job_status(feed: dict) -> str:
+    queue_state = str(feed.get("queue_state") or "").strip().lower()
+    run_status = str(feed.get("status") or "").strip().lower()
+    result_status = str(feed.get("result_status") or "").strip().lower()
+    if queue_state in {"pending", "awaiting_approval"}:
+        return "queued"
+    if queue_state == "running" or run_status == "running":
+        return "running"
+    if result_status == "success" or run_status == "success":
+        return "completed"
+    if run_status in {"failed", "dead_letter", "guardrail_blocked"} or queue_state in {"failed", "dead_letter"}:
+        return "failed"
+    return "queued"
+
+
+def derive_operator_job_phase(feed: dict) -> str:
+    step = feed.get("current_step") if isinstance(feed.get("current_step"), dict) else {}
+    if step.get("key"):
+        return str(step["key"])
+    if step.get("label"):
+        return str(step["label"]).strip().lower().replace(" ", "_")
+    return str(feed.get("queue_state") or feed.get("status") or "queued")
+
+
+def latest_stream_context(stream_tail: list[dict]) -> tuple[str | None, str | None, str | None, str | None]:
+    if not stream_tail:
+        return None, None, None, None
+    record = stream_tail[-1] if isinstance(stream_tail[-1], dict) else {}
+    return (
+        str(record.get("thread_id") or "").strip() or None,
+        str(record.get("turn_id") or "").strip() or None,
+        str(record.get("log_title") or "").strip() or None,
+        str(record.get("log_body") or "").strip() or None,
+    )
+
+
+def sync_operator_job_record(project_root: Path, run_dir: Path, *, source: str | None = None, note: str | None = None, event: str | None = None) -> dict:
+    feed = build_live_status_feed(project_root, run_dir, stream_limit=10)
+    run_id = str(feed.get("run_id") or run_dir.name)
+    task_id = str(feed.get("task_id") or "").strip()
+    agent = str(feed.get("agent") or "").strip()
+    session_payload = None
+    if task_id and agent:
+        session_payload = SessionStore(sessions_root_for_project(project_root)).load_session(agent=agent, task_id=task_id)
+    resume = session_payload.get("resume") if isinstance(session_payload, dict) and isinstance(session_payload.get("resume"), dict) else None
+    session_id = None
+    if isinstance(session_payload, dict):
+        session_id = str(session_payload.get("session_id") or "").strip() or None
+    session_handle = str(resume.get("handle") or "").strip() or None if isinstance(resume, dict) else None
+    thread_id, turn_id, log_title, log_body = latest_stream_context(feed.get("stream_tail") if isinstance(feed.get("stream_tail"), list) else [])
+    if not log_body:
+        log_body = str(feed.get("summary") or "").strip() or None
+
+    result_status = str(feed.get("result_status") or "").strip().lower() or None
+    operator_status = derive_operator_job_status(feed)
+    store = operator_job_store(project_root)
+    return store.update(
+        job_id=run_id,
+        source=source,
+        status=operator_status,
+        phase=derive_operator_job_phase(feed),
+        run_id=run_id,
+        run_path=str(feed.get("run_path") or ""),
+        task_id=task_id,
+        task_title=str(feed.get("task_title") or ""),
+        queue_state=str(feed.get("queue_state") or ""),
+        result_status=result_status,
+        summary=str(feed.get("summary") or ""),
+        completion_summary=str(feed.get("summary") or "") if operator_status == "completed" else None,
+        log_preview=log_body,
+        log_path=f"{feed.get('run_path')}/stdout.log" if feed.get("run_path") else "",
+        stream_path=f"{feed.get('run_path')}/agent_stream.jsonl" if feed.get("run_path") else "",
+        report_path=str(feed.get("report_path") or ""),
+        session_handle=session_handle,
+        thread_id=thread_id,
+        session_id=session_id,
+        turn_id=turn_id,
+        started_at=str((feed.get("event_snapshot") or {}).get("started_at") or "") or None,
+        completed_at=str((feed.get("event_snapshot") or {}).get("finished_at") or "") or None,
+        note=note,
+        event=event or "synced",
+    )
+
+
 def load_session_summary_map(project_root: Path) -> dict[str, dict]:
     store = SessionStore(sessions_root_for_project(project_root))
     sessions: dict[str, dict] = {}
@@ -1625,6 +1757,7 @@ def enqueue_task_path(task_path: Path) -> tuple[Path, dict]:
     payload = enqueue_run(run_dir, state="pending")
     project_root = run_dir.parent.parent.parent
     append_routing_decision(project_root, run_dir, source="orchestrate")
+    sync_operator_job_record(project_root, run_dir, source="worker", event="enqueued")
     refresh_metrics_snapshot(project_root)
     return run_dir, payload
 
@@ -1638,11 +1771,101 @@ def accept_run(project_root: Path, run_dir: Path) -> None:
             update_task_status(task_path, "done")
 
 
+def resolve_review_gate_reviewer(run_agent: str, reviewer_policy: str | None) -> str:
+    choice = str(reviewer_policy or "opposite").strip().lower() or "opposite"
+    if choice == "opposite":
+        return "claude" if run_agent == "codex" else "codex"
+    return choice
+
+
+def create_review_gate_batch(project_root: Path, run_dir: Path, *, reviewer: str) -> dict:
+    from generate_review_batch import next_batch_seq, utc_now, write_batch, write_decision_stubs  # noqa: PLC0415
+
+    run = load_run(run_dir, project_root)
+    if run is None:
+        raise ValueError(f"Unable to load run metadata for review gate: {run_dir}")
+    run["trigger"] = "review_gate"
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    reviews_dir = project_root / "reviews"
+    batch = {
+        "batch_version": 1,
+        "batch_id": next_batch_seq(reviews_dir, today),
+        "generated_at": utc_now(),
+        "project": project_root.name,
+        "reviewer": reviewer,
+        "trigger_type": "review_gate",
+        "runs": [run],
+    }
+    write_batch(reviews_dir, batch)
+    write_decision_stubs(project_root, batch)
+    emit_review_created_events(project_root, [batch])
+    return batch
+
+
+def ensure_review_gate(project_root: Path, run_dir: Path, *, reviewer_policy: str | None = None) -> dict:
+    pending_reviews = load_pending_review_decisions(project_root, run_id=run_dir.name)
+    if pending_reviews:
+        return {
+            "status": "pending",
+            "reason": "pending_review",
+            "pending_reviews": len(pending_reviews),
+            "decision_files": [review.get("decision_file") for review in pending_reviews],
+        }
+
+    resolved = load_resolved_review_decision(project_root, run_dir.name)
+    if resolved is not None:
+        decision = str(resolved.get("decision") or "pending")
+        passed = decision in {"approved", "approved_with_notes", "waived"}
+        return {
+            "status": "passed" if passed else "blocked",
+            "reason": decision,
+            "decision": resolved,
+            "decision_file": resolved.get("decision_file"),
+        }
+
+    meta, _error = load_json_status(run_dir / "meta.json")
+    reviewer = resolve_review_gate_reviewer(str(meta.get("preferred_agent") or meta.get("agent") or "codex"), reviewer_policy)
+    batch = create_review_gate_batch(project_root, run_dir, reviewer=reviewer)
+    pending = load_pending_review_decisions(project_root, run_id=run_dir.name)
+    return {
+        "status": "pending",
+        "reason": "review_gate_created",
+        "reviewer": reviewer,
+        "batch_id": batch.get("batch_id"),
+        "pending_reviews": len(pending),
+        "decision_files": [review.get("decision_file") for review in pending],
+    }
+
+
+def latest_run_for_task(project_root: Path, task_id: str) -> Path | None:
+    latest: tuple[str, Path] | None = None
+    runs_root = project_root / "runs"
+    if not runs_root.is_dir():
+        return None
+    for date_dir in sorted(runs_root.iterdir()):
+        if not date_dir.is_dir():
+            continue
+        for run_dir in sorted(date_dir.iterdir()):
+            if not run_dir.is_dir() or not run_dir.name.startswith("RUN-"):
+                continue
+            meta, error = load_json_status(run_dir / "meta.json")
+            if error is not None:
+                continue
+            if str(meta.get("task_id") or "").strip() != task_id:
+                continue
+            stamp = str(meta.get("finished_at") or meta.get("started_at") or meta.get("created_at") or "")
+            if latest is None or stamp >= latest[0]:
+                latest = (stamp, run_dir)
+    return latest[1] if latest is not None else None
+
+
 def evaluate_run_decision(project_root: Path, run_dir: Path, *, result_status: str) -> dict:
     meta, _meta_error = load_json_status(run_dir / "meta.json")
     run_id = str(meta.get("run_id") or run_dir.name)
     task_id = str(meta.get("task_id") or "")
     task_path = str(meta.get("task_path") or "")
+    workflow = load_workflow_contract(project_root)
+    review_gate = workflow.review_gate
 
     if result_status != "success":
         approval = create_approval_request(
@@ -1656,6 +1879,16 @@ def evaluate_run_decision(project_root: Path, run_dir: Path, *, result_status: s
         )
         append_approval_requested_decision(project_root, approval)
         return {"decision": "ask_human", "approval_id": approval["approval_id"], "reason": "run_failed"}
+
+    if review_gate.enabled and review_gate.mode == "blocking":
+        gate = ensure_review_gate(project_root, run_dir, reviewer_policy=review_gate.reviewer)
+        if gate["status"] == "pending":
+            return {
+                "decision": "awaiting_review",
+                "pending_reviews": int(gate.get("pending_reviews") or 0),
+                "reason": "review_gate_pending",
+                "review_gate": gate,
+            }
 
     pending_reviews = load_pending_review_decisions(project_root, run_id=run_id)
     if pending_reviews:
@@ -2363,7 +2596,8 @@ def build_review_prompt(project_root: Path, *, batch_id: str, reviewer: str, stu
         "- waived",
         "- rejected",
         "- needs_follow_up",
-        "Populate `findings` for every stub. If you choose `needs_follow_up`, also populate `follow_up_actions` with actionable steps.",
+        "Populate `findings` for every non-trivial stub. Rich findings should include `title`, `body` or `description`, `file`, `line_start`, `line_end`, `confidence`, and `recommendation` when available.",
+        "If you choose `needs_follow_up`, also populate `follow_up_actions` with actionable steps.",
         "",
         "Pending stubs:",
     ]
@@ -2649,6 +2883,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 "source": "cmd.run",
             },
         )
+        sync_operator_job_record(project_root, run_dir, source="manual", event="enqueued")
         refresh_metrics_snapshot(project_root)
         print(
             json.dumps(
@@ -2702,6 +2937,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             task_id=task_id,
             ts=event.get("recorded_at"),
         )
+        sync_operator_job_record(project_root, run_dir, source="manual", event="finished")
     refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "created", "run_dir": str(run_dir)}, ensure_ascii=False))
     return 0
@@ -2725,6 +2961,7 @@ def cmd_enqueue(args: argparse.Namespace) -> int:
         project_root=project_root,
         payload={"queue_state": queue_state, "run_status": "queued", "source": "cmd.enqueue"},
     )
+    sync_operator_job_record(project_root, run_dir, source="manual", event="enqueued")
     refresh_metrics_snapshot(project_root)
     print(json.dumps({"status": "queued", "job_id": payload["job_id"], "run_path": payload["run_path"], "queue_state": queue_state}, ensure_ascii=False))
     return 0
@@ -2772,9 +3009,17 @@ def cmd_worker(args: argparse.Namespace) -> int:
                 "worker_id": claimed.worker_id,
             },
         )
+        existing_operator_job = operator_job_store(project_root).load_job(run_dir.name)
+        sync_operator_job_record(
+            project_root,
+            run_dir,
+            source=None if existing_operator_job is not None else "worker",
+            event="claimed",
+        )
         guardrail_snapshot = preflight_guardrails(project_root, run_dir, source="worker")
         if guardrail_snapshot.get("decision") == "pause":
             approval = pause_run_for_guardrail(project_root, run_dir, guardrail_snapshot, source="worker", claimed=claimed)
+            sync_operator_job_record(project_root, run_dir, event="awaiting_approval")
             print(
                 json.dumps(
                     {
@@ -2811,6 +3056,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
             task_id=str(payload.get("task", {}).get("id") or ""),
             ts=started_event.get("recorded_at"),
         )
+        sync_operator_job_record(project_root, run_dir, event="started")
         completed, heartbeat_warnings = run_job_with_lease_heartbeat(
             queue,
             claimed,
@@ -2931,6 +3177,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
             maybe_trigger_review(project_root, run_dir, result_status, review_policy)
             review_execution = maybe_execute_pending_reviews(project_root)
 
+        sync_operator_job_record(project_root, run_dir, event="finished")
         refresh_metrics_snapshot(project_root)
 
         sys.stdout.write(completed.stdout)
@@ -3647,6 +3894,7 @@ def cmd_mark_done(args: argparse.Namespace) -> int:
     front_matter, _body = read_front_matter(task_path)
     previous_status = str(front_matter.get("status") or "todo").strip().lower()
     needs_review = bool(front_matter.get("needs_review", False))
+    workflow = load_workflow_contract(project_root)
     reviewer = str(args.reviewer).strip() if args.reviewer else None
     commit = str(args.commit).strip() if args.commit else None
     notes = str(args.notes).strip() if args.notes else None
@@ -3671,6 +3919,30 @@ def cmd_mark_done(args: argparse.Namespace) -> int:
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 1
+
+    if workflow.review_gate.enabled and workflow.review_gate.mode == "blocking":
+        run_dir = latest_run_for_task(project_root, task_id)
+        if run_dir is None:
+            payload = {
+                "status": "review_gate_blocked",
+                "task_id": task_id,
+                "task_path": task_path.relative_to(project_root).as_posix(),
+                "previous_status": previous_status,
+                "message": "Blocking review gate requires a run artifact for this task.",
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 1
+        gate = ensure_review_gate(project_root, run_dir, reviewer_policy=workflow.review_gate.reviewer)
+        if gate["status"] != "passed":
+            payload = {
+                "status": "review_gate_blocked",
+                "task_id": task_id,
+                "task_path": task_path.relative_to(project_root).as_posix(),
+                "run_id": run_dir.name,
+                "review_gate": gate,
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 1
 
     update_task_status(task_path, "done")
     refresh_task_snapshot(project_root)
@@ -3785,6 +4057,55 @@ def cmd_session_rotate(args: argparse.Namespace) -> int:
         project=project_root.name,
         task_path=task_rel,
     )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_resume_candidate(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    task_id = str(args.task_id).strip()
+    agent = str(args.agent).strip()
+    payload = _task_session_candidate(project_root, agent=agent, task_id=task_id)
+    task_path = resolve_task_path_for_id(project_root, task_id)
+    if task_path is not None:
+        payload["task_path"] = task_path.relative_to(project_root).as_posix()
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if payload.get("status") == "found" else 1
+
+
+def cmd_continue(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    task_id = str(args.task_id).strip()
+    agent = str(args.agent).strip()
+    payload = _task_session_candidate(project_root, agent=agent, task_id=task_id)
+    task_path = resolve_task_path_for_id(project_root, task_id)
+    task_rel = task_path.relative_to(project_root).as_posix() if task_path is not None else None
+
+    queue = WakeQueue(wake_root_for_project(project_root))
+    context = {
+        "continuation": payload.get("continuation"),
+        "shared_files": payload.get("shared_files"),
+    }
+    wake = queue.enqueue(
+        agent=agent,
+        task_id=task_id,
+        reason="manual",
+        source="continue",
+        note=args.note,
+        context=context,
+    )
+    if payload.get("status") == "found":
+        session = payload.get("session")
+        if isinstance(session, dict):
+            wake["session"] = _session_summary(session)
+    payload.update(
+        {
+            "status": "resume_requested" if payload.get("continuation", {}).get("mode") == "resume" else "fresh_requested",
+            "task_path": task_rel,
+            "wake": wake,
+        }
+    )
+    refresh_metrics_snapshot(project_root)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -4018,6 +4339,146 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     payload = build_agent_inbox(project_root, agent=args.agent, limit=args.limit)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def cmd_operator_status(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    store = operator_job_store(project_root)
+    jobs = store.list_jobs(status=args.status, limit=args.limit)
+    payload = {
+        "status": "ok",
+        "project": project_root.name,
+        "count": len(jobs),
+        "jobs": jobs,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_operator_result(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    store = operator_job_store(project_root)
+    payload = store.load_job(args.job_id)
+    if payload is None:
+        print(json.dumps({"status": "not_found", "job_id": args.job_id}, ensure_ascii=False))
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_operator_cancel(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    store = operator_job_store(project_root)
+    payload = store.load_job(args.job_id)
+    if payload is None:
+        print(json.dumps({"status": "not_found", "job_id": args.job_id}, ensure_ascii=False))
+        return 1
+
+    queue = FileQueue(queue_root_for_project(project_root))
+    queue_state = queue.queue_state(args.job_id)
+    if queue_state == "running":
+        print(
+            json.dumps(
+                {
+                    "status": "unsupported",
+                    "job_id": args.job_id,
+                    "queue_state": queue_state,
+                    "message": "Running jobs cannot be cancelled safely without process-level kill support.",
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
+
+    if queue_state not in {"pending", "awaiting_approval", "failed"}:
+        print(
+            json.dumps(
+                {
+                    "status": "not_cancellable",
+                    "job_id": args.job_id,
+                    "queue_state": queue_state,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
+
+    queue.cancel(args.job_id, error=args.note or "cancelled by operator")
+    run_dir = find_run_dir(project_root, args.job_id)
+    if run_dir is not None:
+        append_run_event(
+            run_dir,
+            "job_cancelled",
+            project_root=project_root,
+            payload={
+                "queue_state": "failed",
+                "run_status": "cancelled",
+                "note": args.note or "",
+            },
+        )
+        meta, _error = load_json_status(run_dir / "meta.json")
+        task_rel = str(meta.get("task_path") or "")
+        if task_rel:
+            task_path = (project_root / task_rel).resolve()
+            if task_path.is_file():
+                update_task_status(task_path, "cancelled")
+
+    updated = store.update(
+        job_id=args.job_id,
+        status="cancelled",
+        phase="cancelled",
+        queue_state="failed",
+        result_status="cancelled",
+        completed_at=utc_now(),
+        note=args.note,
+        event="cancelled",
+    )
+    refresh_metrics_snapshot(project_root)
+    print(json.dumps(OperatorJobStore.summarize(updated), ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_review_gate(args: argparse.Namespace) -> int:
+    project_root = resolve_project_root(args.project_root)
+    contract = load_workflow_contract(project_root)
+    target = str(args.target).strip()
+
+    if target.startswith("TASK-"):
+        run_dir = latest_run_for_task(project_root, target)
+    else:
+        run_dir = resolve_run_dir(project_root, target)
+    if run_dir is None:
+        print(json.dumps({"status": "not_found", "target": target}, ensure_ascii=False))
+        return 1
+
+    if not contract.review_gate.enabled:
+        payload = {
+            "status": "skipped",
+            "target": target,
+            "run_id": run_dir.name,
+            "review_gate": {
+                "enabled": False,
+                "mode": contract.review_gate.mode,
+                "reviewer": contract.review_gate.reviewer,
+            },
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    gate = ensure_review_gate(project_root, run_dir, reviewer_policy=contract.review_gate.reviewer)
+    payload = {
+        "status": gate.get("status"),
+        "target": target,
+        "run_id": run_dir.name,
+        "review_gate": {
+            "enabled": True,
+            "mode": contract.review_gate.mode,
+            "reviewer": contract.review_gate.reviewer,
+        },
+        "result": gate,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if gate.get("status") == "passed" else 1
 
 
 def cmd_workflow_graph(args: argparse.Namespace) -> int:
@@ -4805,6 +5266,7 @@ def cmd_openclaw_enqueue(args: argparse.Namespace) -> int:
             "trigger_type": trigger_envelope.get("trigger_type") if trigger_envelope else None,
         },
     )
+    sync_operator_job_record(project_root, run_dir, source="openclaw", event="enqueued")
     refresh_metrics_snapshot(project_root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
@@ -5497,6 +5959,23 @@ def build_parser() -> argparse.ArgumentParser:
     mark_done.add_argument("--notes", help="Optional completion notes")
     mark_done.set_defaults(func=cmd_mark_done)
 
+    operator_status = subcommands.add_parser("operator-status", help="Show compact operator job ledger entries for a project")
+    operator_status.add_argument("project_root")
+    operator_status.add_argument("--status", choices=["queued", "running", "completed", "failed", "cancelled"])
+    operator_status.add_argument("--limit", type=int, default=20)
+    operator_status.set_defaults(func=cmd_operator_status)
+
+    operator_result = subcommands.add_parser("operator-result", help="Show one operator job ledger entry")
+    operator_result.add_argument("project_root")
+    operator_result.add_argument("job_id")
+    operator_result.set_defaults(func=cmd_operator_result)
+
+    operator_cancel = subcommands.add_parser("operator-cancel", help="Cancel a queued operator job and mark it cancelled in the ledger")
+    operator_cancel.add_argument("project_root")
+    operator_cancel.add_argument("job_id")
+    operator_cancel.add_argument("--note", help="Optional cancellation note")
+    operator_cancel.set_defaults(func=cmd_operator_cancel)
+
     task_delegate = subcommands.add_parser("task-delegate", help="Delegate a task to another agent")
     task_delegate.add_argument("project_root")
     task_delegate.add_argument("--task-id", required=True, help="Parent task id (e.g. TASK-001)")
@@ -5568,6 +6047,19 @@ def build_parser() -> argparse.ArgumentParser:
     session_rotate.add_argument("--note", help="Optional rotation note")
     session_rotate.set_defaults(func=cmd_session_rotate)
 
+    resume_candidate = subcommands.add_parser("resume-candidate", help="Show the best task-scoped session continuation candidate")
+    resume_candidate.add_argument("project_root")
+    resume_candidate.add_argument("--agent", required=True, help="Agent id (e.g. codex)")
+    resume_candidate.add_argument("--task-id", required=True, help="Task id (e.g. TASK-001)")
+    resume_candidate.set_defaults(func=cmd_resume_candidate)
+
+    continue_task = subcommands.add_parser("continue", help="Enqueue a manual wake using stored task-scoped session continuity")
+    continue_task.add_argument("project_root")
+    continue_task.add_argument("--agent", required=True, help="Agent id (e.g. codex)")
+    continue_task.add_argument("--task-id", required=True, help="Task id (e.g. TASK-001)")
+    continue_task.add_argument("--note", help="Optional note for the continuation request")
+    continue_task.set_defaults(func=cmd_continue)
+
     session_files = subcommands.add_parser("session-files", help="List shared session files for a task scope")
     session_files.add_argument("project_root")
     session_files.add_argument("--task-id", required=True, help="Task id (e.g. TASK-001)")
@@ -5619,6 +6111,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workflow_validate.add_argument("project_root", help="Project root path or slug")
     workflow_validate.set_defaults(func=cmd_workflow_validate)
+
+    review_gate = subcommands.add_parser("review-gate", help="Evaluate or materialize the blocking review gate for a run or task")
+    review_gate.add_argument("project_root")
+    review_gate.add_argument("target", help="Run id/path or task id")
+    review_gate.set_defaults(func=cmd_review_gate)
 
     run_checks = subcommands.add_parser(
         "run-checks",

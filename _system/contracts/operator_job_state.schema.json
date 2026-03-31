@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OperatorJobState",
+  "type": "object",
+  "required": ["operator_job_version", "job_id", "run_id", "source", "status", "phase", "created_at", "updated_at", "session", "history"],
+  "properties": {
+    "operator_job_version": { "type": "integer", "const": 1 },
+    "job_id": { "type": "string" },
+    "run_id": { "type": "string" },
+    "run_path": { "type": "string" },
+    "task_id": { "type": "string" },
+    "task_title": { "type": "string" },
+    "source": { "type": "string", "enum": ["manual", "worker", "openclaw", "subagent"] },
+    "status": { "type": "string", "enum": ["queued", "running", "completed", "failed", "cancelled"] },
+    "phase": { "type": "string" },
+    "queue_state": { "type": ["string", "null"] },
+    "result_status": { "type": ["string", "null"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "started_at": { "type": ["string", "null"], "format": "date-time" },
+    "completed_at": { "type": ["string", "null"], "format": "date-time" },
+    "summary": { "type": "string" },
+    "completion_summary": { "type": "string" },
+    "log_preview": { "type": "string" },
+    "log_path": { "type": "string" },
+    "stream_path": { "type": "string" },
+    "report_path": { "type": "string" },
+    "session": {
+      "type": "object",
+      "required": ["handle", "thread_id", "session_id"],
+      "properties": {
+        "handle": { "type": ["string", "null"] },
+        "thread_id": { "type": ["string", "null"] },
+        "session_id": { "type": ["string", "null"] }
+      }
+    },
+    "turn_id": { "type": ["string", "null"] },
+    "note": { "type": ["string", "null"] },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["at", "event", "status", "phase"],
+        "properties": {
+          "at": { "type": "string", "format": "date-time" },
+          "event": { "type": "string" },
+          "status": { "type": "string", "enum": ["queued", "running", "completed", "failed", "cancelled"] },
+          "phase": { "type": "string" },
+          "queue_state": { "type": ["string", "null"] },
+          "result_status": { "type": ["string", "null"] },
+          "note": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

@@ -49,6 +49,11 @@ python3 "$workspace/scripts/claw.py" session-status "$project_root" \
   --agent codex \
   --task-id TASK-001 > "$status_out"
 
+candidate_out="$tmp_root/resume-candidate.json"
+python3 "$workspace/scripts/claw.py" resume-candidate "$project_root" \
+  --agent codex \
+  --task-id TASK-001 > "$candidate_out"
+
 claim_out="$tmp_root/session-claim.json"
 python3 "$workspace/scripts/claw.py" task-claim "$project_root" \
   --task-id TASK-001 \
@@ -60,6 +65,12 @@ python3 "$workspace/scripts/claw.py" wake-enqueue "$project_root" \
   --agent codex \
   --task-id TASK-001 \
   --reason manual > "$wake_out"
+
+continue_out="$tmp_root/session-continue.json"
+python3 "$workspace/scripts/claw.py" continue "$project_root" \
+  --agent codex \
+  --task-id TASK-001 \
+  --note "continue stored session" > "$continue_out"
 
 wake_status_out="$tmp_root/session-wake-status.json"
 python3 "$workspace/scripts/claw.py" wake-status "$project_root" > "$wake_status_out"
@@ -79,29 +90,36 @@ python3 "$workspace/scripts/claw.py" session-rotate "$project_root" \
 session_file="$sessions_root/codex__TASK-001.json"
 assert_file "$session_file"
 
-python3 - "$update_out" "$status_out" "$claim_out" "$wake_out" "$wake_status_out" "$reset_out" "$rotate_out" "$session_file" <<'PY'
+python3 - "$update_out" "$status_out" "$candidate_out" "$claim_out" "$wake_out" "$continue_out" "$wake_status_out" "$reset_out" "$rotate_out" "$session_file" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 update = json.loads(Path(sys.argv[1]).read_text())
 status = json.loads(Path(sys.argv[2]).read_text())
-claim = json.loads(Path(sys.argv[3]).read_text())
-wake = json.loads(Path(sys.argv[4]).read_text())
-wake_status = json.loads(Path(sys.argv[5]).read_text())
-reset = json.loads(Path(sys.argv[6]).read_text())
-rotate = json.loads(Path(sys.argv[7]).read_text())
-session_payload = json.loads(Path(sys.argv[8]).read_text())
+candidate = json.loads(Path(sys.argv[3]).read_text())
+claim = json.loads(Path(sys.argv[4]).read_text())
+wake = json.loads(Path(sys.argv[5]).read_text())
+continued = json.loads(Path(sys.argv[6]).read_text())
+wake_status = json.loads(Path(sys.argv[7]).read_text())
+reset = json.loads(Path(sys.argv[8]).read_text())
+rotate = json.loads(Path(sys.argv[9]).read_text())
+session_payload = json.loads(Path(sys.argv[10]).read_text())
 
 assert update["resume"]["handle"] == "resume-123", update
 assert update["handoff"]["summary"] == "handoff summary", update
 assert status["session_id"] == update["session_id"], status
 assert session_payload["session_id"] == rotate["session_id"], session_payload
+assert candidate["continuation"]["mode"] == "resume", candidate
+assert candidate["continuation"]["resume_line"] == "codex resume resume-123", candidate
 
 assert claim["session"]["session_id"] == update["session_id"], claim
 assert wake["session"]["session_id"] == update["session_id"], wake
+assert continued["continuation"]["mode"] == "resume", continued
+assert continued["wake"]["reason"] == "manual", continued
 pending = wake_status["pending"][0]
 assert pending["session"]["session_id"] == update["session_id"], wake_status
+assert pending["coalesced_count"] >= 2, wake_status
 
 assert reset["status"] == "reset", reset
 assert reset["resume"] is None, reset

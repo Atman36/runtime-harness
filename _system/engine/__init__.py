@@ -1,13 +1,14 @@
 """Minimal filesystem-backed engine primitives for claw."""
 
 from _system.engine.error_codes import REASON_CODES, build_error_envelope
-from _system.engine.workflow_contract import BudgetGuardrails, Commands, GovernanceGuardrails, GuardrailPolicy, WorkflowContract, WorkflowLoadError, contract_summary, load_workflow_contract, validate_workflow_contract
+from _system.engine.workflow_contract import BudgetGuardrails, Commands, GovernanceGuardrails, GuardrailPolicy, ReviewGatePolicy, WorkflowContract, WorkflowLoadError, contract_summary, load_workflow_contract, validate_workflow_contract
 from _system.engine.file_queue import ClaimedJob, DuplicateJobError, FileQueue, QueueEmpty
 from _system.engine.wake_queue import VALID_WAKE_REASONS, WakeQueue, wake_root_for_project
 from _system.engine.task_claims import TaskClaimStore, claims_root_for_project
 from _system.engine.session_store import SessionStore, sessions_root_for_project
 from _system.engine.session_docs import SessionDocsStore, session_docs_root_for_project
 from _system.engine.operator_session_store import OperatorSessionStore, operator_sessions_root_for_repo
+from _system.engine.operator_jobs import OperatorJobStore, operator_jobs_root_for_project
 from _system.engine.operator_transport import TransportConfigError, describe_transport_backends, load_transport_backend, run_transport_doctor
 from _system.engine.org_graph import DelegationCheck, OrgGraphError, delegation_targets, escalation_chain, load_org_graph, validate_delegation
 from _system.engine.file_exchange import FileExchangeError, fetch_path, load_file_exchange_policy, put_file
@@ -33,6 +34,7 @@ __all__ = [
     "BudgetGuardrails",
     "GovernanceGuardrails",
     "GuardrailPolicy",
+    "ReviewGatePolicy",
     "WorkflowContract",
     "WorkflowLoadError",
     "contract_summary",
@@ -48,6 +50,7 @@ __all__ = [
     "SessionStore",
     "SessionDocsStore",
     "OperatorSessionStore",
+    "OperatorJobStore",
     "TransportConfigError",
     "OrgGraphError",
     "DelegationCheck",
@@ -87,4 +90,5 @@ __all__ = [
     "sessions_root_for_project",
     "session_docs_root_for_project",
     "operator_sessions_root_for_repo",
+    "operator_jobs_root_for_project",
 ]

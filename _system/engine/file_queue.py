@@ -472,6 +472,20 @@ class FileQueue:
         )
         return True
 
+    def cancel(self, job_id: str, *, error: str | None = None) -> bool:
+        for state in ("pending", "awaiting_approval", "failed"):
+            src = self._find_job_file(self._state_dir(state), job_id)
+            if src is None:
+                continue
+            self._transition_path(
+                src,
+                "failed",
+                event="cancelled",
+                error=error or "cancelled by operator",
+            )
+            return True
+        return False
+
     def unlock(self, job_id: str) -> bool:
         src = self._find_job_file(self.running, job_id)
         if src is None:

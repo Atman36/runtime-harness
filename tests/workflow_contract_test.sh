@@ -359,5 +359,36 @@ PYEOF
 [ "$result" = "ok" ] || fail "Test 13 (contract_summary exposes commands): $result"
 pass "contract_summary exposes commands registry"
 
+# ── Test 14: review_gate block loads from WORKFLOW.md front matter ───────────
+cat > "$project_root/docs/WORKFLOW.md" <<'WEOF'
+---
+contract_version: 1
+project: "test-contract-project"
+review_gate:
+  enabled: true
+  mode: blocking
+  reviewer: opposite
+---
+WEOF
+
+result="$(cd "$workspace" && python3 - "$project_root" <<'PYEOF'
+import sys
+sys.path.insert(0, ".")
+from pathlib import Path
+from _system.engine.workflow_contract import contract_summary, load_workflow_contract
+
+contract = load_workflow_contract(Path(sys.argv[1]))
+assert contract.review_gate.enabled is True, contract.review_gate
+assert contract.review_gate.mode == "blocking", contract.review_gate
+assert contract.review_gate.reviewer == "opposite", contract.review_gate
+summary = contract_summary(contract)
+assert summary["review_gate"]["enabled"] is True, summary
+assert summary["review_gate"]["mode"] == "blocking", summary
+print("ok")
+PYEOF
+)"
+[ "$result" = "ok" ] || fail "Test 14 (review_gate loads): $result"
+pass "review_gate block loads from WORKFLOW.md front matter"
+
 echo ""
 echo "workflow_contract_test: all tests passed"
