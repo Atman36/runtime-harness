@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from _system.engine.file_exchange import FileExchangeError, fetch_path, put_file
+from _system.engine.handoff_notes import validate_session_handoff_document
 
 
 SESSION_DOCS_VERSION = 1
@@ -162,6 +163,7 @@ class SessionDocsStore:
                 manifest = self._base_manifest(task_id=normalized_task_id, project=project)
 
             docs_dir = self._docs_dir(normalized_task_id)
+            validation = validate_session_handoff_document(relative_path, source_file)
             result = put_file(docs_dir, relative_path, source_file, deny_globs=())
             target_path = Path(str(result["target_path"]))
             now = self._utc_now()
@@ -173,6 +175,8 @@ class SessionDocsStore:
                 "author": self._normalize_text(author),
                 "note": self._normalize_text(note),
             }
+            if isinstance(validation, dict):
+                record.update(validation)
 
             manifest["session_docs_version"] = SESSION_DOCS_VERSION
             manifest["task_id"] = normalized_task_id

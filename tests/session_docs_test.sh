@@ -36,18 +36,59 @@ project_root="$workspace/projects/demo-project"
 docs_root="$project_root/state/session_docs"
 rm -rf "$docs_root"
 
-plan_source="$tmp_root/plan.md"
+summary_source="$tmp_root/summary.md"
 decision_source="$tmp_root/decision.md"
-printf '# Plan\nShared plan from Claude.\n' > "$plan_source"
-printf '# Decisions\nCodex implementation notes.\n' > "$decision_source"
+cat > "$summary_source" <<'EOF'
+# Compact Handoff Summary
 
-plan_out="$tmp_root/plan-put.json"
+## Primary Request and Intent
+
+- Continue TASK-001 and keep the runtime change minimal.
+
+## Key Technical Concepts
+
+- Session docs are the scratchpad for cross-agent handoff.
+
+## Files and Code Sections
+
+- `scripts/claw.py`
+- `_system/engine/session_docs.py`
+
+## Errors and Fixes
+
+- No blocker yet; validation added before publishing the summary.
+
+## Problem Solving
+
+- Reused the existing session docs contract instead of inventing a second channel.
+
+## All User Messages
+
+- "Continue TASK-001 and keep the summary durable."
+
+## Pending Tasks
+
+- Re-run tests after the handoff note is stored.
+
+## Current Work
+
+- Wiring compact handoff validation into `session-file-put`.
+
+## Optional Next Step
+
+- Fetch the summary from `state/session_docs/` and resume directly.
+EOF
+printf '# Decisions\nCodex implementation notes.\n' > "$decision_source"
+invalid_summary="$tmp_root/invalid-summary.md"
+printf '# Compact Handoff Summary\n\n## Primary Request and Intent\n\n- Missing the rest.\n' > "$invalid_summary"
+
+summary_out="$tmp_root/summary-put.json"
 python3 "$workspace/scripts/claw.py" session-file-put "$project_root" \
   --task-id TASK-001 \
-  handoff/plan.md \
-  --source-file "$plan_source" \
+  handoff/summary.md \
+  --source-file "$summary_source" \
   --author claude \
-  --note "initial implementation plan" > "$plan_out"
+  --note "compact handoff summary" > "$summary_out"
 
 decision_out="$tmp_root/decision-put.json"
 python3 "$workspace/scripts/claw.py" session-file-put "$project_root" \
@@ -61,6 +102,14 @@ list_out="$tmp_root/session-files.json"
 python3 "$workspace/scripts/claw.py" session-files "$project_root" \
   --task-id TASK-001 > "$list_out"
 
+if python3 "$workspace/scripts/claw.py" session-file-put "$project_root" \
+  --task-id TASK-001 \
+  handoff/summary.md \
+  --source-file "$invalid_summary" >/dev/null 2>&1; then
+  echo "Expected invalid compact handoff summary to fail validation" >&2
+  exit 1
+fi
+
 status_out="$tmp_root/session-status.json"
 python3 "$workspace/scripts/claw.py" session-update "$project_root" \
   --agent codex \
@@ -71,24 +120,24 @@ python3 "$workspace/scripts/claw.py" session-status "$project_root" \
   --task-id TASK-001 > "$status_out"
 
 fetch_out="$tmp_root/fetch.json"
-fetched_file="$tmp_root/fetched-plan.md"
+fetched_file="$tmp_root/fetched-summary.md"
 python3 "$workspace/scripts/claw.py" session-file-fetch "$project_root" \
   --task-id TASK-001 \
-  handoff/plan.md \
+  handoff/summary.md \
   --output-file "$fetched_file" > "$fetch_out"
 
 manifest_file="$docs_root/TASK-001/manifest.json"
 assert_file "$manifest_file"
-assert_file "$docs_root/TASK-001/files/handoff/plan.md"
+assert_file "$docs_root/TASK-001/files/handoff/summary.md"
 assert_file "$docs_root/TASK-001/files/notes/implementation.md"
 assert_file "$fetched_file"
 
-python3 - "$plan_out" "$decision_out" "$list_out" "$status_out" "$fetch_out" "$manifest_file" "$fetched_file" <<'PY'
+python3 - "$summary_out" "$decision_out" "$list_out" "$status_out" "$fetch_out" "$manifest_file" "$fetched_file" <<'PY'
 import json
 import pathlib
 import sys
 
-plan_put = json.loads(pathlib.Path(sys.argv[1]).read_text())
+summary_put = json.loads(pathlib.Path(sys.argv[1]).read_text())
 decision_put = json.loads(pathlib.Path(sys.argv[2]).read_text())
 listing = json.loads(pathlib.Path(sys.argv[3]).read_text())
 status = json.loads(pathlib.Path(sys.argv[4]).read_text())
@@ -96,25 +145,29 @@ fetch = json.loads(pathlib.Path(sys.argv[5]).read_text())
 manifest = json.loads(pathlib.Path(sys.argv[6]).read_text())
 fetched = pathlib.Path(sys.argv[7]).read_text()
 
-assert plan_put["document"]["author"] == "claude", plan_put
-assert plan_put["document"]["path"] == "handoff/plan.md", plan_put
+assert summary_put["document"]["author"] == "claude", summary_put
+assert summary_put["document"]["path"] == "handoff/summary.md", summary_put
+assert summary_put["document"]["format"] == "compact_handoff_v1", summary_put
+assert summary_put["document"]["section_count"] == 9, summary_put
 assert decision_put["document"]["author"] == "codex", decision_put
 assert decision_put["document"]["path"] == "notes/implementation.md", decision_put
 
 assert listing["task_id"] == "TASK-001", listing
 assert listing["document_count"] == 2, listing
 paths = [item["path"] for item in listing["documents"]]
-assert paths == ["handoff/plan.md", "notes/implementation.md"], paths
+assert paths == ["handoff/summary.md", "notes/implementation.md"], paths
 
 assert status["shared_files"]["document_count"] == 2, status
 assert status["shared_files"]["manifest_file"].endswith("state/session_docs/TASK-001/manifest.json"), status
 
 assert fetch["document"]["author"] == "claude", fetch
-assert fetch["relative_path"] == "handoff/plan.md", fetch
-assert fetched == "# Plan\nShared plan from Claude.\n", fetched
+assert fetch["relative_path"] == "handoff/summary.md", fetch
+assert "## Pending Tasks" in fetched, fetched
 
 assert manifest["session_docs_version"] == 1, manifest
 assert len(manifest["documents"]) == 2, manifest
+summary_doc = manifest["documents"][0]
+assert summary_doc["format"] == "compact_handoff_v1", summary_doc
 PY
 
 python3 "$workspace/scripts/validate_artifacts.py" "$manifest_file" --quiet >/dev/null

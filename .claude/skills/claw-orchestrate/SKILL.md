@@ -5,200 +5,174 @@ description: Orchestrate a complete spec-driven agent workflow end-to-end: pick 
 
 # claw-orchestrate
 
-This skill drives the full spec-driven execution loop. It knows how to use claw's CLI tools to move a task from "todo" to "committed and reviewed". Think of it as the human operator's role, systematized.
+This skill is the coordinator contract for claw. It owns the plan, decomposes work into bounded execution slices, synthesizes results itself, and only then sends implementation or verification work forward. Workers do not see the coordinator's private reasoning, so every worker prompt must be self-contained.
 
-## The execution loop
+## Coordinator rules
 
-```
-1. SELECT → pick next task
-2. PREVIEW → launch-plan (dry run)
-3. EXECUTE → run agent CLI
-4. VALIDATE → check artifacts + tests
-5. REVIEW → codex review → claude preview
-6. COMMIT → commit with context
-7. NEXT → update index, pick next
-```
+1. Work in four phases: `Research -> Synthesis -> Implementation -> Verification`.
+2. Do not say "based on your findings" to a worker. Read worker outputs, synthesize them yourself, then issue the next prompt with concrete files, commands, and acceptance criteria.
+3. Prefer `continue` when the same worker/session already has the right context. Prefer spawning a new worker only when the task is isolated, parallel-safe, or needs a different tool/agent.
+4. Use `projects/<slug>/state/session_docs/<TASK>/` as the durable scratchpad for cross-worker knowledge. Put handoff notes in `handoff/summary.md` using the compact 9-section format.
+5. Parallelize read-only research freely. Serialize writes per overlapping file set.
+6. The coordinator is responsible for the final verdict. Workers can gather evidence; they do not close the task for you.
 
----
+## Four phases
 
-## Phase 1: SELECT — pick next task
+### Phase 1: Research
 
-If the user specifies a task (e.g. "run TASK-007"), use that.
+Use this phase to gather only the context needed for the current task.
 
-Otherwise, find the next task:
-1. Read `docs/PLAN.md` → Current active epic
-2. Read sprint index if present: `docs/SPRINT-epic-NNN.md`
-3. Find the first task with `status: todo` in `projects/<project>/tasks/`
-4. Confirm with the user before proceeding
+- Read `docs/PLAN.md`, `docs/STATUS.md`, the target `TASK-XXX.md`, and linked `SPEC-XXX.md`.
+- Run `python3 scripts/claw.py session-files <project_root> --task-id TASK-XXX` first. If shared files exist, fetch the relevant ones before planning.
+- Use `python3 scripts/claw.py launch-plan <project_root>/tasks/TASK-XXX.md` to preview routing and workspace policy.
+- If multiple read-only questions are independent, parallelize them. Do not overlap writes.
 
----
+### Phase 2: Synthesis
 
-## Phase 2: PREVIEW — dry run
+The coordinator must produce an explicit execution brief before implementation.
 
-Always run launch-plan before executing. This shows routing, command, workspace mode — no side effects.
+- Summarize the exact scope: files, invariants, validations, and stop conditions.
+- Decide `continue` vs `spawn`:
+  - `continue`: the active worker already holds the necessary local context and the next slice touches the same files.
+  - `spawn`: the slice is isolated, uses a disjoint file set, or can run in parallel as read-only work.
+- Write a compact handoff note if another worker will need durable context:
+  - Path: `handoff/summary.md`
+  - Contract: 9 sections, no `<analysis>` block, concrete file paths and next actions
 
-```bash
-python scripts/claw.py launch-plan <project> TASK-NNN
-```
+### Phase 3: Implementation
 
-Read the output. Verify:
-- Correct agent selected (matches task tags + routing rules)
-- Correct workspace_mode (`project_root` | `git_worktree` | `isolated_checkout`)
-- Command looks right
+Choose the execution path that fits the task.
 
-If routing is wrong, update the task's `preferred_agent` or `tags` before proceeding.
-
----
-
-## Phase 3: EXECUTE — run the agent
-
-**Option A: Direct execution** (synchronous, good for single tasks)
-```bash
-python scripts/claw.py run --execute <project> TASK-NNN
-```
-
-**Option B: Queue + worker** (for multiple tasks or background work)
-```bash
-python scripts/claw.py run --enqueue <project> TASK-NNN
-python scripts/claw.py worker <project>         # run continuously
-python scripts/claw.py worker --once <project>  # process one job
-```
-
-**Option C: OpenClaw JSON bridge** (when integrating with external systems)
-```bash
-python scripts/claw.py openclaw enqueue '{"project": "<slug>", "task_id": "TASK-NNN"}'
-```
-
-While the agent runs, watch for output in:
-- `projects/<project>/runs/<date>/RUN-XXXX/result.json` — exit code + stdout/stderr
-- `projects/<project>/runs/<date>/RUN-XXXX/report.md` — agent's summary
-
----
-
-## Phase 4: VALIDATE — check the artifacts
-
-After execution, verify:
-
-1. **Result status**: Read `result.json` → `status` should be `success`
-2. **Acceptance criteria**: Compare `result.json` output against SPEC acceptance criteria
-3. **Artifact contracts**: Run schema validation
-   ```bash
-   python scripts/validate_artifacts.py projects/<project>/runs/<date>/RUN-XXXX/
-   ```
-4. **Tests**: If the task involved code changes, run the test suite
-   ```bash
-   bash tests/run_all.sh
-   ```
-
-If validation fails → use claw-run-debugger to diagnose before proceeding.
-
----
-
-## Phase 5: REVIEW — two-pass review
-
-The review workflow follows a two-pass model:
-
-### Codex review (technical pass)
-- Python correctness, shell safety, tests, schema compliance
-- Trigger: `python scripts/claw.py review-batch <project>`
-- Or direct: run codex on the review batch
-
-### Claude preview (product pass)
-- Does the output match the spec's goal and acceptance criteria?
-- Are edge cases handled?
-- Is the "Out of scope" boundary respected?
-
-This pass is you (Claude) reading the output vs the spec and making a judgment call.
-
-**Review workflow status progression:**
-```
-todo → in_progress → codex_review → claude_preview → done
-```
-
-A task is closed only when:
-- ✓ Codex review passed
-- ✓ Claude preview passed
-- ✓ Commit exists
-
----
-
-## Phase 6: COMMIT
-
-After both review passes:
+Direct execution for one bounded task:
 
 ```bash
-git add <specific changed files>
-git commit -m "<type>(<scope>): <description>
-
-TASK-NNN: <spec title>
-Closes SPEC-NNN"
+python3 scripts/claw.py run --execute <project_root> TASK-XXX
 ```
 
-Then update the sprint index (if one exists):
-- Set task status to `done`
-- Add commit hash
-- Add entry to Execution Log
-- Update Current/Next task pointer
+Queue plus worker for longer or multiple queued tasks:
 
----
-
-## Phase 7: NEXT — continue the loop
-
-After committing:
-1. Update `status: done` in `tasks/TASK-NNN.md`
-2. Update sprint index
-3. Ask the user: "Continue with TASK-NNN+1?" or surface the next pending task
-
----
-
-## Multi-agent coordination
-
-When running tasks in parallel (e.g. two independent specs):
-
-**Safe to parallelize:**
-- Tasks with `workspace_mode: git_worktree` or `isolated_checkout`
-- Tasks that don't share files (check specs' Files/zones sections)
-
-**Do NOT parallelize:**
-- Tasks touching the same Python modules
-- Planning docs (PLAN.md, BACKLOG.md, STATUS.md) — merge-sensitive
-- Tasks where one depends on another's output
-
-Parallel execution uses worktrees:
 ```bash
-python scripts/claw.py run --execute <project> TASK-NNN  # terminal 1
-python scripts/claw.py run --execute <project> TASK-MMM  # terminal 2
+python3 scripts/claw.py run --enqueue <project_root> TASK-XXX
+python3 scripts/claw.py worker --once <project_root>
 ```
 
----
+During execution, track:
 
-## Handling failures in the loop
+- `projects/<slug>/runs/<date>/RUN-XXXX/result.json`
+- `projects/<slug>/runs/<date>/RUN-XXXX/report.md`
+- `projects/<slug>/state/session_docs/<TASK>/files/handoff/summary.md`
 
-| Failure | Action |
-|---------|--------|
-| Agent returned non-zero | Use claw-run-debugger, fix spec or code, re-run |
-| Schema validation failed | Fix artifact structure, re-validate |
-| Tests failed | Fix code, re-run tests, then continue to review |
-| Codex review found issues | Create a follow-up spec for the issues, or fix inline if trivial |
-| Spec acceptance criteria not met | The task is NOT done. Fix and re-run. |
+### Phase 4: Verification
 
----
+Verification is a separate pass, not an afterthought.
+
+Required checks:
+
+```bash
+python3 scripts/validate_artifacts.py projects/<slug>/runs/<date>/RUN-XXXX
+bash tests/run_all.sh
+```
+
+Also verify:
+
+- acceptance criteria from the spec
+- review artifacts and follow-up tasks
+- no drift in task status, session notes, or shared files
+
+If verification fails, return to synthesis with the concrete failure, not a vague retry request.
+
+## Worker prompt contracts
+
+### Research worker prompt
+
+Use when a bounded read-only question can be delegated.
+
+```text
+Task: answer the research question below and return only concrete evidence.
+Scope:
+- Project root: <project_root>
+- Task id: TASK-XXX
+- Files to inspect: <paths>
+- Commands allowed: read-only only
+Output:
+- Findings with file paths and line references
+- Risks or unknowns
+- No implementation changes
+```
+
+### Implementation worker prompt
+
+Use when the scope is fixed and the target file set is known.
+
+```text
+Task: implement the requested change.
+Scope:
+- Project root: <project_root>
+- Task id: TASK-XXX
+- Files you may edit: <explicit file list>
+- Constraints: preserve existing behavior outside this slice
+Validation:
+- <exact commands>
+Return:
+- changed files
+- validation results
+- remaining risks
+```
+
+### Verification worker prompt
+
+Use when you need an independent validation pass.
+
+```text
+Task: verify the completed slice without broadening scope.
+Inputs:
+- run artifacts: <paths>
+- changed files: <paths>
+- spec acceptance criteria: <quoted summary>
+Checks:
+- artifact schema
+- tests
+- obvious regressions
+Return:
+- pass/fail
+- concrete findings with file paths
+```
+
+## Task notifications
+
+When a worker writes back into shared session docs, keep the feedback structured and concise:
+
+```xml
+<task-notification>
+  <task-id>TASK-XXX</task-id>
+  <status>completed|failed|blocked</status>
+  <summary>One concrete paragraph with file paths and result.</summary>
+  <next-action>Exact next coordinator action.</next-action>
+</task-notification>
+```
+
+Mirror the durable form into `handoff/summary.md` when another worker or later session must continue.
+
+## Concurrency rules
+
+- Parallel-safe: read-only discovery, grep/search, spec review, artifact inspection.
+- Serialize: edits to the same file, the same directory subtree, or merge-sensitive planning docs.
+- Treat `docs/PLAN.md`, `docs/STATUS.md`, `docs/BACKLOG.md`, and `scripts/claw.py` as high-conflict files unless a single owner is assigned.
+
+## Failure handling
+
+- Non-zero agent exit: inspect `result.json`, repair the underlying issue, and rerun only the bounded slice.
+- Invalid handoff note: rewrite `handoff/summary.md` in the compact format before continuing.
+- Review failure: convert findings into a new bounded implementation brief or follow-up task.
+- Validation failure: do not mark the task done and do not advance the plan.
 
 ## Quick reference
 
 ```bash
-# Full pipeline
-python scripts/claw.py launch-plan <project> TASK-NNN    # preview
-python scripts/claw.py run --execute <project> TASK-NNN  # execute
-python scripts/validate_artifacts.py runs/<date>/RUN-X/  # validate
-bash tests/run_all.sh                                     # test
-python scripts/claw.py review-batch <project>            # review
-
-# Status
-python scripts/claw.py status <project>
-
-# Queue management
-python scripts/claw.py worker <project>
-python scripts/claw.py reclaim <project>
-python scripts/claw.py approve <project> <run-id>
+python3 scripts/claw.py session-files <project_root> --task-id TASK-XXX
+python3 scripts/claw.py launch-plan <project_root>/tasks/TASK-XXX.md
+python3 scripts/claw.py run --execute <project_root> TASK-XXX
+python3 scripts/validate_artifacts.py projects/<slug>/runs/<date>/RUN-XXXX
+bash tests/run_all.sh
+python3 scripts/claw.py session-file-put <project_root> --task-id TASK-XXX handoff/summary.md --source-file /tmp/handoff.md --author codex
 ```

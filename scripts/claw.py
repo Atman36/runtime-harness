@@ -32,6 +32,7 @@ from _system.engine.decision_log import append_decision, format_decision_for_dis
 from _system.engine.event_log import append_run_event, build_run_event_snapshot, load_run_events  # noqa: E402
 from _system.engine.error_codes import build_error_envelope  # noqa: E402
 from _system.engine.guardrails import run_guardrails  # noqa: E402
+from _system.engine.handoff_notes import validate_compact_handoff_text  # noqa: E402
 from _system.engine.listener_dispatch import dispatch_event_listeners  # noqa: E402
 from _system.engine.workflow_contract import contract_summary, load_workflow_contract  # noqa: E402
 from _system.engine.trusted_command import command_display, parse_trusted_argv  # noqa: E402
@@ -3544,6 +3545,19 @@ def _load_summary_text(summary: str | None, summary_file: str | None) -> str | N
     return None
 
 
+def _validate_compact_summary_text(summary_text: str | None) -> str | None:
+    if summary_text is None:
+        return None
+    normalized = str(summary_text)
+    stripped = normalized.strip()
+    if not stripped:
+        return normalized
+    if "## Primary Request and Intent" not in stripped:
+        return normalized
+    validate_compact_handoff_text(stripped)
+    return normalized
+
+
 def _load_text_option(value: str | None, file_path: str | None, *, option_name: str) -> str | None:
     if value and file_path:
         raise ValueError(f"Use only one of --{option_name} or --{option_name}-file")
@@ -3998,7 +4012,7 @@ def cmd_session_update(args: argparse.Namespace) -> int:
 
     try:
         resume_handle = _parse_resume_handle(args.resume_handle, args.resume_handle_json)
-        summary_text = _load_summary_text(args.summary, args.summary_file)
+        summary_text = _validate_compact_summary_text(_load_summary_text(args.summary, args.summary_file))
     except ValueError as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1

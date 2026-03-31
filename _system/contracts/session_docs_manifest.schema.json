@@ -69,6 +69,22 @@
               "string",
               "null"
             ]
+          },
+          "format": {
+            "type": "string"
+          },
+          "section_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "template_path": {
+            "type": "string"
           }
         },
         "additionalProperties": true
